@@ -14,7 +14,7 @@ dependencies = {
     "akshare": "1.12.1",
     "pandas": "2.0.3",
     "numpy": "1.24.4",
-    "talib": "0.4.25",
+    "talib": "0.6.3",
     "matplotlib": "3.7.2"
 }
 
@@ -32,15 +32,18 @@ print("\nTA-Lib功能测试：")
 try:
     import talib
     from talib import abstract
+    import numpy as np  # 导入 numpy
+     # 将输入数据转换为 numpy.ndarray
+    data = np.array([1, 2, 3, 4, 5], dtype=np.float64)  # 确保数据类型为 float64
     print("TA-Lib基本功能正常")
-    print("MA计算示例：", talib.MA([1,2,3,4,5], timeperiod=2))
+    print("MA计算示例：", talib.MA(data, timeperiod=2))
 except Exception as e:
     print(f"TA-Lib异常：{str(e)}")
 
 print("\nAKShare连接测试：")
 try:
     import akshare as ak
-    df = ak.stock_zh_a_hist(symbol="000001", period="daily", adjust="hfq")
-    print(f"成功获取数据，最后日期：{df['日期'].iloc[-1]}")
+    data = ak.stock_zh_a_hist(symbol="000001", period="daily", start_date="20230101", end_date="20231022")
+    print(data.head())
 except Exception as e:
-    print(f"数据获取失败：{str(e)}")
+    print(f"数据获取失败：{e}")
