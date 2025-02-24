@@ -49,7 +49,8 @@ class TDXStrategy(BaseStrategy):
         super().calculate_technical_indicators()
         
         # 计算更多均线
-        self.data['MA10'] = self.data['close'].rolling(10).mean()
+
+        self.data['MA10'] = self.data['close'].rolling(10).mean()       
         self.data['MA55'] = self.data['close'].rolling(55).mean()
         self.data['MA240'] = self.data['close'].rolling(240).mean()
         
