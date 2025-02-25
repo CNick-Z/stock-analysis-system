@@ -23,3 +23,5 @@ db/stock_data.db
 stock-analysis-system.code-workspace
 data_fetcher.py
 DataProcessor.py
+db/stock_data.db-shm
+db/stock_data.db-wal

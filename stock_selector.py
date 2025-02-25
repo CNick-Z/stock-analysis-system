@@ -4,7 +4,7 @@ import akshare as ak
 import sqlite3
 from tqdm import tqdm
 from typing import Dict, List
-from datetime import datetime
+from datetime import datetime,date
 
 class StockScorer:
     def __init__(self, config: Dict = None):
@@ -21,6 +21,7 @@ class StockScorer:
         
     def _get_fundamental_score(self, symbol: str) -> float:
         """获取财务指标评分（带缓存机制）"""
+        '''
         try:
             # 从数据库获取预存财务数据
             conn = sqlite3.connect('./db/stock_data.db')
@@ -41,6 +42,8 @@ class StockScorer:
         except Exception as e:
             print(f"财务数据获取失败 {symbol}: {str(e)}")
             return 0
+        '''
+        return 0
 
     def _calculate_technical_score(self, row: pd.Series) -> float:
         """技术指标评分（基于策略信号）"""
@@ -170,9 +173,11 @@ class StockSelector:
 # 使用示例
 if __name__ == "__main__":
     # 生成策略信号
+    start_date =date.today().strftime("%Y-%m-%d")
+    end_date = date.today().strftime("%Y-%m-%d")
     from strategy import EnhancedTDXStrategy
     strategy = EnhancedTDXStrategy()
-    signals = strategy.generate_signals("2024-09-25", "2024-09-26")
+    signals = strategy.generate_signals(start_date,end_date)
     
     # 执行选股评分
     selector = StockSelector()

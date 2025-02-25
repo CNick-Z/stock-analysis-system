@@ -126,6 +126,7 @@ class EnhancedTDXStrategy:
                     ti.sma_{self.config['ma_windows'][2]} as ma_20,
                     ti.sma_{self.config['ma_windows'][3]} as ma_55,
                     ti.sma_{self.config['ma_windows'][4]} as ma_240,
+                    ti.vol_ma5,
                     ti.macd,
                     ti.macd_signal,
                     ti.macd_histogram,
@@ -160,14 +161,6 @@ class EnhancedTDXStrategy:
         
         return df
 
-    def _generate_volume_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        生成成交量相关特征（保留原有VOL_MA5逻辑）
-        """
-        df['vol_ma5'] = df.groupby('symbol')['volume'].transform(
-            lambda x: x.rolling(self.config['volume_ma_window']).mean()
-        )
-        return df
 
     def _generate_core_signals(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -209,10 +202,9 @@ class EnhancedTDXStrategy:
         
         # 特征工程
         with_angles = self._calculate_ma_angles(raw_data)
-        with_volume = self._generate_volume_features(with_angles)
         
         # 信号生成
-        signals = self._generate_core_signals(with_volume)
+        signals = self._generate_core_signals(with_angles)
         
         # 综合信号
         signals['enter_long'] = (

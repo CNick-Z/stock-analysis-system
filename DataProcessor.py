@@ -26,6 +26,7 @@ class TechnicalIndicatorCalculator:
                 sma_20 REAL,
                 sma_55 REAL,
                 sma_240 REAL,
+                vol_ma5 REAL,
                 macd REAL,
                 macd_signal REAL,
                 macd_histogram REAL,
@@ -62,8 +63,11 @@ class TechnicalIndicatorCalculator:
         df['macd_signal'] = macd_signal(close=df['close'], window_slow=26, window_fast=12, window_sign=9)
         df['macd_histogram'] = macd_diff(close=df['close'], window_slow=26, window_fast=12, window_sign=9)
         
+        # 计算成交量均线
+        df['vol_ma5'] = df['volume'].rolling(window=5).mean()
+
         # 提取需要的列
-        indicators = df[['date', 'symbol', 'sma_5', 'sma_10', 'sma_20', 'sma_55', 'sma_240', 'macd', 'macd_signal', 'macd_histogram']].copy()
+        indicators = df[['date', 'symbol', 'sma_5', 'sma_10', 'sma_20', 'sma_55', 'sma_240', 'vol_ma5','macd', 'macd_signal', 'macd_histogram']].copy()
         return indicators
 
     def save_to_database(self, indicators):

@@ -63,7 +63,7 @@ class DataFetcher:
         df.reset_index(drop=True, inplace=True)
         
         # 确保 date 和 symbol 列是字符串类型
-        df['symbol'] = df['symbol'].astype(str)
+        df.loc[:, 'symbol'] = df['symbol'].astype(str)
         
         # 生成插入语句
         columns = df.columns.tolist()
