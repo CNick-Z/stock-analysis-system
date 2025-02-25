@@ -121,4 +121,4 @@ class TechnicalIndicatorCalculator:
 if __name__ == "__main__":
     db_path = "./db/stock_data.db"
     calculator = TechnicalIndicatorCalculator()
-    calculator.process_unprocessed_data(batch_size=1000)
+    calculator.process_unprocessed_data(batch_size=10000)
