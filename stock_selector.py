@@ -145,7 +145,7 @@ class StockScorer:
             signals.loc[row.name, 'total_score'] = total_score
         
         # 保留有效的评分记录（enter_long 为 True）
-        return signals[signals['enter_long']].reset_index(drop=True)
+        return signals[signals['signal_type']=='buy'].reset_index(drop=True)
 
 class StockSelector:
     def __init__(self):

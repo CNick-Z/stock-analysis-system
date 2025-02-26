@@ -140,7 +140,7 @@ class EnhancedTDXStrategy:
                     williams_r,     -- 新增 Williams%R 指标
                     bb_upper,       -- 新增布林带上轨
                     bb_middle,      -- 新增布林带中轨
-                    bb_lower,       -- 新增布林带下轨
+                    bb_lower       -- 新增布林带下轨
                     FROM technical_indicators ti
                     JOIN daily_data dd 
                     ON ti.date = dd.date 
@@ -213,8 +213,8 @@ class EnhancedTDXStrategy:
         df['williams_overbought'] = df['williams_r'] > -20
         df['williams_oversold'] = df['williams_r'] < -80
         
-        df['bb_overbought'] = df['close'] > df['bb_upper']
-        df['bb_oversold'] = df['close'] < df['bb_lower']
+        df['bb_upper_break'] = df['close'] > df['bb_upper']
+        df['bb_lower_break'] = df['close'] < df['bb_lower']
 
         return df
 
@@ -231,14 +231,6 @@ class EnhancedTDXStrategy:
         # 信号生成
         signals = self._generate_core_signals(with_angles)
 
-        # 计算技术指标条件（供买卖信号函数复用）
-        signals['rsi_oversold'] = signals['rsi_14'] < 30
-        signals['rsi_overbought'] = signals['rsi_14'] > 70
-        signals['kdj_oversold'] = signals['k_stoch'] < 20
-        signals['kdj_overbought'] = signals['k_stoch'] > 80
-        signals['bb_upper_break'] = signals['close'] > signals['bb_upper']
-        signals['bb_lower_break'] = signals['close'] < signals['bb_lower']
-    
         return signals
     def get_buy_signals(self, start_date: str, end_date: str) -> pd.DataFrame:
         """获取买点信号"""
@@ -249,17 +241,17 @@ class EnhancedTDXStrategy:
             signals['angle_condition'] &
             signals['volume_condition'] &
             signals['macd_condition'] &
-            signals['rsi_overbought'] &   # 未超买
-            signals['kdj_overbought'] &   # KDJ未超买
-            signals['bb_upper_break'] &   # 未突破布林上轨
-            signals['bb_lower_break']      # 突破布林下轨（抄底信号）
+            ~signals['rsi_overbought'] &   # 未超买
+            ~signals['kdj_overbought'] &   # KDJ未超买
+            ~signals['bb_upper_break'] &   # 未突破布林上轨
+            ~signals['bb_lower_break']      # 突破布林下轨（抄底信号）
         )
         
         return signals[buy_condition][[
             'date', 'symbol', 'ma_5', 'ma_10', 'ma_20', 'angle_ma_10',
             'vol_ma5', 'macd', 'macd_signal', 'volume', 'rsi_14', 
             'kdj_k', 'kdj_d', 'cci_20', 'williams_r', 'bb_upper',
-            'bb_middle', 'bb_lower'
+            'bb_middle', 'bb_lower','close'
         ]].assign(signal_type='buy')
         
     def get_sell_signals(self, start_date: str, end_date: str) -> pd.DataFrame:
@@ -285,7 +277,7 @@ class EnhancedTDXStrategy:
             'date', 'symbol', 'ma_5', 'ma_10', 'ma_20', 'angle_ma_10',
             'vol_ma5', 'macd', 'macd_signal', 'volume', 'rsi_14',
             'kdj_k', 'kdj_d', 'cci_20', 'williams_r', 'bb_upper',
-            'bb_middle', 'bb_lower'
+            'bb_middle', 'bb_lower','close'
         ]].assign(signal_type='sell')    
         
 
