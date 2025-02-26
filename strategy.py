@@ -131,9 +131,18 @@ class EnhancedTDXStrategy:
                     ti.macd_signal,
                     ti.macd_histogram,
                     dd.close,
-                    dd.volume
-                FROM technical_indicators ti
-                JOIN daily_data dd 
+                    dd.volume,
+                    rsi_14,         -- 新增 RSI 指标
+                    kdj_k,          -- 新增 KDJ 指标
+                    kdj_d,
+                    kdj_j,
+                    cci_20,         -- 新增 CCI 指标
+                    williams_r,     -- 新增 Williams%R 指标
+                    bb_upper,       -- 新增布林带上轨
+                    bb_middle,      -- 新增布林带中轨
+                    bb_lower,       -- 新增布林带下轨
+                    FROM technical_indicators ti
+                    JOIN daily_data dd 
                     ON ti.date = dd.date 
                     AND ti.symbol = dd.symbol
                 WHERE ti.date BETWEEN '{start_date}' AND '{end_date}'
@@ -191,9 +200,25 @@ class EnhancedTDXStrategy:
             (df['macd'] > df['macd_signal'])
         )
         
+        # 新增超买超卖条件
+        df['rsi_overbought'] = df['rsi_14'] > 70
+        df['rsi_oversold'] = df['rsi_14'] < 30
+        
+        df['kdj_overbought'] = (df['kdj_k'] > 80) & (df['kdj_d'] > 80)
+        df['kdj_oversold'] = (df['kdj_k'] < 20) & (df['kdj_d'] < 20)
+        
+        df['cci_overbought'] = df['cci_20'] > 100
+        df['cci_oversold'] = df['cci_20'] < -100
+        
+        df['williams_overbought'] = df['williams_r'] > -20
+        df['williams_oversold'] = df['williams_r'] < -80
+        
+        df['bb_overbought'] = df['close'] > df['bb_upper']
+        df['bb_oversold'] = df['close'] < df['bb_lower']
+
         return df
 
-    def generate_signals(self, start_date: str, end_date: str) -> pd.DataFrame:
+    def generate_features(self, start_date: str, end_date: str) -> pd.DataFrame:
         """
         生成完整信号（优化执行流程）
         """
@@ -205,34 +230,65 @@ class EnhancedTDXStrategy:
         
         # 信号生成
         signals = self._generate_core_signals(with_angles)
-        
-        # 综合信号
-        signals['enter_long'] = (
+
+        # 计算技术指标条件（供买卖信号函数复用）
+        signals['rsi_oversold'] = signals['rsi_14'] < 30
+        signals['rsi_overbought'] = signals['rsi_14'] > 70
+        signals['kdj_oversold'] = signals['k_stoch'] < 20
+        signals['kdj_overbought'] = signals['k_stoch'] > 80
+        signals['bb_upper_break'] = signals['close'] > signals['bb_upper']
+        signals['bb_lower_break'] = signals['close'] < signals['bb_lower']
+    
+        return signals
+    def get_buy_signals(self, start_date: str, end_date: str) -> pd.DataFrame:
+        """获取买点信号"""
+        signals = self.generate_features(start_date, end_date)    
+        # 综合买入条件
+        buy_condition = (
             signals['ma_condition'] &
             signals['angle_condition'] &
             signals['volume_condition'] &
-            signals['macd_condition']
+            signals['macd_condition'] &
+            signals['rsi_overbought'] &   # 未超买
+            signals['kdj_overbought'] &   # KDJ未超买
+            signals['bb_upper_break'] &   # 未突破布林上轨
+            signals['bb_lower_break']      # 突破布林下轨（抄底信号）
         )
         
-        # 卖出信号（优化逻辑结构）
-        signals['exit_long'] = (
-            (signals['ma_20'] > signals['ma_5']) &
+        return signals[buy_condition][[
+            'date', 'symbol', 'ma_5', 'ma_10', 'ma_20', 'angle_ma_10',
+            'vol_ma5', 'macd', 'macd_signal', 'volume', 'rsi_14', 
+            'kdj_k', 'kdj_d', 'cci_20', 'williams_r', 'bb_upper',
+            'bb_middle', 'bb_lower'
+        ]].assign(signal_type='buy')
+        
+    def get_sell_signals(self, start_date: str, end_date: str) -> pd.DataFrame:
+        """获取卖点信号"""
+        signals = self.generate_features(start_date, end_date)
+        
+        # 综合卖出条件
+        sell_condition = (
+            (signals['ma_20'] > signals['ma_5']) &  # 短期均线下穿长期
             (
-                (signals['macd_signal'] > signals['macd']) |
+                (signals['macd_signal'] > signals['macd']) |  # MACD死叉
                 (
                     (signals['close'] < signals['ma_10']) & 
                     (signals['volume'] < signals['volume'].shift(1) * 0.8)
                 )
-            )
+            ) |
+            signals['rsi_overbought'] |    # RSI超买
+            signals['kdj_overbought'] |     # KDJ超买
+            signals['bb_upper_break']      # 突破布林上轨（超买信号）
         )
-        filtered_signals = signals[
-            (signals['enter_long']) |  # 有买入信号
-            (signals['exit_long'])     # 有卖出信号
-            ].copy()
         
-        return filtered_signals[['date', 'symbol', 'enter_long', 'exit_long', 
-                        'ma_5', 'ma_10', 'ma_20', 'angle_ma_10', 
-                        'vol_ma5', 'macd','macd_signal','volume']]
+        return signals[sell_condition][[
+            'date', 'symbol', 'ma_5', 'ma_10', 'ma_20', 'angle_ma_10',
+            'vol_ma5', 'macd', 'macd_signal', 'volume', 'rsi_14',
+            'kdj_k', 'kdj_d', 'cci_20', 'williams_r', 'bb_upper',
+            'bb_middle', 'bb_lower'
+        ]].assign(signal_type='sell')    
+        
+
 
     def get_trading_advice(self, signals: pd.DataFrame) -> pd.DataFrame:
         """
@@ -245,17 +301,3 @@ class EnhancedTDXStrategy:
             .sort_values('ma_5', ascending=False)
             .head(5)
         )
-
-# 使用示例
-if __name__ == "__main__":
-    strategy = EnhancedTDXStrategy()
-    
-    # 获取最近30天信号
-    end_date = datetime.today().strftime("%Y-%m-%d")
-    start_date = (datetime.today() - pd.DateOffset(days=30)).strftime("%Y-%m-%d")
-    
-    signals = strategy.generate_signals(start_date, end_date)
-    top_picks = strategy.get_trading_advice(signals)
-    
-    print("近期推荐标的：")
-    print(top_picks[['symbol', 'ma_5', 'angle_ma_10', 'macd']])

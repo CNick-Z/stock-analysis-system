@@ -11,7 +11,7 @@ print(f"""
 """)
 
 dependencies = {
-    "akshare": "1.12.1",
+    "akshare": "1.16.8",
     "pandas": "2.0.3",
     "numpy": "1.24.4",
     "talib": "0.6.3",
@@ -43,7 +43,7 @@ except Exception as e:
 print("\nAKShare连接测试：")
 try:
     import akshare as ak
-    data = ak.stock_zh_a_hist(symbol="000001", period="daily", start_date="20230101", end_date="20231022")
+    data = ak.stock_zh_a_hist(symbol="000001", period="daily", start_date="20250216", end_date="20250221")
     print(data.head())
 except Exception as e:
     print(f"数据获取失败：{e}")

@@ -56,6 +56,12 @@ class StockScorer:
         # 成交量动能
         volume_score = min(row['volume'] / row['vol_ma5'], 3)  # 限制最大3倍
         tech_score += volume_score * 0.3
+
+        # 超买超卖评分（新增）
+        tech_score += (row['rsi_14'] < 70) * 0.1  # 未超买加分
+        tech_score += (row['kdj_k'] < 80) * 0.1   # KDJ 未超买加分
+        tech_score += (row['cci_20'] < 100) * 0.1  # CCI 未超买加分
+        tech_score += (row['close'] < row['bb_upper']) * 0.1  # 布林带未超买加分
         
         return tech_score
 
@@ -84,6 +90,7 @@ class StockScorer:
 
     def _get_market_heat(self, symbol: str, date: str) -> float:
         """市场热度评分（基于板块）"""
+        '''
         try:
             # 获取板块数据
             conn = sqlite3.connect('./db/stock_data.db')
@@ -105,12 +112,14 @@ class StockScorer:
             return current_vol / sector_vol
         except:
             return 0
+        '''
+        return 0
 
     def score_daily_signals(self, signals: pd.DataFrame) -> pd.DataFrame:
         """每日信号综合评分"""
         signals = signals.copy()  # 避免修改原始数据
         for _, row in tqdm(signals.iterrows(), total=len(signals), desc="每日评分"):
-            if not row['enter_long']:
+            if row['signal_type'] != 'buy':
                 continue
                 
             # 计算各维度评分
@@ -162,10 +171,23 @@ class StockSelector:
         for _, row in selected_stocks.iterrows():
             analysis = [
                 f"{row['symbol']} 评分 {row['total_score']:.2f}：",
-                f"- 技术面({row['technical']:.2f}): {'多头排列' if row['ma_5'] > row['ma_20'] else ''} MACD金叉",
+                f"- 技术面({row['technical']:.2f}): \
+                    {'多头排列' if row['ma_5'] > row['ma_20'] else '空头'}；\
+                    MACD金叉；RSI：{row['rsi_14']:.2f}；CCI：{row['cci_20']}",
                 f"- 资金流({row['capital_flow']:.2f}): 近期量价齐升" if row['capital_flow'] > 0 else "- 资金流: 平淡",
-                f"- 财务({row['fundamental']:.2f}): 盈利成长股" if row['fundamental'] > 0.6 else "- 财务: 稳健"
+                f"- 财务({row['fundamental']:.2f}): 盈利成长股" if row['fundamental'] > 0.6 else "- 财务: 稳健",
+                f"- 超买超卖信号: 💡 RSI={row['rsi_14']:.2f}；KDJ_K={row['kdj_k']:.2f}；KDJ_D={row['kdj_d']:.2f}；\
+                    CCI={row['cci_20']:.2f}；Williams R={row['williams_r']:.2f}；\
+                    布林带中轨={row['bb_middle']:.2f}"
             ]
+            # 补充布林带位置信息
+            if row['close'] >= row['bb_upper']:
+                analysis.append("当前价格 > 布林带上轨（超买）")
+            elif row['close'] <= row['bb_lower']:
+                analysis.append("当前价格 < 布林带下轨（超卖）")
+            else:
+                analysis.append("当前价格处于布林带中间区域")
+            
             report.append("\n".join(analysis))
         
         return "\n\n".join(report)
@@ -177,7 +199,7 @@ if __name__ == "__main__":
     end_date = date.today().strftime("%Y-%m-%d")
     from strategy import EnhancedTDXStrategy
     strategy = EnhancedTDXStrategy()
-    signals = strategy.generate_signals(start_date,end_date)
+    signals = strategy.get_buy_signals(start_date,end_date)
     
     # 执行选股评分
     selector = StockSelector()
