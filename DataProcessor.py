@@ -103,26 +103,6 @@ class TechnicalIndicatorCalculator:
                 self.save_to_database(new_indicators)
                 self.mark_as_processed(full_data[unprocessed_mask])
     
-    def process_by_stock(self):
-        """按股票逐个处理模式"""
-        symbols = self.load_unprocessed_stocks()
-        
-        for symbol in symbols['symbol']:
-            logging.info(f"Processing {symbol}...")
-            # 加载完整历史数据
-            full_data = self.load_full_stock_data(symbol)
-            
-            # 计算技术指标
-            indicators = self.calculate_indicators(full_data)
-            
-            # 仅保留未处理日期的指标
-            unprocessed_mask = full_data['processed'] == 0
-            new_indicators = indicators[unprocessed_mask]
-            
-            # 保存到数据库
-            if not new_indicators.empty:
-                self.save_to_database(new_indicators)
-                self.mark_as_processed(full_data[unprocessed_mask])
 
 # 示例用法
 if __name__ == "__main__":
