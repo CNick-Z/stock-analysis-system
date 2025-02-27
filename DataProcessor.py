@@ -1,65 +1,32 @@
 #DataProcessor.py
-import sqlite3
 import pandas as pd
 from ta.momentum import rsi, stoch, stoch_signal,williams_r
 from ta.trend import cci,macd, macd_signal, macd_diff
 import talib
 import logging
+from db_operations import DatabaseManager, DailyData, TechnicalIndicators
+import logging
+from contextlib import contextmanager
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 class TechnicalIndicatorCalculator:
-    def __init__(self):
-        self.db_path = "./db/stock_data.db"
-        self.ensure_tables_exist()
+    def __init__(self,db_url):
+        self.db_manager = DatabaseManager(db_url=db_url)
+        self.db_manager.ensure_tables_exist()
 
-    def ensure_tables_exist(self):
-        """确保数据库表存在并包含 processed 字段"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-       # 修改 technical_indicators 表结构以包含新指标
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS technical_indicators (
-                date TEXT,
-                symbol TEXT,
-                sma_5 REAL,
-                sma_10 REAL,
-                sma_20 REAL,
-                sma_55 REAL,
-                sma_240 REAL,
-                vol_ma5 REAL,
-                macd REAL,
-                macd_signal REAL,
-                macd_histogram REAL,
-                rsi_14 REAL,         -- 新增 RSI 指标
-                kdj_k REAL,          -- 新增 KDJ 指标
-                kdj_d REAL,
-                kdj_j REAL,
-                cci_20 REAL,         -- 新增 CCI 指标
-                williams_r REAL,     -- 新增 Williams%R 指标
-                bb_upper REAL,       -- 新增布林带上轨
-                bb_middle REAL,      -- 新增布林带中轨
-                bb_lower REAL,       -- 新增布林带下轨
-                PRIMARY KEY (date, symbol)
-            );
-        """)
-
-        conn.commit()
-        conn.close()
-
-    def load_unprocessed_data(self, batch_size=5000):
-        """加载未处理的数据"""
-        conn = sqlite3.connect(self.db_path)
-        df = pd.read_sql_query(
-            "SELECT * FROM daily_data WHERE processed = 0 LIMIT ?",
-            conn,
-            params=(batch_size,),
-            parse_dates=['date']
-        )
-        conn.close()
+    def load_unprocessed_stocks(self):
+        """加载所有包含未处理的股票列表"""
+        filter_conditions = {"processed": False}
+        df = self.db_manager.load_data(DailyData, filter_conditions=filter_conditions,distinct_column="symbol" )
         return df
 
+    def load_full_stock_data(self,symbol):
+        """加载指定股票的完整历史数据"""
+        filter_conditions = {"symbol": symbol}
+        df = self.db_manager.load_data(DailyData, filter_conditions=filter_conditions)
+        return df
     def calculate_indicators(self, df):
         """计算各种技术指标"""
         # 计算均线
@@ -107,57 +74,58 @@ class TechnicalIndicatorCalculator:
 
     def save_to_database(self, indicators):
         """将技术指标保存到 technical_indicators 表"""
-        indicators['date'] = indicators['date'].dt.strftime('%Y-%m-%d')
-        conn = sqlite3.connect(self.db_path)
-        indicators.to_sql('technical_indicators', conn, if_exists='append', index=False)
-        conn.close()
+        self.db_manager.bulk_insert(TechnicalIndicators, indicators)
 
     def mark_as_processed(self, data):
         """标记数据为已处理"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        try:
-            for row in data.itertuples(index=False):
-                #logging.info(f"Marking as processed: date={row.date}, symbol={row.symbol}")
-                formatted_date = row.date.strftime('%Y-%m-%d') if not pd.isna(row.date) else None
-                symbol = row.symbol if not pd.isna(row.symbol) else None
-                if formatted_date and symbol:
-                    cursor.execute(
-                        "UPDATE daily_data SET processed = 1 WHERE date = ? AND symbol = ?",
-                        (formatted_date, symbol)
-                    )
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            logging.error(f"Error marking data as processed: {e}")
-        finally:
-            cursor.close()
-            conn.close()
+        # 确保 data 是 DataFrame
+        if not isinstance(data, pd.DataFrame):
+            raise ValueError("data must be a Pandas DataFrame")
+        # 转换为字典列表
+        data_dict = data.to_dict(orient='records')
+        update_fields = {'processed': 1}
+        filter_fields = ['date', 'symbol']
+        self.db_manager.bulk_update(DailyData, data_dict, update_fields, filter_fields)
 
-    def process_unprocessed_data(self, batch_size=5000):
-        """分批处理未处理的数据"""
-        batch_number = 0
-        while True:
-            batch_number += 1
-            logging.info(f"Processing batch {batch_number}...")
-
-            # 加载未处理的数据
-            df = self.load_unprocessed_data(batch_size=batch_size)
-            if df.empty:
-                logging.info("No more unprocessed data.")
-                break
-
-            # 计算指标
-            indicators = self.calculate_indicators(df)
-
+    def process_by_stock(self):
+        """按股票逐个处理模式"""
+        symbols = self.load_unprocessed_stocks()
+        for symbol in symbols:
+            logging.info(f"Processing {symbol}...")
+            # 加载完整历史数据
+            full_data = self.load_full_stock_data(symbol)            
+            # 计算技术指标
+            indicators = self.calculate_indicators(full_data)            
+            # 仅保留未处理日期的指标
+            unprocessed_mask = full_data['processed'] == 0
+            new_indicators = indicators[unprocessed_mask]
+            if not new_indicators.empty:
+                self.save_to_database(new_indicators)
+                self.mark_as_processed(full_data[unprocessed_mask])
+    
+    def process_by_stock(self):
+        """按股票逐个处理模式"""
+        symbols = self.load_unprocessed_stocks()
+        
+        for symbol in symbols['symbol']:
+            logging.info(f"Processing {symbol}...")
+            # 加载完整历史数据
+            full_data = self.load_full_stock_data(symbol)
+            
+            # 计算技术指标
+            indicators = self.calculate_indicators(full_data)
+            
+            # 仅保留未处理日期的指标
+            unprocessed_mask = full_data['processed'] == 0
+            new_indicators = indicators[unprocessed_mask]
+            
             # 保存到数据库
-            self.save_to_database(indicators)
-
-            # 标记数据为已处理
-            self.mark_as_processed(df)
+            if not new_indicators.empty:
+                self.save_to_database(new_indicators)
+                self.mark_as_processed(full_data[unprocessed_mask])
 
 # 示例用法
 if __name__ == "__main__":
-    db_path = "./db/stock_data.db"
-    calculator = TechnicalIndicatorCalculator()
-    calculator.process_unprocessed_data(batch_size=5000)
+    db_url = "sqlite:///c:/db/stock_data.db"
+    calculator = TechnicalIndicatorCalculator(db_url=db_url)
+    calculator.process_by_stock()

@@ -5,79 +5,8 @@ import sqlite3
 from scipy.stats import linregress
 from typing import Dict, Tuple
 from datetime import datetime
-
-class BaseStrategy:
-    def __init__(self, data):
-        self.data = data
-        self.signals = pd.DataFrame(index=data.index)
-        
-
-class TDXStrategy(BaseStrategy):
-    def calculate_technical_indicators(self):
-        super().calculate_technical_indicators()
-        
-        # 计算更多均线
-
-        self.data['MA10'] = self.data['close'].rolling(10).mean()       
-        self.data['MA55'] = self.data['close'].rolling(55).mean()
-        self.data['MA240'] = self.data['close'].rolling(240).mean()
-        
-        # 使用滑动窗口计算均线斜率（优化后）
-        def calculate_angle(series, window=5):
-            def _slope(x):
-                return linregress(np.arange(len(x)), x).slope
-            return series.rolling(window).apply(_slope).pipe(np.degrees)
-        
-        self.data['angle_MA10'] = calculate_angle(self.data['MA10'], window=5)
-        self.data['angle_MA20'] = calculate_angle(self.data['MA20'], window=5)
-        self.data['angle_MA55'] = calculate_angle(self.data['MA55'], window=5)
-        self.data['angle_MA240'] = calculate_angle(self.data['MA240'], window=5)
-        
-        # 成交量均线
-        self.data['VOL_MA5'] = self.data['volume'].rolling(5).mean()
-        
-    def generate_signals(self):
-        self.calculate_technical_indicators()
-        
-        # 拆分条件变量（提升可读性）
-        ma_condition = (
-            (self.data['MA5'] > self.data['MA10']) &
-            (self.data['MA10'] < self.data['MA20'])
-        )
-        
-        angle_condition = (
-            (self.data['angle_MA10'] > 0) &
-            (self.data['angle_MA240'].between(-20, 20)) &
-            (self.data['angle_MA20'].between(-40, 35))
-        )
-        
-        volume_condition = (
-            (self.data['volume'] > self.data['volume'].shift(1) * 1.5) |
-            (self.data['volume'] > self.data['VOL_MA5'] * 1.2)
-        )
-        
-        # 综合买入条件
-        self.signals['enter_long'] = (
-            ma_condition &
-            angle_condition &
-            volume_condition &
-            (self.data['MACD'] < 0) &
-            (self.data['MACD'] > self.data['MACDsignal'])
-        )
-        
-        # 卖出条件修正括号
-        self.signals['exit_long'] = (
-            (self.data['MA20'] > self.data['MA5']) &
-            (
-                (self.data['MACDsignal'] > self.data['MACD']) |
-                (
-                    (self.data['close'] < self.data['MA10']) & 
-                    (self.data['volume'] < self.data['volume'].shift(1) * 0.8)
-                )
-            )
-        )
-        
-        return self.signals
+from db_operations import DatabaseManager, DailyData, TechnicalIndicators
+ 
 
 class EnhancedTDXStrategy:
     def __init__(self, 
@@ -97,7 +26,9 @@ class EnhancedTDXStrategy:
         - macd_params: MACD参数（short, long, signal）
         """
         self.config = config
-        self.db_path = "./db/stock_data.db"
+        self.db_url = "sqlite:///c:/db/stock_data.db"
+        self.db_manager = DatabaseManager(self.db_url)
+        self.db_manager.ensure_tables_exist()
         
         # 预校验参数
         self._validate_config()
@@ -111,47 +42,63 @@ class EnhancedTDXStrategy:
 
     def _fetch_precalculated_data(self, start_date: str, end_date: str) -> pd.DataFrame:
         """
-        从数据库获取预计算的技术指标数据
+        使用 load_data 方法获取预计算的技术指标数据
         返回包含以下字段的DataFrame：
         [date, symbol, ma_5, ma_10, ma_20, ma_55, ma_240, macd, macd_signal, close, volume]
         """
-        conn = sqlite3.connect(self.db_path)
-        try:
-            query = f"""
-                SELECT 
-                    ti.date,
-                    ti.symbol,
-                    ti.sma_{self.config['ma_windows'][0]} as ma_5,
-                    ti.sma_{self.config['ma_windows'][1]} as ma_10,
-                    ti.sma_{self.config['ma_windows'][2]} as ma_20,
-                    ti.sma_{self.config['ma_windows'][3]} as ma_55,
-                    ti.sma_{self.config['ma_windows'][4]} as ma_240,
-                    ti.vol_ma5,
-                    ti.macd,
-                    ti.macd_signal,
-                    ti.macd_histogram,
-                    dd.close,
-                    dd.volume,
-                    rsi_14,         -- 新增 RSI 指标
-                    kdj_k,          -- 新增 KDJ 指标
-                    kdj_d,
-                    kdj_j,
-                    cci_20,         -- 新增 CCI 指标
-                    williams_r,     -- 新增 Williams%R 指标
-                    bb_upper,       -- 新增布林带上轨
-                    bb_middle,      -- 新增布林带中轨
-                    bb_lower       -- 新增布林带下轨
-                    FROM technical_indicators ti
-                    JOIN daily_data dd 
-                    ON ti.date = dd.date 
-                    AND ti.symbol = dd.symbol
-                WHERE ti.date BETWEEN '{start_date}' AND '{end_date}'
-            """
-            df = pd.read_sql(query, conn)
-            df['date'] = pd.to_datetime(df['date'])
-            return df.sort_values(['symbol', 'date']).reset_index(drop=True)
-        finally:
-            conn.close()
+        # 加载技术指标数据
+        tech_columns = {
+            'date': 'date',
+            'symbol': 'symbol',
+            f'sma_{self.config["ma_windows"][0]}': 'ma_5',
+            f'sma_{self.config["ma_windows"][1]}': 'ma_10',
+            f'sma_{self.config["ma_windows"][2]}': 'ma_20',
+            f'sma_{self.config["ma_windows"][3]}': 'ma_55',
+            f'sma_{self.config["ma_windows"][4]}': 'ma_240',
+            'vol_ma5': 'vol_ma5',
+            'macd': 'macd',
+            'macd_signal': 'macd_signal',
+            'macd_histogram': 'macd_histogram',
+            'rsi_14': 'rsi_14',
+            'kdj_k': 'kdj_k',
+            'kdj_d': 'kdj_d',
+            'kdj_j': 'kdj_j',
+            'cci_20': 'cci_20',
+            'williams_r': 'williams_r',
+            'bb_upper': 'bb_upper',
+            'bb_middle': 'bb_middle',
+            'bb_lower': 'bb_lower'
+        }
+        
+        # 加载技术指标数据
+        tech_df = self.db_manager.load_data(
+            table=TechnicalIndicators,
+            filter_conditions={
+                'date': [start_date, end_date]  # 需要扩展过滤逻辑
+            }
+        ).rename(columns=tech_columns)
+        
+        # 加载行情数据
+        price_df = self.db_manager.load_data(
+            table=DailyData,
+            filter_conditions={
+                'date': [start_date, end_date]  # 需要扩展过滤逻辑
+            },
+            distinct_column=None,
+            limit=None
+        )[['date', 'symbol', 'close', 'volume']]
+        
+        # 合并数据集
+        merged_df = pd.merge(
+            tech_df,
+            price_df,
+            on=['date', 'symbol'],
+            how='inner'
+        )
+        
+        # 后处理
+        merged_df['date'] = pd.to_datetime(merged_df['date'])
+        return merged_df.sort_values(['symbol', 'date']).reset_index(drop=True)
 
     def _calculate_ma_angles(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -240,11 +187,7 @@ class EnhancedTDXStrategy:
             signals['ma_condition'] &
             signals['angle_condition'] &
             signals['volume_condition'] &
-            signals['macd_condition'] &
-            ~signals['rsi_overbought'] &   # 未超买
-            ~signals['kdj_overbought'] &   # KDJ未超买
-            ~signals['bb_upper_break'] &   # 未突破布林上轨
-            ~signals['bb_lower_break']      # 突破布林下轨（抄底信号）
+            signals['macd_condition'] 
         )
         
         return signals[buy_condition][[

@@ -199,14 +199,18 @@ if __name__ == "__main__":
     end_date = date.today().strftime("%Y-%m-%d")
     from strategy import EnhancedTDXStrategy
     strategy = EnhancedTDXStrategy()
-    signals = strategy.get_buy_signals(start_date,end_date)
-    
-    # 执行选股评分
-    selector = StockSelector()
-    scored_stocks = selector.select_top_stocks(signals)
-    report = selector.generate_report(scored_stocks)
-    
-    print("最终选股结果：")
-    print(scored_stocks[['date', 'symbol', 'total_score']])
-    print("\n详细分析：")
-    print(report)
+    #signals = strategy.get_buy_signals(start_date,end_date)
+    signals = strategy.get_buy_signals('2024-09-20','2024-09-28')
+    if signals.empty: 
+        print("没有符合策略条件的股票。")
+        exit()
+    else:
+        # 执行选股评分
+        selector = StockSelector()
+        scored_stocks = selector.select_top_stocks(signals)
+        report = selector.generate_report(scored_stocks)
+        
+        print("最终选股结果：")
+        print(scored_stocks[['date', 'symbol', 'total_score']])
+        print("\n详细分析：")
+        print(report)                                                   
