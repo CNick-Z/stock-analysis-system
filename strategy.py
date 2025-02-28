@@ -1,13 +1,11 @@
 # strategy.py
 import numpy as np
 import pandas as pd
-import sqlite3
 from scipy.stats import linregress
 from typing import Dict, Tuple
 from datetime import datetime
 from db_operations import DatabaseManager, DailyData, TechnicalIndicators
  
-
 class EnhancedTDXStrategy:
     def __init__(self, 
                  config: Dict = {
@@ -74,7 +72,7 @@ class EnhancedTDXStrategy:
         tech_df = self.db_manager.load_data(
             table=TechnicalIndicators,
             filter_conditions={
-                'date': [start_date, end_date]  # 需要扩展过滤逻辑
+                'date': {'$between':[start_date, end_date]}  # 需要扩展过滤逻辑
             }
         ).rename(columns=tech_columns)
         
@@ -82,11 +80,12 @@ class EnhancedTDXStrategy:
         price_df = self.db_manager.load_data(
             table=DailyData,
             filter_conditions={
-                'date': [start_date, end_date]  # 需要扩展过滤逻辑
+                'date': {'$between':[start_date, end_date]}  # 需要扩展过滤逻辑
             },
+            columns=['date', 'symbol', 'close', 'volume'],
             distinct_column=None,
             limit=None
-        )[['date', 'symbol', 'close', 'volume']]
+        )
         
         # 合并数据集
         merged_df = pd.merge(

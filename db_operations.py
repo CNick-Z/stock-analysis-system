@@ -1,6 +1,8 @@
 # db_operations.py
 from sqlalchemy import create_engine, Column, String, Float, Boolean, inspect, Index
 from sqlalchemy.orm import sessionmaker, scoped_session
+from sqlalchemy import text
+from sqlalchemy.sql import or_, and_
 from sqlalchemy.ext.declarative import declarative_base
 import logging
 from contextlib import contextmanager
@@ -80,25 +82,88 @@ class DatabaseManager:
         finally:
             session.close()
     
-    def load_data(self, table, filter_conditions, distinct_column=None, limit=None):
-        """增强版数据加载方法，支持范围查询"""
+    def load_data(self, table, filter_conditions, distinct_column=None, limit=None, columns=None):
+        """增强版数据加载方法，支持动态过滤条件和指定列查询"""
+        from sqlalchemy import text
+        from sqlalchemy.sql import or_, and_
+        from sqlalchemy import inspect
+
         with self.get_session() as session:
-            # 处理 distinct 查询
-            if distinct_column:
-                query = session.query(getattr(table, distinct_column).distinct())
+            # 处理指定列查询
+            if columns:
+                if not isinstance(columns, list):
+                    columns = [columns]
+                # 检查指定的列是否存在
+                mapper = inspect(table)
+                columns_attr = []
+                for col in columns:
+                    if isinstance(col, str):
+                        col_attr = getattr(table, col, None)
+                        if col_attr is None:
+                            raise AttributeError(f"Column '{col}' not found in table '{table.__name__}'")
+                        columns_attr.append(col_attr)
+                    else:
+                        columns_attr.append(col)
+                # 构建查询对象
+                if distinct_column:
+                    # 如果存在 distinct_column，则需要单独处理
+                    if distinct_column not in columns:
+                        # 确保 distinct_column 总是被包含
+                        columns_attr.append(getattr(table, distinct_column))
+                    query = session.query(*columns_attr).distinct()
+                else:
+                    query = session.query(*columns_attr)
             else:
-                query = session.query(table)
+                if distinct_column:
+                    query = session.query(getattr(table, distinct_column).distinct())
+                else:
+                    query = session.query(table)
+            
+            # 操作符映射
+            operator_mapping = {
+                '$eq': '__eq__',
+                '$ne': '__ne__',
+                '$gt': '__gt__',
+                '$lt': '__lt__',
+                '$gte': '__ge__',
+                '$lte': '__le__',
+                '$like': 'like',
+                '$in': 'in_',
+                '$between': 'between',  # 添加 `$between` 操作符
+                '$not': '__neg__',
+            }
             
             # 处理过滤条件
-            for key, values in filter_conditions.items():
-                if isinstance(values, list) and len(values) == 2:
-                    # 范围查询处理
-                    query = query.filter(
-                        getattr(table, key).between(values[0], values[1])
-                    )
+            for key, value in filter_conditions.items():
+                column = getattr(table, key, None)
+                if not column:
+                    raise AttributeError(f"Attribute '{key}' not found in table '{table.__name__}'")
+                
+                # 处理复合条件
+                if isinstance(value, dict):
+                    conditions = []
+                    for op, op_value in value.items():
+                        if op not in operator_mapping:
+                            raise ValueError(f"Unsupported operator '{op}' for field '{key}'")
+                        method = operator_mapping[op]
+                        if method == 'like':
+                            # 处理模糊匹配
+                            conditions.append(getattr(column, 'like')(text(f"'%{op_value}%'")))
+                        elif method == 'in_':
+                            # 处理 IN 查询
+                            conditions.append(getattr(column, 'in_')(op_value))
+                        elif method == 'between':
+                            # 处理范围查询
+                            if not isinstance(op_value, list) or len(op_value) != 2:
+                                raise ValueError(f"Expected list of two elements for '$between' in field '{key}'")
+                            conditions.append(getattr(column, 'between')(op_value[0], op_value[1]))
+                        else:
+                            # 处理其他二元操作符
+                            conditions.append(getattr(column, method)(op_value))
+                    query = query.filter(and_(*conditions)) if len(conditions) > 1 else query.filter(*conditions)
                 else:
-                    # 精确匹配查询
-                    query = query.filter(getattr(table, key) == values)
+                    # 精确匹配
+                    query = query.filter(column == value)
             
             # 处理结果限制
             if limit:
@@ -137,8 +202,7 @@ class DatabaseManager:
                     if field not in item:
                         raise KeyError(f"Missing field '{field}' in data")
                     filter_dict[field] = item[field]
-                for field in update_fields:
-                    update_dict[field] = item[field]
+                update_dict = update_fields.copy() 
                 update_values.append({
                     **filter_dict,
                     **update_dict

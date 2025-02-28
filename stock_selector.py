@@ -1,13 +1,15 @@
 # stock_selector.py
 import pandas as pd
 import akshare as ak
-import sqlite3
+from db_operations import DatabaseManager, DailyData, TechnicalIndicators
 from tqdm import tqdm
 from typing import Dict, List
 from datetime import datetime,date
 
 class StockScorer:
     def __init__(self, config: Dict = None):
+        self.db_manager = DatabaseManager(db_url = "sqlite:///c:/db/stock_data.db")
+        self.db_manager.ensure_tables_exist()
         self.config = config or {
             'weights': {
                 'technical': 0.4,
@@ -69,18 +71,9 @@ class StockScorer:
         """资金动向评分（示例）"""
         try:
             # 获取历史数据计算资金流
-            conn = sqlite3.connect('./db/stock_data.db')
-            query = f"""
-                SELECT close, volume 
-                FROM daily_data 
-                WHERE symbol='{symbol}' 
-                AND date <= '{date}' 
-                ORDER BY date DESC 
-                LIMIT 5
-            """
-            df = pd.read_sql(query, conn)
-            conn.close()
-            
+            filter_conditions = {'symbol':symbol,'date':{'$lt':date}}
+            columns=['close','volume']
+            df = self.db_manager.load_data(DailyData, filter_conditions=filter_conditions,columns=columns,limit=5)            
             # 简单资金流模型
             price_change = (df['close'].iloc[0] - df['close'].iloc[-1]) / df['close'].iloc[-1]
             volume_change = (df['volume'].iloc[0] / df['volume'].iloc[1:].mean())
@@ -124,7 +117,7 @@ class StockScorer:
                 
             # 计算各维度评分
             technical_score = self._calculate_technical_score(row)
-            capital_flow_score = self._calculate_capital_flow(row['symbol'], row['date'])
+            capital_flow_score = self._calculate_capital_flow(row['symbol'], row['date'].strftime('%Y-%m-%d'))
             fundamental_score = self._get_fundamental_score(row['symbol'])
             market_heat_score = self._get_market_heat(row['symbol'], row['date'])
             
@@ -176,9 +169,13 @@ class StockSelector:
                     MACD金叉；RSI：{row['rsi_14']:.2f}；CCI：{row['cci_20']}",
                 f"- 资金流({row['capital_flow']:.2f}): 近期量价齐升" if row['capital_flow'] > 0 else "- 资金流: 平淡",
                 f"- 财务({row['fundamental']:.2f}): 盈利成长股" if row['fundamental'] > 0.6 else "- 财务: 稳健",
-                f"- 超买超卖信号: 💡 RSI={row['rsi_14']:.2f}；KDJ_K={row['kdj_k']:.2f}；KDJ_D={row['kdj_d']:.2f}；\
-                    CCI={row['cci_20']:.2f}；Williams R={row['williams_r']:.2f}；\
-                    布林带中轨={row['bb_middle']:.2f}"
+                f"- 超买超卖信号：\n" \
+                f"    - RSI (14): {'超卖' if row['rsi_14'] < 30 else '超买' if row['rsi_14'] > 70 else '正常'}\n" \
+                f"    - KDJ K: {'超卖' if row['kdj_k'] < 20 else '超买' if row['kdj_k'] > 80 else '正常'}\n" \
+                f"    - KDJ D: {'超卖' if row['kdj_d'] < 20 else '超买' if row['kdj_d'] > 80 else '正常'}\n" \
+                f"    - CCI (20): {'超卖' if row['cci_20'] < -100 else '超买' if row['cci_20'] > 100 else '正常'}\n" \
+                f"    - Williams R: {'超卖' if row['williams_r'] > -20 else '超买' if row['williams_r'] < -80 else '正常'}\n" \
+                f"    - 布林带中轨: {'超卖' if row['bb_middle'] < row['close'] * 0.95 else '超买' if row['bb_middle'] > row['close'] * 1.05 else '正常'}"
             ]
             # 补充布林带位置信息
             if row['close'] >= row['bb_upper']:
@@ -200,7 +197,7 @@ if __name__ == "__main__":
     from strategy import EnhancedTDXStrategy
     strategy = EnhancedTDXStrategy()
     #signals = strategy.get_buy_signals(start_date,end_date)
-    signals = strategy.get_buy_signals('2024-09-20','2024-09-28')
+    signals = strategy.get_buy_signals('2024-09-24','2024-09-24')
     if signals.empty: 
         print("没有符合策略条件的股票。")
         exit()
