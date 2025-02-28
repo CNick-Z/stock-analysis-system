@@ -17,6 +17,25 @@ class DataFetcher:
         self.db_manager.ensure_tables_exist()
         self.existing_data = {}  # 用于存储已存在的数据
 
+    @staticmethod
+    def format_columns(df):
+        """格式化列名以匹配数据库字段"""
+        column_mapping = {
+            '日期': 'date',
+            '股票代码': 'symbol',
+            '开盘': 'open',
+            '最高': 'high',
+            '最低': 'low',
+            '收盘': 'close',
+            '成交量': 'volume',
+            '成交额': 'amount',
+            '振幅': 'amplitude',
+            '涨跌幅': 'change_pct',
+            '涨跌额': 'change_amount',
+            '换手率': 'turnover_rate'
+        }
+        df.rename(columns=column_mapping, inplace=True)
+        return df
     @lru_cache(maxsize=100)
     def fetch_daily_data(self, symbol, start_date, end_date):
         """获取日线数据"""
@@ -30,20 +49,12 @@ class DataFetcher:
             )
             # 检查 DataFrame 是否为空
             if df.empty:
-                #logging.warning(f"No data available for {symbol}")
+                logging.warning(f"No data available for {symbol}")
                 return pd.DataFrame()
             # 确保 date 列是 datetime 类型
             df['日期'] = pd.to_datetime(df['日期'])
-            # 重命名列名以匹配数据库字段
-            df.rename(columns={
-                '日期': 'date',
-                '股票代码': 'symbol',
-                '开盘': 'open',
-                '最高': 'high',
-                '最低': 'low',
-                '收盘': 'close',
-                '成交量': 'volume'
-            }, inplace=True)
+            # 格式化列名
+            df = self.format_columns(df)
             # 确保数据按日期排序
             df.sort_values('date', inplace=True)
             return df
@@ -95,13 +106,14 @@ class DataFetcher:
         """使用多线程下载所有股票的数据"""
         logging.info("Fetching all stock and fund symbols...")
         stock_list = ak.stock_zh_a_spot_em()
-        symbols = stock_list['代码'].tolist()
+        #symbols = ~stock_list['代码'].str.startswith("8").tolist()
+        symbols = stock_list.query("代码.str[0] != '8'")['代码'].tolist()
         
         # 一次性加载所有已存在的数据
         self.existing_data = self.load_existing_data(start_date, end_date, table_name)
         
         # 使用多线程处理
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
             futures = [
                 executor.submit(self.process_symbol, symbol, start_date, end_date, table_name)
                 for symbol in symbols
@@ -119,6 +131,6 @@ if __name__ == "__main__":
     pd.options.mode.copy_on_write = True
     db_url = "sqlite:///c:/db/stock_data.db"  
     fetcher = DataFetcher(db_url)
-    start_date = "20230101"
-    end_date = "20240101"
+    start_date = "20240101"
+    end_date = "20241231"
     fetcher.fetch_and_save_all_data(start_date, end_date)

@@ -4,7 +4,7 @@ from ta.momentum import rsi, stoch, stoch_signal,williams_r
 from ta.trend import cci,macd, macd_signal, macd_diff
 import talib
 import logging
-from db_operations import DatabaseManager, DailyData, TechnicalIndicators
+from db_operations import *
 import logging
 from contextlib import contextmanager
 
@@ -90,7 +90,7 @@ class TechnicalIndicatorCalculator:
     def process_by_stock(self):
         """按股票逐个处理模式"""
         symbols = self.load_unprocessed_stocks()
-        for symbol in symbols:
+        for symbol in symbols['symbol']:
             logging.info(f"Processing {symbol}...")
             # 加载完整历史数据
             full_data = self.load_full_stock_data(symbol)            
@@ -106,6 +106,7 @@ class TechnicalIndicatorCalculator:
 
 # 示例用法
 if __name__ == "__main__":
+    pd.options.mode.copy_on_write = True
     db_url = "sqlite:///c:/db/stock_data.db"
     calculator = TechnicalIndicatorCalculator(db_url=db_url)
     calculator.process_by_stock()

@@ -17,14 +17,6 @@ class StockScorer:
                 'fundamental': 0.2,
                 'market_heat': 0.2  # 调整市场热度权重
             },
-             # 新增资金流子项权重配置
-            'capital_flow_weights': {
-                'positive_flow': 0.3,    # 资金流入
-                'flow_increasing': 0.25,  # 流入加速
-                'trend_strength': 0.2,    # 趋势强度
-                'weekly_flow': 0.15,      # 周级别流入
-                'weekly_increasing': 0.1  # 周流入加速
-            },
             'fundamental_metrics': ['pe_ratio', 'roe', 'profit_growth'],
             'heat_window': 30  # 市场热度计算窗口
         }
@@ -75,38 +67,20 @@ class StockScorer:
         
         return tech_score
 
-    def _calculate_capital_flow(self, row: pd.Series) -> float:
-        """基于策略生成的新资金流信号进行评分"""
-        flow_score = 0
-        
-        # 资金流入基础分
-        if row['money_flow_positive']:
-            flow_score += self.config['capital_flow_weights']['positive_flow'] * 1.2  # 正值强化
-            
-        # 流入加速
-        if row['money_flow_increasing']:
-            flow_score += self.config['capital_flow_weights']['flow_increasing'] * 1.0
-            
-        # 趋势强度
-        if row['money_flow_trend']:
-            trend_strength = min(row['主生量'] / row['量基线'], 2.0)  # 限制最大2倍
-            flow_score += self.config['capital_flow_weights']['trend_strength'] * trend_strength
-            
-        # 周级别资金流
-        if row['money_flow_weekly']:
-            flow_score += self.config['capital_flow_weights']['weekly_flow'] * 1.0
-            
-        # 周流入加速
-        if row['money_flow_weekly_increasing']:
-            flow_score += self.config['capital_flow_weights']['weekly_increasing'] * 1.5  # 加速给予更高权重
-            
-        # 量增幅强化
-        if row['量增幅'] > 10:  # 显著增长
-            flow_score *= 1.2
-        elif row['量增幅'] < -5:  # 显著减少
-            flow_score *= 0.8
-            
-        return min(flow_score, 1.0)  # 限制最大1分
+    def _calculate_capital_flow(self, symbol: str, date: str) -> float:
+        """资金动向评分（示例）"""
+        try:
+            # 获取历史数据计算资金流
+            filter_conditions = {'symbol':symbol,'date':{'$lt':date}}
+            columns=['close','volume', 'amount']
+            df = self.db_manager.load_data(DailyData, filter_conditions=filter_conditions,columns=columns,limit=5)            
+            # 简单资金流模型
+            price_change = (df['close'].iloc[0] - df['close'].iloc[-1]) / df['close'].iloc[-1]
+            volume_change = (df['volume'].iloc[0] / df['volume'].iloc[1:].mean())
+            capital_flow = df['amount'].iloc[0] / df['volume'].iloc[0]
+            return price_change * volume_change * capital_flow
+        except:
+            return 0
 
     def _get_market_heat(self, symbol: str, date: str) -> float:
         """市场热度评分（基于板块）"""
@@ -147,7 +121,7 @@ class StockScorer:
                 
             # 计算各维度评分
             technical_score = self._calculate_technical_score(row)
-            capital_flow_score = self._calculate_capital_flow(row)
+            capital_flow_score = self._calculate_capital_flow(row['symbol'], row['date'].strftime('%Y-%m-%d'))
             fundamental_score = self._get_fundamental_score(row['symbol'])
             market_heat_score = self._get_market_heat(row['symbol'], row['date'])
             
@@ -192,22 +166,12 @@ class StockSelector:
         """生成带依据的报告"""
         report = []
         for _, row in selected_stocks.iterrows():
-            # 新增资金流分析段落
-            flow_analysis = [
-                f"- 资金流向分析({row['capital_flow']:.2f}):",
-                f"  主力资金方向: {'流入' if row['money_flow_positive'] else '流出'}",
-                f"  短期趋势: {'加速' if row['money_flow_increasing'] else '减速'}",
-                f"  趋势强度: {row['主生量']:.2f} (基线: {row['量基线']:.2f})",
-                f"  周级别资金: {'净流入' if row['money_flow_weekly'] else '净流出'}",
-                f"  周趋势: {'加速' if row['money_flow_weekly_increasing'] else '减速'}",
-                f"  量增幅: {row['量增幅']:.2f}%"
-        ]
             analysis = [
                 f"{row['symbol']} 评分 {row['total_score']:.2f}：",
                 f"- 技术面({row['technical']:.2f}): \
                     {'多头排列' if row['ma_5'] > row['ma_20'] else '空头'}；\
                     MACD金叉；RSI：{row['rsi_14']:.2f}；CCI：{row['cci_20']}",
-                "\n".join(flow_analysis),
+                f"- 资金流({row['capital_flow']:.2f}): 近期量价齐升" if row['capital_flow'] > 0 else "- 资金流: 平淡",
                 f"- 财务({row['fundamental']:.2f}): 盈利成长股" if row['fundamental'] > 0.6 else "- 财务: 稳健",
                 f"- 超买超卖信号：\n" \
                 f"    - RSI (14): {'超卖' if row['rsi_14'] < 30 else '超买' if row['rsi_14'] > 70 else '正常'}\n" \
