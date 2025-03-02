@@ -1,10 +1,10 @@
 # stock_selector.py
 import pandas as pd
 import akshare as ak
-from db_operations import DatabaseManager, DailyData, TechnicalIndicators
+from db_operations import *
 from tqdm import tqdm
 from typing import Dict, List
-from datetime import datetime,date
+from datetime import datetime,date,timedelta
 
 class StockScorer:
     def __init__(self, config: Dict = None):
@@ -64,7 +64,7 @@ class StockScorer:
         tech_score += (row['macd'] > row['macd_signal']) * 0.3
         
         # 成交量动能
-        volume_score = min(row['volume'] / row['vol_ma5'], 3)  # 限制最大3倍
+        volume_score = min(row['volume'] / row['volume_ma5'], 3)  # 限制最大3倍
         tech_score += volume_score * 0.3
 
         # 超买超卖评分（新增）
@@ -122,15 +122,15 @@ class StockScorer:
                 # 计算板块热度
                 heat_query = session.query(DailyData.volume).filter(
                     DailyData.symbol == symbol,
-                    DailyData.date >= date - timedelta(days=self.config['heat_window']),
-                    DailyData.date <= date
+                    DailyData.date >= (date - timedelta(days=self.config['heat_window'])).strftime("%Y-%m-%d"),
+                    DailyData.date <= date.strftime("%Y-%m-%d")
                 ).all()
                 
                 if heat_query:
                     sector_vol = sum([row[0] for row in heat_query]) / len(heat_query)
                     current_vol = session.query(DailyData.volume).filter(
                         DailyData.symbol == symbol,
-                        DailyData.date == date
+                        DailyData.date == date.strftime("%Y-%m-%d")
                     ).first()
                     if current_vol:
                         return current_vol[0] / sector_vol
@@ -192,6 +192,14 @@ class StockSelector:
         """生成带依据的报告"""
         report = []
         for _, row in selected_stocks.iterrows():
+            # 市场热度分析逻辑（基于 market_heat 列）
+            heat_analysis = [
+                f"- 市场热度分析（热度值：{row['market_heat']:.2f}）"
+            ]
+            if row['market_heat'] > 1.2:
+                heat_analysis.append("    存在板块异动信号；市场活跃")
+            else:
+                heat_analysis.append("    近期板块无明显异动；市场一般")
             # 新增资金流分析段落
             flow_analysis = [
                 f"- 资金流向分析({row['capital_flow']:.2f}):",
@@ -206,8 +214,9 @@ class StockSelector:
                 f"{row['symbol']} 评分 {row['total_score']:.2f}：",
                 f"- 技术面({row['technical']:.2f}): \
                     {'多头排列' if row['ma_5'] > row['ma_20'] else '空头'}；\
-                    MACD金叉；RSI：{row['rsi_14']:.2f}；CCI：{row['cci_20']}",
+                    RSI：{row['rsi_14']:.2f}；CCI：{row['cci_20']}",
                 "\n".join(flow_analysis),
+                "\n".join(heat_analysis),
                 f"- 财务({row['fundamental']:.2f}): 盈利成长股" if row['fundamental'] > 0.6 else "- 财务: 稳健",
                 f"- 超买超卖信号：\n" \
                 f"    - RSI (14): {'超卖' if row['rsi_14'] < 30 else '超买' if row['rsi_14'] > 70 else '正常'}\n" \
@@ -236,8 +245,8 @@ if __name__ == "__main__":
     end_date = date.today().strftime("%Y-%m-%d")
     from strategy import EnhancedTDXStrategy
     strategy = EnhancedTDXStrategy()
-    signals = strategy.get_buy_signals(start_date,end_date)
-    #signals = strategy.get_buy_signals('2024-09-24','2024-09-24')
+    #signals = strategy.get_buy_signals(start_date,end_date)
+    signals = strategy.get_buy_signals('2024-01-30','2024-01-30')
     if signals.empty: 
         print("没有符合策略条件的股票。")
         exit()

@@ -5,7 +5,7 @@ import logging
 from sqlalchemy import distinct
 from datetime import datetime
 # 配置日志
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(level=logging.WARNING, format="%(asctime)s - %(levelname)s - %(message)s")
 
 
 def fetch_and_save_stock_basic_info(db_url, symbol):

@@ -5,3 +5,4 @@ pip install akshare pandas==2.0.3 numpy==1.24.4 matplotlib==3.7.2 sqlalchemy==2.
 pip install TA_Lib‑0.4.25‑cp38‑cp38‑win_amd64.whl
 pip install ta
 pip install sqlalchemy
+pip install openpyxl

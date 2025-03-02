@@ -1,5 +1,5 @@
 # db_operations.py
-from sqlalchemy import create_engine, Column, String, Float, Boolean, inspect, Index
+from sqlalchemy import create_engine, Column, String, Float, Boolean, inspect, Index,event
 from sqlalchemy.orm import sessionmaker, scoped_session
 from sqlalchemy import text
 from sqlalchemy.sql import or_, and_
@@ -79,6 +79,12 @@ class DatabaseManager:
         self.engine = create_engine(self.db_url,connect_args={'check_same_thread': False})
         self.Session = scoped_session(sessionmaker(bind=self.engine))
     
+     # 监听连接事件，在连接建立时设置 PRAGMA journal_mode = WAL
+        @event.listens_for(self.engine, "connect")
+        def set_sqlite_pragma(dbapi_connection, connection_record):
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL;")
+            cursor.close()
     def ensure_tables_exist(self):
         """确保表存在"""
         inspector = inspect(self.engine)
@@ -199,16 +205,29 @@ class DatabaseManager:
         """批量插入数据"""
         retries = 1
         n= 1
+        data_dict=data.to_dict(orient='records')
         while retries:
             try:
                 with self.get_session() as session:
-                    session.bulk_insert_mappings(table, data.to_dict(orient='records'))
+                    session.bulk_insert_mappings(table, data_dict)
+                    session.commit()
                     retries = 0
-                return  # 成功插入数据
+                return 1 # 成功插入数据
+            except OperationalError as e:
+                if "database is locked" in str(e).lower():
+                    logging.error(f"Insert failed (Attempt {retries}), retrying in {2 ** n} seconds: {e}")
+                    time.sleep(2 ** n)  # 指数退避
+                    n += 1
+                else:
+                    # 其他 OperationalError 异常
+                    logging.error(f"Unexpected OperationalError: {e}")
+                    raise
+            except SQLAlchemyError as e:
+                logging.error(f"SQLAlchemy error occurred: {e}")
+                raise
             except Exception as e:
-                n+=1
-                logging.error(f"Insert failed, retrying: {e}")
-                time.sleep(2 ** n)  # 指数退避
+                logging.error(f"Unexpected error: {e}")
+                raise
 
     
     def bulk_update(self, table, data, update_fields, filter_fields):

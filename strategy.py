@@ -53,7 +53,7 @@ class EnhancedTDXStrategy:
             f'sma_{self.config["ma_windows"][2]}': 'ma_20',
             f'sma_{self.config["ma_windows"][3]}': 'ma_55',
             f'sma_{self.config["ma_windows"][4]}': 'ma_240',
-            'volume_ma5': 'volume_ma5',
+            'vol_ma5': 'volume_ma5',
             'macd': 'macd',
             'macd_signal': 'macd_signal',
             'macd_histogram': 'macd_histogram',
@@ -90,9 +90,6 @@ class EnhancedTDXStrategy:
         #加载基础数据
         info_df = self.db_manager.load_data(
             table=StockBasicInfo,
-            filter_conditions={
-                'symbol': {'$in': price_df['symbol'].unique().tolist()}
-            },
             columns=['symbol', 'name', 'total_shares', 'industry']
         )
 
@@ -250,8 +247,11 @@ class EnhancedTDXStrategy:
         # MACD条件（使用预计算值）
         df['macd_condition'] = (
             (df['macd'] < 0) & 
-            (df['macd'] > df['macd_signal'])
+            (df['macd'] > df['macd_signal']) 
         )
+
+        #MACDjc
+        df['macd_jc']=(df['macd'] > df['macd_signal']) & (df['macd'].shift(1) < df['macd_signal'].shift(1))
         
         # 新增超买超卖条件
         df['rsi_overbought'] = df['rsi_14'] > 70
@@ -279,6 +279,12 @@ class EnhancedTDXStrategy:
         df['money_flow_weekly'] = df['周量'] > 0  # 周资金流入
         df['money_flow_weekly_increasing'] = df['周增幅'] > 0  # 周资金流入加速
 
+        # 补充 JC 条件
+        df['jc_condition'] = (
+            (df['ma_5'] > df['ma_5'].shift(1)) &  # MA5 上升
+            (df['ma_20'] > df['ma_20'].shift(1)) &  # MA20 上升
+            (abs(df['ma_5'] - df['ma_20']) / df['ma_20'] < 0.02)  # MA5 和 MA20 的差值占 MA20 的比例小于 2%
+        )
         return df
 
     def generate_features(self, start_date: str, end_date: str) -> pd.DataFrame:
@@ -303,15 +309,18 @@ class EnhancedTDXStrategy:
             signals['ma_condition'] &
             signals['angle_condition'] &
             signals['volume_condition'] &
-            signals['macd_condition'] 
+            signals['macd_condition'] &
+            (signals['jc_condition']|signals['macd_jc']) &  # JC 条件
+            (signals['ma_20'] < signals['ma_55']) &  # MA20 < MA55
+            (signals['ma_55'] > signals['ma_240'])  # MA55 > MA240
         )
         
         return signals[buy_condition][[
             'date', 'symbol', 'ma_5', 'ma_10', 'ma_20', 'angle_ma_10',
-            'volume_ma5', 'macd', 'macd_signal', 'volume', 'rsi_14', 
+            'volume_ma5', 'macd', 'macd_signal', 'volume', 'rsi_14','macd_jc',
             'kdj_k', 'kdj_d', 'cci_20', 'williams_r', 'bb_upper',
             'bb_middle', 'bb_lower','close','money_flow_positive',
-            'money_flow_increasing','money_flow_trend','money_flow_weekly','money_flow_weekly_increasing'
+            'money_flow_increasing','money_flow_trend','money_flow_weekly','money_flow_weekly_increasing','量增幅','量基线','主生量'
         ]].assign(signal_type='buy')
         
     def get_sell_signals(self, start_date: str, end_date: str) -> pd.DataFrame:
@@ -322,7 +331,7 @@ class EnhancedTDXStrategy:
         sell_condition = (
             (signals['ma_20'] > signals['ma_5']) &  # 短期均线下穿长期
             (
-                (signals['macd_signal'] > signals['macd']) |  # MACD死叉
+                (signals['macd'] > signals['macd_signal']) & (signals['macd'].shift(1) < signals['macd_signal'].shift(1)) |  # MACD死叉
                 (
                     (signals['close'] < signals['ma_10']) & 
                     (signals['volume'] < signals['volume'].shift(1) * 0.8)
@@ -335,8 +344,8 @@ class EnhancedTDXStrategy:
         
         return signals[sell_condition][[
             'date', 'symbol', 'ma_5', 'ma_10', 'ma_20', 'angle_ma_10',
-            'volume_ma5', 'macd', 'macd_signal', 'volume', 'rsi_14',
+            'volume_ma5', 'macd', 'macd_signal', 'volume', 'rsi_14','macd_jc',
             'kdj_k', 'kdj_d', 'cci_20', 'williams_r', 'bb_upper',
             'bb_middle', 'bb_lower','close','money_flow_positive',
-            'money_flow_increasing','money_flow_trend','money_flow_weekly','money_flow_weekly_increasing'
+            'money_flow_increasing','money_flow_trend','money_flow_weekly','money_flow_weekly_increasing','量增幅','量基线','主生量'
         ]].assign(signal_type='sell')    

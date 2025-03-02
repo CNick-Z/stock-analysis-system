@@ -11,6 +11,7 @@ def get_today_data(start_date, end_date,db_url):
 
 if __name__ == "__main__":
     db_url = "sqlite:///c:/db/stock_data.db" 
+    pd.options.mode.copy_on_write = True
     start_date =date.today().strftime("%Y%m%d")
     end_date = date.today().strftime("%Y%m%d")
     get_today_data(start_date, end_date,db_url)

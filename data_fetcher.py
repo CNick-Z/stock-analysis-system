@@ -9,7 +9,7 @@ import logging
 import time
 
 # 配置日志
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(level=logging.WARNING, format="%(asctime)s - %(levelname)s - %(message)s")
 
 class DataFetcher:
     def __init__(self,db_url):
@@ -97,8 +97,9 @@ class DataFetcher:
             # 确保 symbol 字段存在
             new_data.loc[:, 'symbol'] = symbol
             # 保存到数据库
-            self.db_manager.bulk_insert(DailyData, new_data)
-            logging.info(f"All data for {symbol} saved successfully.")
+            result=self.db_manager.bulk_insert(DailyData, new_data)
+            if result==1:
+                logging.info(f"All data for {symbol} saved successfully.")
         else:
             logging.info(f"All data for {symbol} already exists in the database.")
 
@@ -113,7 +114,7 @@ class DataFetcher:
         self.existing_data = self.load_existing_data(start_date, end_date, table_name)
         
         # 使用多线程处理
-        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
             futures = [
                 executor.submit(self.process_symbol, symbol, start_date, end_date, table_name)
                 for symbol in symbols
@@ -131,6 +132,6 @@ if __name__ == "__main__":
     pd.options.mode.copy_on_write = True
     db_url = "sqlite:///c:/db/stock_data.db"  
     fetcher = DataFetcher(db_url)
-    start_date = "20240101"
-    end_date = "20241231"
+    start_date = "20250101"
+    end_date = "20250302"
     fetcher.fetch_and_save_all_data(start_date, end_date)

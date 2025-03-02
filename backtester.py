@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib
 matplotlib.use('TkAgg')  
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 from tqdm import tqdm
 from datetime import datetime, timedelta
 from stock_selector import *
@@ -120,7 +121,7 @@ class TradingSimulator:
 
 class BacktestOrchestrator:
     """回测总控模块"""
-    def __init__(self, strategy, db_path='c:/db/stock_data.db', live_plot=False,position_limit=5, commission_rate=0.0003):
+    def __init__(self, strategy, db_path='c:/db/stock_data.db', live_plot=False,position_limit=10, commission_rate=0.0003):
         self.position_limit = position_limit  # 新增参数
         self.db = DatabaseIntegrator(db_path)
         self.strategy = strategy
@@ -197,16 +198,20 @@ class BacktestOrchestrator:
         holding_symbols = list(simulator.portfolio['positions'].keys())
         if not holding_symbols:
             return
-            
         # 获取当前持仓股票的卖出信号
         sell_signals = self.strategy.get_sell_signals(date.strftime('%Y-%m-%d'), date.strftime('%Y-%m-%d'))
         sell_signals = sell_signals[sell_signals['symbol'].isin(holding_symbols)]
-        
-        for _, row in sell_signals.iterrows():
-            next_open = self._get_next_open_price(date, row['symbol'])
-            if next_open:
-                simulator.execute_order('sell', row['symbol'], next_open, self._get_next_open_day(date), 
-                                       simulator.portfolio['positions'][row['symbol']]['qty'])
+        for symbol, pos in list(simulator.portfolio['positions'].items()):
+            if symbol =='600987':
+                print           
+            current_price = self.price_matrix.loc[date.strftime('%Y-%m-%d'), symbol]
+            cost_per_share = pos['cost'] / pos['qty']
+            if current_price > cost_per_share:   # 筛选出盈利的持仓
+                for _, row in sell_signals.iterrows():
+                    next_open = self._get_next_open_price(date, row['symbol'])
+                    if next_open:
+                        simulator.execute_order('sell', row['symbol'], next_open, self._get_next_open_day(date), 
+                                            simulator.portfolio['positions'][row['symbol']]['qty'])
 
     def _process_buy_signals(self, date,  simulator):
         """处理买入信号"""
@@ -222,14 +227,18 @@ class BacktestOrchestrator:
         if scored_signals.empty: 
             return
         # 选择评分最高的前5个信号
-        buy_candidates = scored_signals.nlargest(5, 'total_score')
+        buy_candidates = scored_signals.nlargest(10, 'total_score')
         
         buy_candidates = buy_candidates.head(available_slots)
+
+        holding_symbols = list(simulator.portfolio['positions'].keys())
         
         for _, row in buy_candidates.iterrows():
+            if row['symbol'] in holding_symbols: 
+                continue
             next_open = self._get_next_open_price(date, row['symbol'])
             if next_open:
-                # 计算单支股票最大可投入资金（不超过总仓位20%）
+                # 计算单支股票最大可投入资金（不超过总仓位10%）
                 max_investment = simulator.portfolio['cash']//available_slots
                 max_afford = max_investment // (next_open * (1 + self.commission_rate))
                 max_afford = (max_afford // 100) * 100  # 这里进行按100取整操作
@@ -265,6 +274,8 @@ class BacktestOrchestrator:
         else:
             date_obj = date
         for symbol, pos in list(simulator.portfolio['positions'].items()):
+            if symbol=='002173':
+                print
             current_price = self.price_matrix.loc[date_obj.strftime('%Y-%m-%d'), symbol] 
             cost_basis = pos['cost'] / pos['qty']
             if  simulator.portfolio['positions'][symbol]['entry_date']== date_obj.strftime('%Y-%m-%d'):
@@ -296,6 +307,19 @@ class BacktestOrchestrator:
         plt.savefig('portfolio_curve.png')
         
         trades = pd.DataFrame(simulator.portfolio['history'])
+        trade_filename = 'trades_report.xlsx'
+        with pd.ExcelWriter(trade_filename) as writer:
+            # 保存交易记录
+            trades.to_excel(writer, sheet_name='Transactions', index=False)
+            
+            # 保存回测报告摘要
+            summary_df = pd.DataFrame([{
+                'Final Value': df['value'].iloc[-1],
+                'Total Return': df['value'].iloc[-1] / 5e5 - 1,
+                'Max Drawdown': (df['value'] / df['value'].cummax() - 1).min(),
+                'Turnover': trades.groupby('symbol').size().mean()
+            }])
+            summary_df.to_excel(writer, sheet_name='Summary', index=False)
         return {
             'summary': {
                 'final_value': df['value'].iloc[-1],
@@ -319,8 +343,14 @@ class BacktestOrchestrator:
         self.values.append(latest_value)
         
         self.value_line.set_data(self.dates, self.values)
+        # 更新坐标轴
         self.ax.relim()
         self.ax.autoscale_view()
+        
+        # 设置横坐标为日期格式
+        self.ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+        self.fig.autofmt_xdate()  # 自动旋转日期标签，避免重叠
+        
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()
 
