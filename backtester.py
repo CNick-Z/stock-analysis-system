@@ -238,7 +238,11 @@ class BacktestOrchestrator:
                 continue
             next_open = self._get_next_open_price(date, row['symbol'])
             if next_open:
+<<<<<<< HEAD
                 # 计算单支股票最大可投入资金（不超过总仓位10%）
+=======
+                # 计算单支股票最大可投入资金（不超过总仓位20%）
+>>>>>>> e7504f8832f3a6f033c9c50e1d1d06b2f40a2fce
                 max_investment = simulator.portfolio['cash']//available_slots
                 max_afford = max_investment // (next_open * (1 + self.commission_rate))
                 max_afford = (max_afford // 100) * 100  # 这里进行按100取整操作
