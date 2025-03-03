@@ -31,14 +31,6 @@ class DatabaseIntegrator:
         df = self.db_manager.load_data(DailyData, filter_conditions, columns=['date', 'symbol', 'open'])
         return df.pivot(index='date', columns='symbol', values='open')
 
-    def get_daily_features(self, date: datetime) -> pd.DataFrame:
-        """获取当日选股特征数据"""
-        filter_conditions = {
-            'date': {
-                '$eq': date.strftime('%Y-%m-%d')
-            }
-        }
-        return self.db_manager.load_data(DailyData, filter_conditions)
 
 class TradingSimulator:
     """交易模拟引擎"""
@@ -88,7 +80,7 @@ class TradingSimulator:
             'quantity': quantity,
             'commission': commission
         })
-        print(f"{date.strftime('%Y-%m-%d')} 买入 {symbol}，价格: {price}，数量: {quantity}，佣金: {commission}")
+        print(f"{date} 买入 {symbol}，价格: {price}，数量: {quantity}，佣金: {commission}")
         return True
 
     def _execute_sell(self, symbol, price, date, quantity):
@@ -116,7 +108,7 @@ class TradingSimulator:
             'commission': commission,
             'pnl': net_proceeds - (position['cost'] * quantity / (quantity + position['qty']))
         })
-        print(f"{date.strftime('%Y-%m-%d')} 卖出 {symbol}，价格: {price}，数量: {quantity}，佣金: {commission}")
+        print(f"{date} 卖出 {symbol}，价格: {price}，数量: {quantity}，佣金: {commission}")
         return True
 
 class BacktestOrchestrator:
@@ -163,9 +155,7 @@ class BacktestOrchestrator:
         ]
         
         for date in tqdm(dates, desc="回测进度"):
-            # 生成选股信号
-            features = self.db.get_daily_features(date)
-
+            date=date.strftime("%Y-%m-%d")
             
             # 处理卖出信号
             print("处理卖出信号")
@@ -199,20 +189,23 @@ class BacktestOrchestrator:
         if not holding_symbols:
             return
         # 获取当前持仓股票的卖出信号
-        sell_signals = self.strategy.get_sell_signals(date.strftime('%Y-%m-%d'), date.strftime('%Y-%m-%d'))
+        sell_signals = self.strategy.get_sell_signals(date, date)
         sell_signals = sell_signals[sell_signals['symbol'].isin(holding_symbols)]
+        # 筛选出盈利的持仓股票
+        profitable_sell_signals = []
         for symbol, pos in list(simulator.portfolio['positions'].items()):
-            if symbol =='600987':
-                print           
-            current_price = self.price_matrix.loc[date.strftime('%Y-%m-%d'), symbol]
+            current_price = self.price_matrix.loc[date, symbol]
             cost_per_share = pos['cost'] / pos['qty']
-            if current_price > cost_per_share:   # 筛选出盈利的持仓
-                for _, row in sell_signals.iterrows():
-                    next_open = self._get_next_open_price(date, row['symbol'])
-                    if next_open:
-                        simulator.execute_order('sell', row['symbol'], next_open, self._get_next_open_day(date), 
+            if current_price > cost_per_share:  # 筛选出盈利的持仓
+                profitable_sell_signals.append(symbol)
+        
+        # 只对盈利的持仓股票处理卖出信号
+        for _, row in sell_signals.iterrows():
+            if row['symbol'] in profitable_sell_signals:
+                next_open = self._get_next_open_price(date, row['symbol'])
+                if next_open:
+                    simulator.execute_order('sell', row['symbol'], next_open, self._get_next_open_day(date), 
                                             simulator.portfolio['positions'][row['symbol']]['qty'])
-
     def _process_buy_signals(self, date,  simulator):
         """处理买入信号"""
         available_slots = self.position_limit - len(simulator.portfolio['positions'])
@@ -220,7 +213,7 @@ class BacktestOrchestrator:
             return
         
         # 获取买入信号
-        buy_signals = self.strategy.get_buy_signals(date.strftime('%Y-%m-%d'), date.strftime('%Y-%m-%d'))
+        buy_signals = self.strategy.get_buy_signals(date,date)
         
         # 对买入信号进行评分
         scored_signals = self.scorer.score_daily_signals(buy_signals)
@@ -238,11 +231,7 @@ class BacktestOrchestrator:
                 continue
             next_open = self._get_next_open_price(date, row['symbol'])
             if next_open:
-<<<<<<< HEAD
                 # 计算单支股票最大可投入资金（不超过总仓位10%）
-=======
-                # 计算单支股票最大可投入资金（不超过总仓位20%）
->>>>>>> e7504f8832f3a6f033c9c50e1d1d06b2f40a2fce
                 max_investment = simulator.portfolio['cash']//available_slots
                 max_afford = max_investment // (next_open * (1 + self.commission_rate))
                 max_afford = (max_afford // 100) * 100  # 这里进行按100取整操作
@@ -253,9 +242,9 @@ class BacktestOrchestrator:
         """获取次日开盘价"""
         next_date = self._get_next_open_day(date)
         while next_date:
-            return self.price_matrix.loc[next_date.strftime('%Y-%m-%d'), symbol]
+            return self.price_matrix.loc[next_date, symbol]
         return None
-    def _get_next_open_day(self,date):
+    def _get_next_open_day(self, date):
         # 寻找下一个有效交易日
         if isinstance(date, str):
             # 如果是字符串，尝试转换为日期格式
@@ -266,9 +255,10 @@ class BacktestOrchestrator:
 
         while next_date.strftime('%Y-%m-%d') not in self.price_matrix.index:
             next_date += timedelta(days=1)
-            if next_date > datetime.strptime(self.price_matrix.index[-1],'%Y-%m-%d'):
+            if next_date > datetime.strptime(self.price_matrix.index[-1], '%Y-%m-%d').date():  # 修复类型不匹配问题
                 return None
-        return next_date
+        return next_date.strftime('%Y-%m-%d')
+
 
     def _check_stop_loss(self, date, simulator):
         """执行止损检查"""
@@ -278,8 +268,6 @@ class BacktestOrchestrator:
         else:
             date_obj = date
         for symbol, pos in list(simulator.portfolio['positions'].items()):
-            if symbol=='002173':
-                print
             current_price = self.price_matrix.loc[date_obj.strftime('%Y-%m-%d'), symbol] 
             cost_basis = pos['cost'] / pos['qty']
             if  simulator.portfolio['positions'][symbol]['entry_date']== date_obj.strftime('%Y-%m-%d'):
@@ -294,7 +282,7 @@ class BacktestOrchestrator:
     def _record_daily_value(self, date, simulator):
         """记录每日组合净值"""
         position_value = sum(
-            self.price_matrix.loc[date.strftime('%Y-%m-%d'), symbol] * pos['qty'] 
+            self.price_matrix.loc[date, symbol] * pos['qty'] 
             for symbol, pos in simulator.portfolio['positions'].items()
             if symbol in self.price_matrix.columns
         )
@@ -361,6 +349,8 @@ class BacktestOrchestrator:
 # 使用示例
 if __name__ == "__main__":
     from strategy import EnhancedTDXStrategy
+
+
     
     # 初始化策略
     strategy = EnhancedTDXStrategy()

@@ -209,7 +209,16 @@ class StockSelector:
                 f"  周级别资金: {'净流入' if row['money_flow_weekly'] else '净流出'}",
                 f"  周趋势: {'加速' if row['money_flow_weekly_increasing'] else '减速'}",
                 f"  量增幅: {row['量增幅']:.2f}%"
-        ]
+                    ]
+            # 技术分析部分增加MACD信息
+            macd_analysis = [
+                f"- MACD分析：",
+                f"  当前MACD值: {row['macd']:.2f}",
+                f"  信号线值: {row['macd_signal']:.2f}",
+                f"  MACD柱状图: {'正值' if row['macd'] > 0 else '负值'}",
+                f"  MACD与信号线关系: {'金叉' if row['macd'] > row['macd_signal'] else '死叉' if row['macd'] < row['macd_signal'] else '平行'}",
+                f"  MACD金叉信号: {'存在' if row['macd_jc'] else '不存在'}"
+            ]
             analysis = [
                 f"{row['symbol']} 评分 {row['total_score']:.2f}：",
                 f"- 技术面({row['technical']:.2f}): \
@@ -217,6 +226,7 @@ class StockSelector:
                     RSI：{row['rsi_14']:.2f}；CCI：{row['cci_20']}",
                 "\n".join(flow_analysis),
                 "\n".join(heat_analysis),
+                "\n".join(macd_analysis),
                 f"- 财务({row['fundamental']:.2f}): 盈利成长股" if row['fundamental'] > 0.6 else "- 财务: 稳健",
                 f"- 超买超卖信号：\n" \
                 f"    - RSI (14): {'超卖' if row['rsi_14'] < 30 else '超买' if row['rsi_14'] > 70 else '正常'}\n" \

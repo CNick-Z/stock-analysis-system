@@ -133,5 +133,5 @@ if __name__ == "__main__":
     db_url = "sqlite:///c:/db/stock_data.db"  
     fetcher = DataFetcher(db_url)
     start_date = "20250101"
-    end_date = "20250302"
+    end_date = "20250303"
     fetcher.fetch_and_save_all_data(start_date, end_date)

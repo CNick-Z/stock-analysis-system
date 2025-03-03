@@ -44,6 +44,8 @@ class EnhancedTDXStrategy:
         返回包含以下字段的DataFrame：
         [date, symbol, ma_5, ma_10, ma_20, ma_55, ma_240, macd, macd_signal, close, volume]
         """
+        extended_start_date = pd.to_datetime(start_date) - pd.Timedelta(days=2)
+        extended_start_date = extended_start_date.strftime("%Y-%m-%d")
         # 加载技术指标数据
         tech_columns = {
             'date': 'date',
@@ -72,7 +74,7 @@ class EnhancedTDXStrategy:
         tech_df = self.db_manager.load_data(
             table=TechnicalIndicators,
             filter_conditions={
-                'date': {'$between':[start_date, end_date]}  # 需要扩展过滤逻辑
+                'date': {'$between':[extended_start_date, end_date]}  # 需要扩展过滤逻辑
             }
         ).rename(columns=tech_columns)
         
@@ -80,7 +82,7 @@ class EnhancedTDXStrategy:
         price_df = self.db_manager.load_data(
             table=DailyData,
             filter_conditions={
-                'date': {'$between':[start_date, end_date]}  # 需要扩展过滤逻辑
+                'date': {'$between':[extended_start_date, end_date]}  # 需要扩展过滤逻辑
             },
             columns=['date', 'symbol','high','low','volume','amount','open','close'],
             distinct_column=None,
@@ -112,22 +114,33 @@ class EnhancedTDXStrategy:
         merged_df['date'] = pd.to_datetime(merged_df['date'])
         return merged_df.sort_values(['symbol', 'date']).reset_index(drop=True)
 
+    def _calculate_angle(self,series, window):
+        """
+        根据选股公式计算角度：
+        角度MA := ATAN((MA / REF(MA, 2) - 1) * 100) * 180 / π
+        """
+        # 计算前两期的 MA 值
+        ref_ma = series.shift(window)
+        
+        # 计算比值变化率
+        ratio_change = (series / ref_ma - 1) * 100
+        
+        # 计算角度
+        angle = np.degrees(np.arctan(ratio_change))
+        
+        return angle
+
     def _calculate_ma_angles(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        计算均线角度（基于预计算的MA值）
-        保留原有角度计算逻辑
+        计算均线角度（与选股公式一致）
         """
-        def calculate_angle(series, window):
-            return series.rolling(window).apply(
-                lambda x: np.degrees(linregress(np.arange(len(x)), x).slope),
-                raw=False
-            )
+        # 定义需要计算角度的 MA 列
+        ma_columns = ['ma_10', 'ma_20', 'ma_55', 'ma_240']
         
-        # 计算各均线角度
-        for ma in ['ma_10', 'ma_20', 'ma_55', 'ma_240']:
-            df[f'angle_{ma}'] = calculate_angle(df[ma], self.config['angle_window'])
-        
+        for ma in ma_columns:
+            df[f'angle_{ma}'] = self._calculate_angle(df[ma], window=2)        
         return df
+
 
     def _calculate_xvl(self,row):
         if row['close'] > row['open']:
