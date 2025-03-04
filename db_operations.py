@@ -84,6 +84,10 @@ class DatabaseManager:
         def set_sqlite_pragma(dbapi_connection, connection_record):
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA journal_mode=WAL;")
+            cursor.execute("PRAGMA cache_size=-200000;")  # 设置缓存大小为 200MB
+            cursor.execute("PRAGMA mmap_size=4294967296;")  # 设置内存映射大小为 10GB
+            cursor.execute("PRAGMA page_size=4096;")  # 设置页面大小为 4KB
+            cursor.execute("PRAGMA synchronous=NORMAL;")  # 设置同步模式为 NORMAL
             cursor.close()
     def ensure_tables_exist(self):
         """确保表存在"""
