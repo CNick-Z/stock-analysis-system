@@ -38,14 +38,19 @@ class EnhancedTDXStrategy:
         if len(self.config['macd_params']) != 3:
             raise ValueError("MACD参数需要三个值(short, long, signal)")
 
-    def _fetch_precalculated_data(self, start_date: str, end_date: str) -> pd.DataFrame:
+    def _fetch_precalculated_data(self, current_date: str) -> pd.DataFrame:
         """
-        使用 load_data 方法获取预计算的技术指标数据
+        获取当天及历史数据，用于计算技术指标和生成信号
+        参数：
+        - current_date: 当前日期字符串（如 '2024-01-01'）
+        返回：
+        包含
         返回包含以下字段的DataFrame：
         [date, symbol, ma_5, ma_10, ma_20, ma_55, ma_240, macd, macd_signal, close, volume]
         """
-        extended_start_date = pd.to_datetime(start_date) - pd.Timedelta(days=2)
+        extended_start_date = pd.to_datetime(current_date) - pd.Timedelta(days=7)
         extended_start_date = extended_start_date.strftime("%Y-%m-%d")
+        end_date = current_date
         # 加载技术指标数据
         tech_columns = {
             'date': 'date',
@@ -300,12 +305,12 @@ class EnhancedTDXStrategy:
         )
         return df
 
-    def generate_features(self, start_date: str, end_date: str) -> pd.DataFrame:
+    def generate_features(self, current_date: str) -> pd.DataFrame:
         """
         生成完整信号（优化执行流程）
         """
         # 数据获取
-        raw_data = self._fetch_precalculated_data(start_date, end_date)
+        raw_data = self._fetch_precalculated_data(current_date)
         
         # 特征工程
         with_angles = self._calculate_ma_angles(raw_data)
@@ -313,10 +318,14 @@ class EnhancedTDXStrategy:
         # 信号生成
         signals = self._generate_core_signals(with_angles)
 
+        # 过滤当天数据
+        current_date_dt = pd.to_datetime(current_date)
+        signals = signals[signals['date'] == current_date_dt]
+
         return signals
-    def get_buy_signals(self, start_date: str, end_date: str) -> pd.DataFrame:
+    def get_buy_signals(self, current_date: str) -> pd.DataFrame:
         """获取买点信号"""
-        signals = self.generate_features(start_date, end_date)    
+        signals = self.generate_features(current_date)    
         # 综合买入条件
         buy_condition = (
             signals['ma_condition'] &
@@ -336,9 +345,9 @@ class EnhancedTDXStrategy:
             'money_flow_increasing','money_flow_trend','money_flow_weekly','money_flow_weekly_increasing','量增幅','量基线','主生量'
         ]].assign(signal_type='buy')
         
-    def get_sell_signals(self, start_date: str, end_date: str) -> pd.DataFrame:
+    def get_sell_signals(self, current_date: str) -> pd.DataFrame:
         """获取卖点信号"""
-        signals = self.generate_features(start_date, end_date)
+        signals = self.generate_features(current_date)
         
         # 综合卖出条件
         sell_condition = (

@@ -123,16 +123,53 @@ class BacktestOrchestrator:
         self.live_plot = live_plot
         self.commission_rate = commission_rate 
         if self.live_plot:
-            plt.ion()
-            self.fig, self.ax = plt.subplots(figsize=(12,6))
-            self.value_line, = self.ax.plot([], [], label='Portfolio Value')
-            self.ax.set_title('Live Portfolio Value')
-            self.ax.set_xlabel('Date')
-            self.ax.set_ylabel('Value')
-            self.ax.legend()
-            self.ax.grid(True)
+            plt.ion()  # 启用交互模式
+            # 创建网格布局，左侧显示持仓信息，右侧显示净值曲线
+            self.fig = plt.figure(figsize=(12, 6))
+            gs = self.fig.add_gridspec(1, 2, width_ratios=[3, 7])  # 左右分布比例 1:3
+            
+            # 右侧显示净值曲线
+            self.ax_value = self.fig.add_subplot(gs[0, 1])
             self.dates = []
             self.values = []
+            (self.value_line,) = self.ax_value.plot([], [])
+            self.ax_value.set_title("Live Portfolio Value")
+            self.ax_value.set_xlabel("Date")
+            self.ax_value.set_ylabel("Value")
+            self.ax_value.grid(True)
+            
+            # 左侧显示持仓信息
+            self.ax_info = self.fig.add_subplot(gs[0, 0])
+            self.ax_info.axis('off')  # 关闭坐标轴
+    def _info_callback(self, msg, data=None):
+        """用于实时显示回测信息"""
+        # 清空之前的文本信息
+        self.ax_info.clear()
+        self.ax_info.axis('off')  # 确保关闭坐标轴
+        
+        # 显示当前日期和净值
+        current_date = data['current_date']
+        current_value = data['current_value']
+        self.ax_info.text(
+            0.05, 0.9,
+            f"Date: {current_date}\n"
+            f"Portfolio Value: {current_value:.2f}",
+            transform=self.ax_info.transAxes,
+            fontsize=10,
+            verticalalignment='top'
+        )
+        
+        # 显示持仓信息
+        positions = data['positions']
+        if positions:
+            for i, (symbol, pos) in enumerate(positions.items()):
+                self.ax_info.text(
+                    0.05, 0.8 - 0.05 * i,
+                    f"{symbol}: QTY={pos['qty']}, Cost={pos['cost']:.2f}",
+                    transform=self.ax_info.transAxes,
+                    fontsize=10,
+                    verticalalignment='top'
+                )
 
     def initialize(self, start_date, end_date):
         """初始化回测环境"""
@@ -160,14 +197,15 @@ class BacktestOrchestrator:
             # 处理卖出信号
             print("处理卖出信号")
             self._process_sell_signals(date,simulator)
-            
-            # 处理买入信号
-            print("处理买入信号")
-            self._process_buy_signals(date,simulator)
-            
+
             # 检查止损
             print("检查止损")
             self._check_stop_loss(date, simulator)
+            
+            # 处理买入信号
+            print("处理买入信号")
+            self._process_buy_signals(date,simulator)            
+
             
             # 记录每日净值
             self._record_daily_value(date, simulator)
@@ -175,10 +213,7 @@ class BacktestOrchestrator:
             # 更新实时图表
             if self.live_plot:
                 self._update_live_plot(simulator)
-                
-        if self.live_plot:
-            plt.ioff()
-            plt.show()
+
             
         return self._generate_report(simulator)
 
@@ -189,7 +224,7 @@ class BacktestOrchestrator:
         if not holding_symbols:
             return
         # 获取当前持仓股票的卖出信号
-        sell_signals = self.strategy.get_sell_signals(date, date)
+        sell_signals = self.strategy.get_sell_signals(date)
         sell_signals = sell_signals[sell_signals['symbol'].isin(holding_symbols)]
         # 筛选出盈利的持仓股票
         profitable_sell_signals = []
@@ -213,7 +248,7 @@ class BacktestOrchestrator:
             return
         
         # 获取买入信号
-        buy_signals = self.strategy.get_buy_signals(date,date)
+        buy_signals = self.strategy.get_buy_signals(date)
         
         # 对买入信号进行评分
         scored_signals = self.scorer.score_daily_signals(buy_signals)
@@ -232,7 +267,9 @@ class BacktestOrchestrator:
             next_open = self._get_next_open_price(date, row['symbol'])
             if next_open:
                 # 计算单支股票最大可投入资金（不超过总仓位10%）
+                max_investment_cash = self._total_value(date,simulator)//self.position_limit
                 max_investment = simulator.portfolio['cash']//available_slots
+                max_investment = min(max_investment, max_investment_cash)
                 max_afford = max_investment // (next_open * (1 + self.commission_rate))
                 max_afford = (max_afford // 100) * 100  # 这里进行按100取整操作
                 if max_afford > 0:
@@ -277,16 +314,18 @@ class BacktestOrchestrator:
                 next_open = self._get_next_open_price(date_obj.strftime('%Y-%m-%d'), symbol)
                 if next_open:
                     simulator.execute_order('sell', symbol, next_open, self._get_next_open_day(date_obj), pos['qty'])
-                    
-
-    def _record_daily_value(self, date, simulator):
-        """记录每日组合净值"""
+    def _total_value(self, date, simulator):
+        """计算当前组合价值"""
         position_value = sum(
             self.price_matrix.loc[date, symbol] * pos['qty'] 
             for symbol, pos in simulator.portfolio['positions'].items()
             if symbol in self.price_matrix.columns
         )
         total_value = simulator.portfolio['cash'] + position_value
+        return total_value               
+
+    def _record_daily_value(self, date, simulator):
+        total_value = self._total_value(date,simulator)
         simulator.portfolio['history'].append({'date': date, 'value': total_value})
     
     def _generate_report(self, simulator):
@@ -324,41 +363,51 @@ class BacktestOrchestrator:
 
     def _update_live_plot(self, simulator):
         """更新实时图表"""
+        if not simulator.portfolio['history'][-1]:
+            return
         latest_value = simulator.portfolio['history'][-1]['value']
-        date_str  = simulator.portfolio['history'][-1]['date'] 
+        date_str = simulator.portfolio['history'][-1]['date']
+        
+        # 将日期字符串转换为日期对象
         if isinstance(date_str, str):
-        # 假设日期字符串的格式为 'YYYY-MM-DD'
-            latest_date = datetime.strptime(date_str, '%Y-%m-%d')
+            latest_date = datetime.strptime(date_str, "%Y-%m-%d").date()
         else:
-            latest_date = date_str  # 如果已经是日期类型，直接使用
+            latest_date = date_str
+        
         self.dates.append(latest_date)
         self.values.append(latest_value)
         
+        # 更新净值曲线数据
         self.value_line.set_data(self.dates, self.values)
-        # 更新坐标轴
-        self.ax.relim()
-        self.ax.autoscale_view()
+        self.ax_value.relim()
+        self.ax_value.autoscale_view()
         
-        # 设置横坐标为日期格式
-        self.ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-        self.fig.autofmt_xdate()  # 自动旋转日期标签，避免重叠
+        # 自动调整日期格式
+        self.ax_value.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
+        self.fig.autofmt_xdate()
         
+        # 更新持仓信息显示
+        self._info_callback(
+            msg="Update",
+            data={
+                "current_date": latest_date,
+                "current_value": latest_value,
+                "positions": simulator.portfolio["positions"]
+            }
+        )
+        # 调整布局，避免左侧文字覆盖右侧图表
+        self.fig.tight_layout()
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()
 
 # 使用示例
 if __name__ == "__main__":
-    from strategy import EnhancedTDXStrategy
-
-
-    
+    from strategy import EnhancedTDXStrategy    
     # 初始化策略
-    strategy = EnhancedTDXStrategy()
-    
+    strategy = EnhancedTDXStrategy()    
     # 运行回测
     orchestrator = BacktestOrchestrator(strategy,live_plot=True)
-    report = orchestrator.run(start_date='2024-01-24', end_date='2025-02-08')
-    
+    report = orchestrator.run(start_date='2024-10-24', end_date='2025-02-08')    
     print("回测结果摘要:")
     print(f"最终净值: {report['summary']['final_value']:,.2f}")
     print(f"总收益率: {report['summary']['total_return']:.2%}")

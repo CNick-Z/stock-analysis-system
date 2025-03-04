@@ -251,12 +251,11 @@ class StockSelector:
 # 使用示例
 if __name__ == "__main__":
     # 生成策略信号
-    start_date =date.today().strftime("%Y-%m-%d")
-    end_date = date.today().strftime("%Y-%m-%d")
+    date =date.today().strftime("%Y-%m-%d")
     from strategy import EnhancedTDXStrategy
     strategy = EnhancedTDXStrategy()
     #signals = strategy.get_buy_signals(start_date,end_date)
-    signals = strategy.get_buy_signals('2024-01-30','2024-01-30')
+    signals = strategy.get_buy_signals('2024-09-24')
     if signals.empty: 
         print("没有符合策略条件的股票。")
         exit()
