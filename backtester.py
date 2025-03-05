@@ -310,7 +310,7 @@ class BacktestOrchestrator:
                 max_afford = (max_afford // 100) * 100  # 这里进行按100取整操作
                 if max_afford > 0:
                     simulator.execute_order('buy', row['symbol'], next_open_price, next_open_day, max_afford)
-                    available_slots+=1
+                    available_slots-=1
             except:
                 continue
 
@@ -485,7 +485,7 @@ if __name__ == "__main__":
     strategy = EnhancedTDXStrategy()    
     # 运行回测
     orchestrator = BacktestOrchestrator(strategy,live_plot=True)
-    report = orchestrator.run(start_date='2015-01-01', end_date='2015-06-20')    
+    report = orchestrator.run(start_date='2016-01-01', end_date='2025-03-04')    
     print("回测结果摘要:")
     print(f"最终净值: {report['summary']['final_value']:,.2f}")
     print(f"总收益率: {report['summary']['total_return']:.2%}")
