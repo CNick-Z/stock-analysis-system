@@ -97,6 +97,9 @@ class EnhancedTDXStrategy:
         #加载基础数据
         info_df = self.db_manager.load_data(
             table=StockBasicInfo,
+            filter_conditions={
+                'name': {'$not_like': 'ST'}  # 需要扩展过滤逻辑
+            },
             columns=['symbol', 'name', 'total_shares', 'industry']
         )
 
@@ -338,7 +341,7 @@ class EnhancedTDXStrategy:
         )
         
         return signals[buy_condition][[
-            'date', 'symbol', 'ma_5', 'ma_10', 'ma_20', 'angle_ma_10',
+            'date', 'symbol', 'name',  'industry','ma_5', 'ma_10', 'ma_20', 'angle_ma_10',
             'volume_ma5', 'macd', 'macd_signal', 'volume', 'rsi_14','macd_jc',
             'kdj_k', 'kdj_d', 'cci_20', 'williams_r', 'bb_upper',
             'bb_middle', 'bb_lower','close','money_flow_positive',
@@ -365,7 +368,7 @@ class EnhancedTDXStrategy:
         )
         
         return signals[sell_condition][[
-            'date', 'symbol', 'ma_5', 'ma_10', 'ma_20', 'angle_ma_10',
+            'date', 'symbol',  'name',  'industry','ma_5', 'ma_10', 'ma_20', 'angle_ma_10',
             'volume_ma5', 'macd', 'macd_signal', 'volume', 'rsi_14','macd_jc',
             'kdj_k', 'kdj_d', 'cci_20', 'williams_r', 'bb_upper',
             'bb_middle', 'bb_lower','close','money_flow_positive',

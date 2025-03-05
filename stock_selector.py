@@ -255,7 +255,7 @@ if __name__ == "__main__":
     from strategy import EnhancedTDXStrategy
     strategy = EnhancedTDXStrategy()
     #signals = strategy.get_buy_signals(start_date,end_date)
-    signals = strategy.get_buy_signals('2024-09-24')
+    signals = strategy.get_buy_signals('2025-03-04')
     if signals.empty: 
         print("没有符合策略条件的股票。")
         exit()
@@ -266,6 +266,6 @@ if __name__ == "__main__":
         report = selector.generate_report(scored_stocks)
         
         print("最终选股结果：")
-        print(scored_stocks[['date', 'symbol', 'total_score']])
+        print(scored_stocks[['date', 'symbol',  'name',  'industry','total_score']])
         print("\n详细分析：")
         print(report)                                                   

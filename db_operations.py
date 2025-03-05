@@ -159,6 +159,7 @@ class DatabaseManager:
                 '$gte': '__ge__',
                 '$lte': '__le__',
                 '$like': 'like',
+                '$not_like': 'notlike',
                 '$in': 'in_',
                 '$between': 'between',  # 添加 `$between` 操作符
                 '$not': '__neg__',
@@ -180,6 +181,9 @@ class DatabaseManager:
                             if method == 'like':
                                 # 处理模糊匹配
                                 conditions.append(getattr(column, 'like')(text(f"'%{op_value}%'")))
+                            elif method == 'notlike':
+                                # 处理 NOT LIKE 查询
+                                conditions.append(getattr(column, 'notlike')(text(f"'%{op_value}%'")))
                             elif method == 'in_':
                                 # 处理 IN 查询
                                 conditions.append(getattr(column, 'in_')(op_value))

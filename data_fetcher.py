@@ -132,6 +132,6 @@ if __name__ == "__main__":
     pd.options.mode.copy_on_write = True
     db_url = "sqlite:///c:/db/stock_data.db"  
     fetcher = DataFetcher(db_url)
-    start_date = "20150101"
-    end_date = "20221231"
+    start_date = "20140101"
+    end_date = "20230102"
     fetcher.fetch_and_save_all_data(start_date, end_date)
