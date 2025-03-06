@@ -178,15 +178,18 @@ class StockSelector:
         """选股主流程"""
         # 评分
         scored_df = self.scorer.score_daily_signals(signals)
-        
-        # 每日TopN选择
-        final_picks = []
-        for date in scored_df['date'].unique():
-            daily = scored_df[scored_df['date'] == date]
-            top = daily.nlargest(top_n, 'total_score')
-            final_picks.append(top)
-            
-        return pd.concat(final_picks).reset_index(drop=True)
+        if scored_df.empty:
+            return None
+        else:
+            # 每日TopN选择
+            final_picks = []
+            for date in scored_df['date'].unique():
+                daily = scored_df[scored_df['date'] == date]
+                top = daily.nlargest(top_n, 'total_score')
+                final_picks.append(top)
+                
+            return pd.concat(final_picks).reset_index(drop=True)
+       
 
     def generate_report(self, selected_stocks: pd.DataFrame) -> str:
         """生成带依据的报告"""
