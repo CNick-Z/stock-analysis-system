@@ -366,8 +366,17 @@ class EnhancedTDXStrategy:
            # signals['kdj_overbought'] |     # KDJ超买
            # signals['bb_upper_break']      # 突破布林上轨（超买信号）
         )
+        profitable_sell_condition = (           
+                (signals['close'] < signals['ma_20']) |  # 价格跌破10日均线
+                (signals['close'] < signals['bb_middle']) |  # 价格跌破布林带中轨
+                (signals['rsi_overbought']) |  # RSI超买
+                (signals['kdj_overbought']) |  # KDJ超买
+                (signals['money_flow_trend'] == False)  # 资金流向趋势转弱
+        )
+        # 合并卖出条件
+        combined_sell_condition = sell_condition | profitable_sell_condition
         
-        return signals[sell_condition][[
+        return signals[combined_sell_condition][[
             'date', 'symbol',  'name',  'industry','ma_5', 'ma_10', 'ma_20', 'angle_ma_10',
             'volume_ma5', 'macd', 'macd_signal', 'volume', 'rsi_14','macd_jc',
             'kdj_k', 'kdj_d', 'cci_20', 'williams_r', 'bb_upper',

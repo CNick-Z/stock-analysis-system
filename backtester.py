@@ -126,6 +126,7 @@ class BacktestOrchestrator:
         self.trading_dates = None
         self.live_plot = live_plot
         self.commission_rate = commission_rate 
+        self.trailing_stop_ratio = 0.05
         if self.live_plot:
             plt.ion()  # 启用交互模式
             # 创建网格布局，左侧显示持仓信息，右侧显示净值曲线
@@ -224,7 +225,7 @@ class BacktestOrchestrator:
         ]
         for date in tqdm(dates, desc="回测进度"):
             date=date.strftime("%Y-%m-%d")
-            print(date)
+            print('\n'+date)
             #处理卖出计划
             if simulator.sell_signals:
                 if date in simulator.sell_signals:
@@ -277,7 +278,8 @@ class BacktestOrchestrator:
                     next_open_price,next_open_day = self._get_next_open_price(date, row['symbol'])
                     if next_open_day:
                         symbol_data = sell_signals[sell_signals['symbol'] == row['symbol']]
-                        signal_info = self.scorer.generate_report(symbol_data)
+                        scored_signals = self.scorer.select_top_stocks(symbol_data,3)
+                        signal_info = self.scorer.generate_report(scored_signals)
                         if next_open_day not in simulator.sell_signals:
                             simulator.sell_signals[next_open_day] = []
                         simulator.sell_signals[next_open_day].append([row['symbol'],next_open_price,simulator.portfolio['positions'][row['symbol']]['qty'],signal_info])
@@ -301,32 +303,36 @@ class BacktestOrchestrator:
         holding_symbols = list(simulator.portfolio['positions'].keys())
         
         for _, row in scored_signals.iterrows():
-            if row['symbol'] in holding_symbols: 
-                continue
-            # 计算单支股票最大可投入资金（不超过总仓位10%）
-            try:
-                next_open_price,next_open_day=self._get_next_open_price(date, row['symbol'])
-                next_open=self._get_next_open_day(date)
-                if next_open != next_open_day:
+            if available_slots>0:
+                if row['symbol'] in holding_symbols: 
                     continue
-                 # 计算总账户价值
-                total_account_value = self._total_value(date, simulator) + simulator.portfolio['cash']
-                max_investment_cash = total_account_value//self.position_limit
-                max_investment = simulator.portfolio['cash']//available_slots
-                max_investment = min(max_investment, max_investment_cash)
-                max_afford = max_investment // (next_open_price * (1 + self.commission_rate))
-                max_afford = (max_afford // 100) * 100  # 这里进行按100取整操作
-                if max_afford > 0:
-                    # 获取信号信息
-                    symbol_data = scored_signals[scored_signals['symbol'] == row['symbol']]
-                    signal_info = self.scorer.generate_report(symbol_data)
-                    if next_open_day not in simulator.buy_signals:
-                        simulator.buy_signals[next_open_day] = []
-                    simulator.buy_signals[next_open_day].append([row['symbol'],next_open_price,max_afford,max_afford,signal_info])
-                    #simulator.execute_order('buy', row['symbol'], next_open_price, next_open_day, max_afford)
-                    available_slots-=1
-            except:
-                continue
+                # 计算单支股票最大可投入资金（不超过总仓位10%）
+                try:
+                    next_open_price,next_open_day=self._get_next_open_price(date, row['symbol'])
+                    next_open=self._get_next_open_day(date)
+                    if next_open != next_open_day:
+                        continue
+                    # 计算总账户价值
+                    
+                    total_account_value = self._total_value(date, simulator)
+                    max_investment_cash = total_account_value//self.position_limit
+                    max_investment = simulator.portfolio['cash']//available_slots
+                    max_investment = min(max_investment, max_investment_cash)
+                    max_afford = max_investment // (next_open_price * (1 + self.commission_rate))
+                    max_afford = (max_afford // 100) * 100  # 这里进行按100取整操作
+                    if max_afford > 0:
+                        # 获取信号信息
+                        symbol_data = scored_signals[scored_signals['symbol'] == row['symbol']]
+                        signal_info = self.scorer.generate_report(symbol_data)
+                        if next_open_day not in simulator.buy_signals:
+                            simulator.buy_signals[next_open_day] = []
+                        simulator.buy_signals[next_open_day].append([row['symbol'],next_open_price,next_open_day,max_afford,signal_info])
+                        #simulator.execute_order('buy', row['symbol'], next_open_price, next_open_day, max_afford)
+                        available_slots-=1
+                except:
+                    continue
+            else:
+                break
 
     def _get_next_open_price(self, date, symbol):
         """获取下一个有效开盘价"""
@@ -396,10 +402,30 @@ class BacktestOrchestrator:
                         }
                         if next_open_day not in simulator.sell_signals:
                             simulator.sell_signals[next_open_day] = []
-                        simulator.sell_signals[next_open_day].append([row['symbol'],next_open_price,simulator.portfolio['positions'][row['symbol']]['qty'],signal_info])
+                        simulator.sell_signals[next_open_day].append([row['symbol'],next_open_price,next_open_day,simulator.portfolio['positions'][row['symbol']]['qty'],signal_info])
                         #simulator.execute_order('sell', symbol, next_open_price, next_open_day, pos['qty'])
                 except:
                     continue
+            # 跟踪止损
+            if 'highest_price' not in pos:
+                pos['highest_price'] = current_price
+            else:
+                if current_price > pos['highest_price']:
+                    pos['highest_price'] = current_price
+                elif current_price <= pos['highest_price'] * (1 - self.trailing_stop_ratio):
+                    try:
+                        next_open_price,next_open_day = self._get_next_open_price(date_obj.strftime('%Y-%m-%d'), symbol)
+                        if next_open_price:
+                            # 记录跟踪止损信息
+                            signal_info = {
+                                'type': 'trailing_stop',
+                                'reason': f"价格回撤达到跟踪止损比例，触发止损。最高价：{pos['highest_price']}, 当前价格：{current_price}"
+                            }
+                            if next_open_day not in simulator.sell_signals:
+                                simulator.sell_signals[next_open_day] = []
+                            simulator.sell_signals[next_open_day].append([symbol, next_open_price, next_open_day,simulator.portfolio['positions'][symbol]['qty'], signal_info])
+                    except:
+                        continue
            
 
     def _record_daily_value(self, date, simulator):
@@ -507,7 +533,7 @@ if __name__ == "__main__":
     strategy = EnhancedTDXStrategy()    
     # 运行回测
     orchestrator = BacktestOrchestrator(strategy,live_plot=True)
-    report = orchestrator.run(start_date='2015-01-01', end_date='2015-03-04')    
+    report = orchestrator.run(start_date='2016-01-01', end_date='2018-12-31')    
     print("回测结果摘要:")
     print(f"最终净值: {report['summary']['final_value']:,.2f}")
     print(f"总收益率: {report['summary']['total_return']:.2%}")
