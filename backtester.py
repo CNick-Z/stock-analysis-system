@@ -231,13 +231,13 @@ class BacktestOrchestrator:
                 if date in simulator.sell_signals:
                     for info in simulator.sell_signals[date]:
                         simulator.execute_order('sell', info[0],info[1],info[2],info[3],info[4])
-                del simulator.sell_signals[date]
+                    del simulator.sell_signals[date]
             #处理买入计划
             if simulator.buy_signals:
                 if date in simulator.buy_signals:
                     for info in simulator.buy_signals[date]:
                         simulator.execute_order('buy', info[0],info[1],info[2],info[3],info[4])
-                del simulator.buy_signals[date]
+                    del simulator.buy_signals[date]
                 # 处理卖出信号
             #print("处理卖出信号")
             self._process_sell_signals(date,simulator)
@@ -533,7 +533,7 @@ if __name__ == "__main__":
     strategy = EnhancedTDXStrategy()    
     # 运行回测
     orchestrator = BacktestOrchestrator(strategy,live_plot=True)
-    report = orchestrator.run(start_date='2016-01-01', end_date='2018-12-31')    
+    report = orchestrator.run(start_date='2016-01-01', end_date='2024-12-31')    
     print("回测结果摘要:")
     print(f"最终净值: {report['summary']['final_value']:,.2f}")
     print(f"总收益率: {report['summary']['total_return']:.2%}")
