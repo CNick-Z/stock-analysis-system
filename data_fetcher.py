@@ -109,7 +109,7 @@ class DataFetcher:
         stock_list = ak.stock_zh_a_spot_em()
         #symbols = ~stock_list['代码'].str.startswith("8").tolist()
         symbols = stock_list.query("代码.str[0] != '8'")['代码'].tolist()
-        
+        symbols = stock_list.query("代码.str[0] != '4'")['代码'].tolist()
         # 一次性加载所有已存在的数据
         self.existing_data = self.load_existing_data(start_date, end_date, table_name)
         

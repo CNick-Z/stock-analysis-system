@@ -178,6 +178,7 @@ class StockSelector:
         """选股主流程"""
         # 评分
         scored_df = self.scorer.score_daily_signals(signals)
+        scored_df = scored_df[scored_df['total_score'] > 1]
         if scored_df.empty:
             return None
         else:

@@ -299,7 +299,8 @@ class BacktestOrchestrator:
             return        
         # 对买入信号进行评分，选择评分最高的前3个信号
         scored_signals = self.scorer.select_top_stocks(buy_signals,3)        
-        
+        if scored_signals is None: 
+            return
         holding_symbols = list(simulator.portfolio['positions'].keys())
         
         for _, row in scored_signals.iterrows():
@@ -533,7 +534,7 @@ if __name__ == "__main__":
     strategy = EnhancedTDXStrategy()    
     # 运行回测
     orchestrator = BacktestOrchestrator(strategy,live_plot=True)
-    report = orchestrator.run(start_date='2016-01-01', end_date='2024-12-31')    
+    report = orchestrator.run(start_date='2015-01-01', end_date='2024-12-31')    
     print("回测结果摘要:")
     print(f"最终净值: {report['summary']['final_value']:,.2f}")
     print(f"总收益率: {report['summary']['total_return']:.2%}")
