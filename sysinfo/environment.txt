@@ -6,3 +6,5 @@ pip install TA_Lib‑0.4.25‑cp38‑cp38‑win_amd64.whl
 pip install ta
 pip install sqlalchemy
 pip install openpyxl
+pip install scikit-learn
+pip install seaborn

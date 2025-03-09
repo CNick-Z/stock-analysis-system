@@ -1,15 +1,12 @@
 # stock_selector.py
 import pandas as pd
 import akshare as ak
-from db_operations import *
 from tqdm import tqdm
 from typing import Dict, List
 from datetime import datetime,date,timedelta
 
 class StockScorer:
     def __init__(self, config: Dict = None):
-        self.db_manager = DatabaseManager(db_url = "sqlite:///c:/db/stock_data.db")
-        self.db_manager.ensure_tables_exist()
         self.config = config or {
             'weights': {
                 'technical': 0.3,  # 调整权重
@@ -108,49 +105,17 @@ class StockScorer:
             
         return min(flow_score, 1.0)  # 限制最大1分
 
-    def _get_market_heat(self, symbol: str, date: str) -> float:
-        """市场热度评分（基于板块）"""
-        try:
-            # 获取板块数据
-            with self.db_manager.get_session() as session:
-                sector_query = session.query(StockBasicInfo.industry).filter_by(symbol=symbol).first()
-                if sector_query:
-                    sector = sector_query[0]
-                else:
-                    return 0
-                
-                # 计算板块热度
-                heat_query = session.query(DailyData.volume).filter(
-                    DailyData.symbol == symbol,
-                    DailyData.date >= (date - timedelta(days=self.config['heat_window'])).strftime("%Y-%m-%d"),
-                    DailyData.date <= date.strftime("%Y-%m-%d")
-                ).all()
-                
-                if heat_query:
-                    sector_vol = sum([row[0] for row in heat_query]) / len(heat_query)
-                    current_vol = session.query(DailyData.volume).filter(
-                        DailyData.symbol == symbol,
-                        DailyData.date == date.strftime("%Y-%m-%d")
-                    ).first()
-                    if current_vol:
-                        return current_vol[0] / sector_vol
-        except Exception as e:
-            print(f"Error calculating market heat: {e}")
-        return 0
+    
 
     def score_daily_signals(self, signals: pd.DataFrame) -> pd.DataFrame:
         """每日信号综合评分"""
         signals = signals.copy()  # 避免修改原始数据
-        for _, row in tqdm(signals.iterrows(), total=len(signals), desc="每日评分"):
-            if row['signal_type'] != 'buy':
-                continue
-                
+        for _, row in tqdm(signals.iterrows(), total=len(signals), desc="每日评分"):                
             # 计算各维度评分
             technical_score = self._calculate_technical_score(row)
             capital_flow_score = self._calculate_capital_flow(row)
             fundamental_score = self._get_fundamental_score(row['symbol'])
-            market_heat_score = self._get_market_heat(row['symbol'], row['date'])
-            
+            market_heat_score = row['market_heat']
             # 加权总分
             weights = self.config['weights']
             total_score = (
@@ -168,7 +133,7 @@ class StockScorer:
             signals.loc[row.name, 'total_score'] = total_score
         
         # 保留有效的评分记录（enter_long 为 True）
-        return signals[signals['signal_type']=='buy'].reset_index(drop=True)
+        return signals.reset_index(drop=True)
 
 class StockSelector:
     def __init__(self):
@@ -177,7 +142,7 @@ class StockSelector:
     def select_top_stocks(self, signals: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
         """选股主流程"""
         # 评分
-        scored_df = self.scorer.score_daily_signals(signals)
+        scored_df = self.scorer.score_daily_signals(signals[0])
         scored_df = scored_df[scored_df['total_score'] > 1]
         if scored_df.empty:
             return None
@@ -212,7 +177,8 @@ class StockSelector:
                 f"  趋势强度: {row['主生量']:.2f} (基线: {row['量基线']:.2f})",
                 f"  周级别资金: {'净流入' if row['money_flow_weekly'] else '净流出'}",
                 f"  周趋势: {'加速' if row['money_flow_weekly_increasing'] else '减速'}",
-                f"  量增幅: {row['量增幅']:.2f}%"
+                f"  量增幅: {row['量增幅']:.2f}%",
+                f"  当日涨幅：{row['growth']}"
                     ]
             # 技术分析部分增加MACD信息
             macd_analysis = [
@@ -259,8 +225,8 @@ if __name__ == "__main__":
     from strategy import EnhancedTDXStrategy
     strategy = EnhancedTDXStrategy()
     #signals = strategy.get_buy_signals(start_date,end_date)
-    signals = strategy.get_buy_signals('2025-03-04')
-    if signals.empty: 
+    signals = strategy.get_signals('2016-02-04','2016-03-09')
+    if signals[0].empty: 
         print("没有符合策略条件的股票。")
         exit()
     else:

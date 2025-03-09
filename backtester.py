@@ -121,12 +121,13 @@ class BacktestOrchestrator:
         self.position_limit = position_limit  # 新增参数
         self.db = DatabaseIntegrator(db_path)
         self.strategy = strategy
-        self.scorer = StockSelector()
+        self.Selector = StockSelector()
+        self.Scorer = StockScorer()
         self.price_matrix = None
         self.trading_dates = None
         self.live_plot = live_plot
         self.commission_rate = commission_rate 
-        self.trailing_stop_ratio = 0.05
+        self.trailing_stop_ratio = 0.1
         if self.live_plot:
             plt.ion()  # 启用交互模式
             # 创建网格布局，左侧显示持仓信息，右侧显示净值曲线
@@ -278,11 +279,11 @@ class BacktestOrchestrator:
                     next_open_price,next_open_day = self._get_next_open_price(date, row['symbol'])
                     if next_open_day:
                         symbol_data = sell_signals[sell_signals['symbol'] == row['symbol']]
-                        scored_signals = self.scorer.select_top_stocks(symbol_data,3)
-                        signal_info = self.scorer.generate_report(scored_signals)
+                        scored_signals = self.Scorer.score_daily_signals(symbol_data)
+                        signal_info = self.Selector.generate_report(scored_signals)
                         if next_open_day not in simulator.sell_signals:
                             simulator.sell_signals[next_open_day] = []
-                        simulator.sell_signals[next_open_day].append([row['symbol'],next_open_price,simulator.portfolio['positions'][row['symbol']]['qty'],signal_info])
+                        simulator.sell_signals[next_open_day].append([row['symbol'],next_open_price,next_open_day,simulator.portfolio['positions'][row['symbol']]['qty'],signal_info])
                         #simulator.execute_order('sell', row['symbol'], next_open_price, next_open_day, 
                         #                        simulator.portfolio['positions'][row['symbol']]['qty'])
                 except:
@@ -298,7 +299,7 @@ class BacktestOrchestrator:
         if buy_signals.empty: 
             return        
         # 对买入信号进行评分，选择评分最高的前3个信号
-        scored_signals = self.scorer.select_top_stocks(buy_signals,3)        
+        scored_signals = self.Selector.select_top_stocks(buy_signals,3)        
         if scored_signals is None: 
             return
         holding_symbols = list(simulator.portfolio['positions'].keys())
@@ -324,7 +325,7 @@ class BacktestOrchestrator:
                     if max_afford > 0:
                         # 获取信号信息
                         symbol_data = scored_signals[scored_signals['symbol'] == row['symbol']]
-                        signal_info = self.scorer.generate_report(symbol_data)
+                        signal_info = self.Selector.generate_report(symbol_data)
                         if next_open_day not in simulator.buy_signals:
                             simulator.buy_signals[next_open_day] = []
                         simulator.buy_signals[next_open_day].append([row['symbol'],next_open_price,next_open_day,max_afford,signal_info])
@@ -407,6 +408,7 @@ class BacktestOrchestrator:
                         #simulator.execute_order('sell', symbol, next_open_price, next_open_day, pos['qty'])
                 except:
                     continue
+            
             # 跟踪止损
             if 'highest_price' not in pos:
                 pos['highest_price'] = current_price
@@ -427,6 +429,7 @@ class BacktestOrchestrator:
                             simulator.sell_signals[next_open_day].append([symbol, next_open_price, next_open_day,simulator.portfolio['positions'][symbol]['qty'], signal_info])
                     except:
                         continue
+            
            
 
     def _record_daily_value(self, date, simulator):
@@ -534,7 +537,7 @@ if __name__ == "__main__":
     strategy = EnhancedTDXStrategy()    
     # 运行回测
     orchestrator = BacktestOrchestrator(strategy,live_plot=True)
-    report = orchestrator.run(start_date='2015-01-01', end_date='2024-12-31')    
+    report = orchestrator.run(start_date='2016-01-19', end_date='2020-12-31')    
     print("回测结果摘要:")
     print(f"最终净值: {report['summary']['final_value']:,.2f}")
     print(f"总收益率: {report['summary']['total_return']:.2%}")

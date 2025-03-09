@@ -38,19 +38,20 @@ class EnhancedTDXStrategy:
         if len(self.config['macd_params']) != 3:
             raise ValueError("MACD参数需要三个值(short, long, signal)")
 
-    def _fetch_precalculated_data(self, current_date: str) -> pd.DataFrame:
+    def _fetch_precalculated_data(self, start_date: str,end_date:str) -> pd.DataFrame:
         """
-        获取当天及历史数据，用于计算技术指标和生成信号
+        获取数据，用于计算技术指标和生成信号
         参数：
-        - current_date: 当前日期字符串（如 '2024-01-01'）
+        - start_date: 日期字符串（如 '2024-01-01'）
+        - end_date: 日期字符串（如 '2024-01-01'）
         返回：
         包含
         返回包含以下字段的DataFrame：
         [date, symbol, ma_5, ma_10, ma_20, ma_55, ma_240, macd, macd_signal, close, volume]
         """
-        extended_start_date = pd.to_datetime(current_date) - pd.Timedelta(days=7)
+        extended_start_date = pd.to_datetime(start_date) - pd.Timedelta(days=7)
         extended_start_date = extended_start_date.strftime("%Y-%m-%d")
-        end_date = current_date
+        end_date = end_date
         # 加载技术指标数据
         tech_columns = {
             'date': 'date',
@@ -246,6 +247,11 @@ class EnhancedTDXStrategy:
         """
         生成核心交易信号（保持原有信号逻辑不变）
         """
+        #涨幅条件
+        #df['growth'] = (df['close'] - df['open']) / df['open'] * 100
+        #df['growth'] = df['growth'].round(1)
+        df['growth'] = df['close']>=df['open']*1.03
+
         # 均线条件
         df['ma_condition'] = (
             (df['ma_5'] > df['ma_10']) & 
@@ -307,13 +313,28 @@ class EnhancedTDXStrategy:
             (abs(df['ma_5'] - df['ma_20']) / df['ma_20'] < 0.02)  # MA5 和 MA20 的差值占 MA20 的比例小于 2%
         )
         return df
+    def _calculate_market_heat(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        计算市场热度，并将结果整合到原始数据中。
+        市场热度基于股票的成交量计算，按日计算每个股票的市场热度。
+        """
+        # 确保数据中包含必要的列
+        required_columns = ['date', 'symbol', 'volume', 'industry']
+        if not all(col in data.columns for col in required_columns):
+            raise ValueError(f"数据中缺少必要的列：{required_columns}")
+        
+        # 按日期和行业分组，计算每个日期每个行业的平均成交量
+        data['market_heat'] = data.groupby(['date', 'industry'])['volume'].transform(lambda x: x / x.mean())
+        
+        # 返回包含市场热度的完整数据集
+        return data
 
-    def generate_features(self, current_date: str) -> pd.DataFrame:
+    def generate_features(self, start_date: str,end_date:str) -> pd.DataFrame:
         """
         生成完整信号（优化执行流程）
         """
         # 数据获取
-        raw_data = self._fetch_precalculated_data(current_date)
+        raw_data = self._fetch_precalculated_data(start_date,end_date)
         
         # 特征工程
         with_angles = self._calculate_ma_angles(raw_data)
@@ -321,37 +342,33 @@ class EnhancedTDXStrategy:
         # 信号生成
         signals = self._generate_core_signals(with_angles)
 
-        # 过滤当天数据
-        current_date_dt = pd.to_datetime(current_date)
-        signals = signals[signals['date'] == current_date_dt]
+        # 计算市场热度
+        market_heat = self._calculate_market_heat(raw_data)
 
-        return signals
-    def get_buy_signals(self, current_date: str) -> pd.DataFrame:
+        return market_heat
+    def get_signals(self, start_date: str,end_date:str) -> pd.DataFrame:
         """获取买点信号"""
-        signals = self.generate_features(current_date)    
+        signals = self.generate_features(start_date,end_date)    
         # 综合买入条件
         buy_condition = (
+            signals['growth'] &
             signals['ma_condition'] &
             signals['angle_condition'] &
             signals['volume_condition'] &
             signals['macd_condition'] &
             (signals['jc_condition']|signals['macd_jc']) &  # JC 条件
             (signals['ma_20'] < signals['ma_55']) &  # MA20 < MA55
-            (signals['ma_55'] > signals['ma_240'])  # MA55 > MA240
+            (signals['ma_55'] > signals['ma_240']) # MA55 > MA240
         )
         
-        return signals[buy_condition][[
+        buy_signals= signals[buy_condition][[
             'date', 'symbol', 'name',  'industry','ma_5', 'ma_10', 'ma_20', 'angle_ma_10',
             'volume_ma5', 'macd', 'macd_signal', 'volume', 'rsi_14','macd_jc',
             'kdj_k', 'kdj_d', 'cci_20', 'williams_r', 'bb_upper',
             'bb_middle', 'bb_lower','close','money_flow_positive',
-            'money_flow_increasing','money_flow_trend','money_flow_weekly','money_flow_weekly_increasing','量增幅','量基线','主生量'
+            'money_flow_increasing','money_flow_trend','money_flow_weekly','money_flow_weekly_increasing','量增幅','量基线','主生量','growth','market_heat'
         ]].assign(signal_type='buy')
-        
-    def get_sell_signals(self, current_date: str) -> pd.DataFrame:
-        """获取卖点信号"""
-        signals = self.generate_features(current_date)
-        
+                
         # 综合卖出条件
         sell_condition = (
             (signals['ma_20'] > signals['ma_5']) &  # 短期均线下穿长期
@@ -367,19 +384,18 @@ class EnhancedTDXStrategy:
            # signals['bb_upper_break']      # 突破布林上轨（超买信号）
         )
         profitable_sell_condition = (           
-                (signals['close'] < signals['ma_20']) |  # 价格跌破10日均线
-                (signals['close'] < signals['bb_middle']) |  # 价格跌破布林带中轨
-                (signals['rsi_overbought']) |  # RSI超买
-                (signals['kdj_overbought']) |  # KDJ超买
+                (signals['close'] < signals['ma_20']) |  # 价格跌破20日均线
                 (signals['money_flow_trend'] == False)  # 资金流向趋势转弱
         )
         # 合并卖出条件
         combined_sell_condition = sell_condition | profitable_sell_condition
         
-        return signals[combined_sell_condition][[
+        sell_signals= signals[combined_sell_condition][[
             'date', 'symbol',  'name',  'industry','ma_5', 'ma_10', 'ma_20', 'angle_ma_10',
             'volume_ma5', 'macd', 'macd_signal', 'volume', 'rsi_14','macd_jc',
             'kdj_k', 'kdj_d', 'cci_20', 'williams_r', 'bb_upper',
             'bb_middle', 'bb_lower','close','money_flow_positive',
-            'money_flow_increasing','money_flow_trend','money_flow_weekly','money_flow_weekly_increasing','量增幅','量基线','主生量'
-        ]].assign(signal_type='sell')    
+            'money_flow_increasing','money_flow_trend','money_flow_weekly','money_flow_weekly_increasing','量增幅','量基线','主生量','growth','market_heat'
+        ]].assign(signal_type='sell')
+
+        return [buy_signals, sell_signals]
