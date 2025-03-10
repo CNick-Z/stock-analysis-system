@@ -80,7 +80,7 @@ if __name__ == "__main__":
     date =date.today().strftime("%Y-%m-%d")
     strategy = EnhancedTDXStrategy()
     #signals = strategy.get_buy_signals(start_date,end_date)
-    signals = strategy.get_signals('2016-02-15','2016-02-18')
+    signals = strategy.get_signals('2016-02-15','2016-06-18')
     if signals[0].empty: 
         print("没有符合策略条件的股票。")
         exit()

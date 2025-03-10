@@ -11,8 +11,8 @@ class StockScorer:
     def __init__(self, config: Dict = None):
         self.config = config or {
             'weights': {
-                'technical': 0.3,  # 调整权重
-                'capital_flow': 0.3,  # 新增资金流向权重
+                'technical': 0.25,  # 调整权重
+                'capital_flow': 0.35,  # 新增资金流向权重
                 'fundamental': 0.2,
                 'market_heat': 0.2  # 调整市场热度权重
             },
@@ -59,8 +59,8 @@ class StockScorer:
         tech_score = 0
         # 均线系统评分
         tech_score += (row['ma_5'] > row['ma_20']) * 0.2
-        tech_score += (row['angle_ma_10'] > 30) * 0.2
-        tech_score += (row['macd'] > row['macd_signal']) * 0.3
+        tech_score += (row['angle_ma_10'] > 30) * 0.15
+        tech_score += (row['macd'] > row['macd_signal']) * 0.35
         
         # 成交量动能
         volume_score = min(row['volume'] / row['volume_ma5'], 3)  # 限制最大3倍
@@ -105,7 +105,7 @@ class StockScorer:
         elif row['量增幅'] < -5:  # 显著减少
             flow_score *= 0.8
             
-        return max(flow_score, 1.0)  # 限制最大1分
+        return min(flow_score, 1.0)  # 限制最大1分
 
     
 
@@ -139,6 +139,7 @@ class StockScorer:
         """选股主流程"""
         # 评分
         scored_df = self.score_daily_signals(signals)
+        if scored_df.empty: return None
         scored_df = scored_df[scored_df['total_score'] > 1.1]
         if scored_df.empty:
             return None
@@ -297,24 +298,43 @@ class EnhancedTDXStrategy:
         return df
 
 
-    def _calculate_xvl(self,row):
-        if row['close'] > row['open']:
-            # 阳线
-            flow_in = row['QJJ'] * (row['high'] - row['low'])
-            flow_out = -row['QJJ'] * (row['high'] - row['close'] + row['open'] - row['low'])
-        elif row['close'] < row['open']:
-            # 阴线
-            flow_in = row['QJJ'] * (row['high'] - row['open'] + row['close'] - row['low'])
-            flow_out = -row['QJJ'] * (row['high'] - row['low'])
-        else:
-            # 平线
-            flow_in = row['volume'] / 2
-            flow_out = -row['volume'] / 2
+    def _calculate_xvl(self, df: pd.DataFrame) -> pd.Series:
+        """
+        向量化计算 XVL（资金流向）。
+        """
+        # 阳线、阴线和平线的条件
+        is_positive = df['close'] > df['open']
+        is_negative = df['close'] < df['open']
+        is_flat = df['close'] == df['open']
 
+        # 阳线的计算
+        flow_in_positive = df['QJJ'] * (df['high'] - df['low'])
+        flow_out_positive = -df['QJJ'] * (df['high'] - df['close'] + df['open'] - df['low'])
+
+        # 阴线的计算
+        flow_in_negative = df['QJJ'] * (df['high'] - df['open'] + df['close'] - df['low'])
+        flow_out_negative = -df['QJJ'] * (df['high'] - df['low'])
+
+        # 平线的计算
+        flow_in_flat = df['volume'] / 2
+        flow_out_flat = -df['volume'] / 2
+
+        # 使用条件选择计算结果
+        flow_in = (
+            flow_in_positive.where(is_positive, 
+            flow_in_negative.where(is_negative, flow_in_flat))
+        )
+        flow_out = (
+            flow_out_positive.where(is_positive, 
+            flow_out_negative.where(is_negative, flow_out_flat))
+        )
+
+        # 返回资金流向的总和
         return flow_in + flow_out
 
 
-    def _calculate_money_flow_indicators(self,df: pd.DataFrame) -> pd.DataFrame:
+
+    def _calculate_money_flow_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         计算资金流向相关指标
         """
@@ -332,13 +352,14 @@ class EnhancedTDXStrategy:
         df['QJJ'] = df['volume'] / ((df['high'] - df['low']) * 2 - abs(df['close'] - df['open']))
 
         # 5. 计算XVL（资金流向）
-        df['XVL'] = df.apply(self._calculate_xvl, axis=1)
+        # 假设 _calculate_xvl 是一个向量化的函数，否则需要改写为向量化形式
+        df['XVL'] = self._calculate_xvl(df)  # 确保 _calculate_xvl 支持向量化
 
         # 6. 计算ZLL（成交量占比）
         df['ZLL'] = df['volume'] / df['total_shares']
 
         # 7. 计算LIJIN1（限制ZLL的最大值为10）
-        df['LIJIN1'] = df['ZLL'].apply(lambda x: min(x, 10))
+        df['LIJIN1'] = df['ZLL'].clip(upper=10)
 
         # 8. 计算LIJIN（资金流向强度）
         df['LIJIN'] = (df['XVL'] / 20) / 1.15
@@ -361,12 +382,13 @@ class EnhancedTDXStrategy:
         # 14. 计算量增幅（LLJX的变化率）
         df['ZJLL'] = df['LLJX'].shift(1)
         df['QZJJ'] = ((df['LLJX'] - df['ZJLL']) / df['ZJLL']) * 100
-        df['量增幅'] = df.apply(
-            lambda row: abs(row['QZJJ']) if row['LLJX'] > 0 and row['ZJLL'] < 0 else
-            -row['QZJJ'] if row['LLJX'] < 0 and row['ZJLL'] < 0 and row['LLJX'] < row['ZJLL'] else
-            row['QZJJ'],
-            axis=1
-        )
+        df['量增幅'] = df['QZJJ'].where(
+            (df['LLJX'] > 0) & (df['ZJLL'] < 0),
+            df['QZJJ'].where(
+                (df['LLJX'] < 0) & (df['ZJLL'] < 0) & (df['LLJX'] < df['ZJLL']),
+                -df['QZJJ']
+            )
+        ).abs()
 
         # 15. 计算力度（LIJIN的缩放值）
         df['力度'] = df['LIJIN'] / 1000
@@ -377,16 +399,46 @@ class EnhancedTDXStrategy:
         # 17. 计算周增幅（周量的变化率）
         df['BB'] = df['周量'].shift(1)
         df['ZQZJJ'] = ((df['周量'] - df['BB']) / df['BB']) * 100
-        df['周增幅'] = df.apply(
-            lambda row: abs(row['ZQZJJ']) if row['周量'] > 0 and row['BB'] < 0 else
-            -row['ZQZJJ'] if row['周量'] < 0 and row['BB'] < 0 and row['周量'] < row['BB'] else
-            row['ZQZJJ'],
-            axis=1
-        )
+        df['周增幅'] = df['ZQZJJ'].where(
+            (df['周量'] > 0) & (df['BB'] < 0),
+            df['ZQZJJ'].where(
+                (df['周量'] < 0) & (df['BB'] < 0) & (df['周量'] < df['BB']),
+                -df['ZQZJJ']
+            )
+        ).abs()
 
         return df
 
 
+    def _calculate_volume_price_resonance(self, df: pd.DataFrame) -> pd.DataFrame:
+            """
+            计算量价共振三重滤波顶底背离指标
+            """
+            # 计算量能饱和度
+            df['hhv_amount'] = df['volume'].rolling(window=20).max()
+            df['hhv_close'] = df['close'].rolling(window=20).max()
+            df['volume_saturation'] = (df['volume'] / df['close']) / (df['hhv_amount'] / df['hhv_close']) * 100
+            df['volume_saturation'] = df['volume_saturation'].apply(lambda x: 100 if x > 100 else x)
+            
+            # 计算支撑和压力线
+            df['support'] = df['low'].rolling(window=30).min().rolling(window=2).mean()
+            df['resistance'] = df['high'].rolling(window=30).max().rolling(window=2).mean()
+            
+            
+            # 计算动量滤波
+            df['波段'] = df['ema_55'] = df['close'].ewm(span=55, adjust=False).mean()
+            df['趋势线'] = df['ema_21'] = df['close'].ewm(span=21, adjust=False).mean()
+            
+            # 计算顶底背离
+            df['RSV'] = (df['close'] - df['low'].rolling(9).min()) / (df['high'].rolling(9).max() - df['low'].rolling(9).min()) * 100
+            df['K'] = df['RSV'].ewm(com=2, adjust=False).mean()
+            df['D'] = df['K'].ewm(com=2, adjust=False).mean()
+            df['J'] = 3 * df['K'] - 2 * df['D']
+            
+            df['顶背离'] = (df['close'] > df['close'].shift(1)) & (df['K'] < df['K'].shift(1)) & (df['D'] < df['D'].shift(1))
+            df['底背离'] = (df['close'] < df['close'].shift(1)) & (df['K'] > df['K'].shift(1)) & (df['D'] > df['D'].shift(1))
+            
+            return df
 
 
     def _generate_core_signals(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -480,20 +532,28 @@ class EnhancedTDXStrategy:
         生成完整信号（优化执行流程）
         """
         # 数据获取
+        print("正在获取数据...")
         raw_data = self._fetch_precalculated_data(start_date,end_date)
         
         # 特征工程
+        print("正在生成特征...")
         with_angles = self._calculate_ma_angles(raw_data)
         
         # 信号生成
+        print("正在生成信号...")
         signals = self._generate_core_signals(with_angles)
 
         # 计算市场热度
+        print("正在计算市场热度...")
         market_heat = self._calculate_market_heat(raw_data)
+
+        # 计量价共振三重滤波顶底背离指标
+        #volume_price_resonance = self._calculate_volume_price_resonance(raw_data)
 
         return market_heat
     def get_signals(self, start_date: str,end_date:str) -> pd.DataFrame:        
         """获取买点信号"""
+        print("计算买点信号...")
         signals = self.generate_features(start_date,end_date)
         # 综合买入条件
         buy_condition = (
@@ -504,7 +564,9 @@ class EnhancedTDXStrategy:
             signals['macd_condition'] &
             (signals['jc_condition']|signals['macd_jc']) &  # JC 条件
             (signals['ma_20'] < signals['ma_55']) &  # MA20 < MA55
-            (signals['ma_55'] > signals['ma_240']) # MA55 > MA240
+            (signals['ma_55'] > signals['ma_240'])  # MA55 > MA240
+            #(signals['close'] > signals['support'])  # 价格在支撑线上方
+            #(signals['底背离'])  # 底背离信号
         )
         
         buy_signals= signals[buy_condition][[
@@ -514,8 +576,13 @@ class EnhancedTDXStrategy:
             'bb_middle', 'bb_lower','close','money_flow_positive',
             'money_flow_increasing','money_flow_trend','money_flow_weekly','money_flow_weekly_increasing','量增幅','量基线','主生量','growth','market_heat'
         ]].assign(signal_type='buy')
-                
+
+        selected_buy_signals = self.Scorer.select_top_stocks(buy_signals,5)
+
+        if selected_buy_signals is not None:
+            selected_buy_signals=selected_buy_signals.set_index('date')       
         # 综合卖出条件
+        print("计算卖点信号...")
         sell_condition = (
             (signals['ma_20'] > signals['ma_5']) &  # 短期均线下穿长期
             (
@@ -532,6 +599,7 @@ class EnhancedTDXStrategy:
         profitable_sell_condition = (           
                 (signals['close'] < signals['ma_20']) |  # 价格跌破20日均线
                 (signals['money_flow_trend'] == False)  # 资金流向趋势转弱
+
         )
         # 合并卖出条件
         combined_sell_condition = sell_condition | profitable_sell_condition
@@ -543,6 +611,6 @@ class EnhancedTDXStrategy:
             'bb_middle', 'bb_lower','close','money_flow_positive',
             'money_flow_increasing','money_flow_trend','money_flow_weekly','money_flow_weekly_increasing','量增幅','量基线','主生量','growth','market_heat'
         ]].assign(signal_type='sell')
-        selected_buy_signals = self.Scorer.select_top_stocks(buy_signals,5)
+        
         #scored_sell_signals = self.Scorer.score_daily_signals(sell_signals)
-        return [selected_buy_signals.set_index('date'), sell_signals.set_index('date')]
+        return [selected_buy_signals, sell_signals.set_index('date')]

@@ -237,22 +237,18 @@ class BacktestOrchestrator:
             position_limit=self.position_limit 
             )
         
-        # 获取回测日期范围
-        dates = self.trading_dates[
-            (self.trading_dates >= pd.to_datetime(start_date)) & 
-            (self.trading_dates < pd.to_datetime(end_date))
-        ]
-        all_buy_signals = pd.DataFrame()
-        all_sell_signals = pd.DataFrame()
         years=self.date_by_year(start_date, end_date)
         for year_start, year_end in years:
+            # 获取回测日期范围
+            dates = self.trading_dates[
+            (self.trading_dates >= pd.to_datetime(year_start)) & 
+            (self.trading_dates < pd.to_datetime(year_end))]
             year_buy_signals,year_sell_signals=self.strategy.get_signals(start_date,end_date)
-            all_buy_signals=pd.concat([all_buy_signals,year_buy_signals])
-            all_sell_signals=pd.concat([all_sell_signals,year_sell_signals])
-
+            self._mian_process(dates,simulator,year_buy_signals,year_sell_signals)
+        return self._generate_report(simulator)
+    def _mian_process(self,dates,simulator,year_buy_signals,year_sell_signals):
         for date in tqdm(dates, desc="回测进度"):
             date=date.strftime("%Y-%m-%d")
-            print('\n'+date)
             #处理卖出计划
             if simulator.sell_signals:
                 if date in simulator.sell_signals:
@@ -267,19 +263,19 @@ class BacktestOrchestrator:
                     del simulator.buy_signals[date]
                 # 处理卖出信号
             #print("处理卖出信号")
-            self._process_sell_signals(date,simulator,all_sell_signals)
+            self._process_sell_signals(date,simulator,year_sell_signals)
             # 检查止损
             #print("检查止损")
             self._check_stop_loss(date, simulator)            
             # 处理买入信号
             #print("处理买入信号")
-            self._process_buy_signals(date,simulator,all_buy_signals)          
+            self._process_buy_signals(date,simulator,year_buy_signals)
             # 记录每日净值
             self._record_daily_value(date, simulator)            
             # 更新实时图表
             if self.live_plot:
                 self._update_live_plot(simulator)            
-        return self._generate_report(simulator)
+        
 
     def _process_sell_signals(self, date, simulator,signals):
         """处理卖出信号"""
@@ -488,13 +484,6 @@ class BacktestOrchestrator:
     
     def _generate_report(self, simulator):
         """生成详细报告"""
-        df = pd.DataFrame(simulator.portfolio['history']).set_index('date')
-        df['returns'] = df['value'].pct_change()
-        
-        plt.figure(figsize=(12,6))
-        df['value'].plot(title='Portfolio Value Curve')
-        plt.savefig('portfolio_curve.png')
-        
         trades = pd.DataFrame(simulator.portfolio['history'])
         trade_filename = 'trades_report.xlsx'
         with pd.ExcelWriter(trade_filename) as writer:
@@ -565,7 +554,7 @@ if __name__ == "__main__":
   
     # 运行回测
     orchestrator = BacktestOrchestrator(live_plot=True)
-    report = orchestrator.run(start_date='2016-03-13', end_date='2018-03-21')    
+    report = orchestrator.run(start_date='2017-01-13', end_date='2018-12-31')    
     print("回测结果摘要:")
     print(f"最终净值: {report['summary']['final_value']:,.2f}")
     print(f"总收益率: {report['summary']['total_return']:.2%}")
