@@ -5,7 +5,152 @@ from scipy.stats import linregress
 from typing import Dict, Tuple
 from datetime import datetime
 from db_operations import *
- 
+from tqdm import tqdm
+
+class StockScorer:
+    def __init__(self, config: Dict = None):
+        self.config = config or {
+            'weights': {
+                'technical': 0.3,  # 调整权重
+                'capital_flow': 0.3,  # 新增资金流向权重
+                'fundamental': 0.2,
+                'market_heat': 0.2  # 调整市场热度权重
+            },
+             # 新增资金流子项权重配置
+            'capital_flow_weights': {
+                'positive_flow': 0.2,    # 资金流入
+                'flow_increasing': 0.25,  # 流入加速
+                'trend_strength': 0.3,    # 趋势强度
+                'weekly_flow': 0.15,      # 周级别流入
+                'weekly_increasing': 0.1  # 周流入加速
+            },
+            'fundamental_metrics': ['pe_ratio', 'roe', 'profit_growth'],
+            'heat_window': 30  # 市场热度计算窗口
+        }
+
+    def _get_fundamental_score(self, symbol: str) -> float:
+        """获取财务指标评分（带缓存机制）"""
+        '''
+        try:
+            # 从数据库获取预存财务数据
+            conn = sqlite3.connect('./db/stock_data.db')
+            query = f"SELECT * FROM fundamental_data WHERE symbol='{symbol}'"
+            df = pd.read_sql(query, conn)
+            conn.close()
+            
+            if not df.empty:
+                latest = df.iloc[-1]
+                return sum(
+                    latest[metric] * self.config['fundamental_weights'][metric]
+                    for metric in self.config['fundamental_metrics']
+                )
+                
+            # 实时获取作为后备
+            df = ak.stock_financial_report_sina(symbol=symbol, indicator="主要指标")
+            return df['net_profit'].iloc[-1] / df['revenue'].iloc[-1]
+        except Exception as e:
+            print(f"财务数据获取失败 {symbol}: {str(e)}")
+            return 0
+        '''
+        return 0
+
+    def _calculate_technical_score(self, row: pd.Series) -> float:
+        """技术指标评分（基于策略信号）"""
+        tech_score = 0
+        # 均线系统评分
+        tech_score += (row['ma_5'] > row['ma_20']) * 0.2
+        tech_score += (row['angle_ma_10'] > 30) * 0.2
+        tech_score += (row['macd'] > row['macd_signal']) * 0.3
+        
+        # 成交量动能
+        volume_score = min(row['volume'] / row['volume_ma5'], 3)  # 限制最大3倍
+        tech_score += volume_score * 0.3
+
+        # 超买超卖评分（新增）
+        tech_score += (row['rsi_14'] < 70) * 0.1  # 未超买加分
+        tech_score += (row['kdj_k'] < 80) * 0.1   # KDJ 未超买加分
+        tech_score += (row['cci_20'] < 100) * 0.1  # CCI 未超买加分
+        tech_score += (row['close'] < row['bb_upper']) * 0.1  # 布林带未超买加分
+        
+        return tech_score
+
+    def _calculate_capital_flow(self, row: pd.Series) -> float:
+        """基于策略生成的新资金流信号进行评分"""
+        flow_score = 0
+        
+        # 资金流入基础分
+        if row['money_flow_positive']:
+            flow_score += self.config['capital_flow_weights']['positive_flow'] * 1.2  # 正值强化
+            
+        # 流入加速
+        if row['money_flow_increasing']:
+            flow_score += self.config['capital_flow_weights']['flow_increasing'] * 1.0
+            
+        # 趋势强度
+        if row['money_flow_trend']:
+            trend_strength = min(row['主生量'] / row['量基线'], 2.0)  # 限制最大2倍
+            flow_score += self.config['capital_flow_weights']['trend_strength'] * trend_strength
+            
+        # 周级别资金流
+        if row['money_flow_weekly']:
+            flow_score += self.config['capital_flow_weights']['weekly_flow'] * 1.0
+            
+        # 周流入加速
+        if row['money_flow_weekly_increasing']:
+            flow_score += self.config['capital_flow_weights']['weekly_increasing'] * 1.5  # 加速给予更高权重
+            
+        # 量增幅强化
+        if row['量增幅'] > 10:  # 显著增长
+            flow_score *= 1.2
+        elif row['量增幅'] < -5:  # 显著减少
+            flow_score *= 0.8
+            
+        return max(flow_score, 1.0)  # 限制最大1分
+
+    
+
+    def score_daily_signals(self, signals: pd.DataFrame) -> pd.DataFrame:
+        """每日信号综合评分"""
+        for _, row in tqdm(signals.iterrows(), total=len(signals), desc="每日评分"):                
+            # 计算各维度评分
+            technical_score = self._calculate_technical_score(row)
+            capital_flow_score = self._calculate_capital_flow(row)
+            fundamental_score = self._get_fundamental_score(row['symbol'])
+            market_heat_score = row['market_heat']
+            # 加权总分
+            weights = self.config['weights']
+            total_score = (
+                technical_score * weights['technical'] +
+                capital_flow_score * weights['capital_flow'] +
+                fundamental_score * weights['fundamental'] +
+                market_heat_score * weights['market_heat']
+            )
+            
+            # 将评分结果添加到行中
+            signals.loc[row.name, 'technical'] = technical_score
+            signals.loc[row.name, 'capital_flow'] = capital_flow_score
+            signals.loc[row.name, 'fundamental'] = fundamental_score
+            signals.loc[row.name, 'market_heat'] = market_heat_score
+            signals.loc[row.name, 'total_score'] = total_score
+        
+        return signals
+
+    def select_top_stocks(self, signals: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
+        """选股主流程"""
+        # 评分
+        scored_df = self.score_daily_signals(signals)
+        scored_df = scored_df[scored_df['total_score'] > 1.1]
+        if scored_df.empty:
+            return None
+        else:
+            # 每日TopN选择
+            final_picks = []
+            for date in scored_df['date'].unique():
+                daily = scored_df[scored_df['date'] == date]
+                top = daily.nlargest(top_n, 'total_score')
+                final_picks.append(top)
+                
+            return pd.concat(final_picks)
 class EnhancedTDXStrategy:
     def __init__(self, 
                  config: Dict = {
@@ -27,6 +172,7 @@ class EnhancedTDXStrategy:
         self.db_url = "sqlite:///c:/db/stock_data.db"
         self.db_manager = DatabaseManager(self.db_url)
         self.db_manager.ensure_tables_exist()
+        self.Scorer = StockScorer()
         
         # 预校验参数
         self._validate_config()
@@ -346,9 +492,9 @@ class EnhancedTDXStrategy:
         market_heat = self._calculate_market_heat(raw_data)
 
         return market_heat
-    def get_signals(self, start_date: str,end_date:str) -> pd.DataFrame:
+    def get_signals(self, start_date: str,end_date:str) -> pd.DataFrame:        
         """获取买点信号"""
-        signals = self.generate_features(start_date,end_date)    
+        signals = self.generate_features(start_date,end_date)
         # 综合买入条件
         buy_condition = (
             signals['growth'] &
@@ -397,5 +543,6 @@ class EnhancedTDXStrategy:
             'bb_middle', 'bb_lower','close','money_flow_positive',
             'money_flow_increasing','money_flow_trend','money_flow_weekly','money_flow_weekly_increasing','量增幅','量基线','主生量','growth','market_heat'
         ]].assign(signal_type='sell')
-
-        return [buy_signals, sell_signals]
+        selected_buy_signals = self.Scorer.select_top_stocks(buy_signals,5)
+        #scored_sell_signals = self.Scorer.score_daily_signals(sell_signals)
+        return [selected_buy_signals.set_index('date'), sell_signals.set_index('date')]

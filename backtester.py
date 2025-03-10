@@ -8,7 +8,8 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from tqdm import tqdm
 from datetime import datetime, timedelta
-from stock_selector import *
+from stock_report import  *
+from strategy import *
 
 class DatabaseIntegrator:
     """数据库集成模块"""
@@ -117,11 +118,11 @@ class TradingSimulator:
 
 class BacktestOrchestrator:
     """回测总控模块"""
-    def __init__(self, strategy, db_path='c:/db/stock_data.db', live_plot=False,position_limit=10, commission_rate=0.0003):
+    def __init__(self, db_path='c:/db/stock_data.db', live_plot=False,position_limit=10, commission_rate=0.0003):
         self.position_limit = position_limit  # 新增参数
         self.db = DatabaseIntegrator(db_path)
-        self.strategy = strategy
-        self.Selector = StockSelector()
+        self.strategy = EnhancedTDXStrategy()
+        self.Report = StockReport()
         self.Scorer = StockScorer()
         self.price_matrix = None
         self.trading_dates = None
@@ -210,6 +211,23 @@ class BacktestOrchestrator:
         self.trading_dates = self.db.fetch_trading_dates()
         self.price_matrix = self.db.load_price_matrix(start_date, end_date)
         
+
+    def date_by_year(self,start_date, end_date):
+        # 将字符串日期转换为 datetime 对象
+        start_date = pd.to_datetime(start_date)
+        end_date = pd.to_datetime(end_date)
+        
+        # 生成按年分段的日期范围
+        year_ranges = []
+        current_start = start_date
+        while current_start <= end_date:
+            current_end = pd.to_datetime(f"{current_start.year}-12-31")
+            if current_end > end_date:
+                current_end = end_date
+            year_ranges.append((current_start, current_end))
+            current_start = pd.to_datetime(f"{current_start.year + 1}-01-01")
+        return year_ranges
+
     def run(self, start_date, end_date):
         """运行完整回测流程"""
         self.initialize(start_date, end_date)
@@ -224,6 +242,14 @@ class BacktestOrchestrator:
             (self.trading_dates >= pd.to_datetime(start_date)) & 
             (self.trading_dates < pd.to_datetime(end_date))
         ]
+        all_buy_signals = pd.DataFrame()
+        all_sell_signals = pd.DataFrame()
+        years=self.date_by_year(start_date, end_date)
+        for year_start, year_end in years:
+            year_buy_signals,year_sell_signals=self.strategy.get_signals(start_date,end_date)
+            all_buy_signals=pd.concat([all_buy_signals,year_buy_signals])
+            all_sell_signals=pd.concat([all_sell_signals,year_sell_signals])
+
         for date in tqdm(dates, desc="回测进度"):
             date=date.strftime("%Y-%m-%d")
             print('\n'+date)
@@ -241,13 +267,13 @@ class BacktestOrchestrator:
                     del simulator.buy_signals[date]
                 # 处理卖出信号
             #print("处理卖出信号")
-            self._process_sell_signals(date,simulator)
+            self._process_sell_signals(date,simulator,all_sell_signals)
             # 检查止损
             #print("检查止损")
             self._check_stop_loss(date, simulator)            
             # 处理买入信号
             #print("处理买入信号")
-            self._process_buy_signals(date,simulator)          
+            self._process_buy_signals(date,simulator,all_buy_signals)          
             # 记录每日净值
             self._record_daily_value(date, simulator)            
             # 更新实时图表
@@ -255,14 +281,16 @@ class BacktestOrchestrator:
                 self._update_live_plot(simulator)            
         return self._generate_report(simulator)
 
-    def _process_sell_signals(self, date, simulator):
+    def _process_sell_signals(self, date, simulator,signals):
         """处理卖出信号"""
         # 只对当前持仓股票生成卖出信号
         holding_symbols = list(simulator.portfolio['positions'].keys())
         if not holding_symbols:
             return
         # 获取当前持仓股票的卖出信号
-        sell_signals = self.strategy.get_sell_signals(date)
+        sell_signals = signals[signals.index == date]
+        if sell_signals.empty:
+            return
         sell_signals = sell_signals[sell_signals['symbol'].isin(holding_symbols)]
         # 筛选出盈利的持仓股票
         profitable_sell_signals = []
@@ -279,8 +307,10 @@ class BacktestOrchestrator:
                     next_open_price,next_open_day = self._get_next_open_price(date, row['symbol'])
                     if next_open_day:
                         symbol_data = sell_signals[sell_signals['symbol'] == row['symbol']]
-                        scored_signals = self.Scorer.score_daily_signals(symbol_data)
-                        signal_info = self.Selector.generate_report(scored_signals)
+                        signal_info = {
+                            'type': 'sell_signal',
+                            'reason': f"出现卖出信号"
+                        }
                         if next_open_day not in simulator.sell_signals:
                             simulator.sell_signals[next_open_day] = []
                         simulator.sell_signals[next_open_day].append([row['symbol'],next_open_price,next_open_day,simulator.portfolio['positions'][row['symbol']]['qty'],signal_info])
@@ -288,19 +318,15 @@ class BacktestOrchestrator:
                         #                        simulator.portfolio['positions'][row['symbol']]['qty'])
                 except:
                     continue
-    def _process_buy_signals(self, date,  simulator):
+    def _process_buy_signals(self, date,  simulator,signals):
         """处理买入信号"""
         available_slots = self.position_limit - len(simulator.portfolio['positions'])
         if available_slots <= 0: 
             return
         
         # 获取买入信号
-        buy_signals = self.strategy.get_buy_signals(date)
-        if buy_signals.empty: 
-            return        
-        # 对买入信号进行评分，选择评分最高的前3个信号
-        scored_signals = self.Selector.select_top_stocks(buy_signals,3)        
-        if scored_signals is None: 
+        scored_signals = signals[signals.index == date]
+        if scored_signals.empty: 
             return
         holding_symbols = list(simulator.portfolio['positions'].keys())
         
@@ -314,8 +340,7 @@ class BacktestOrchestrator:
                     next_open=self._get_next_open_day(date)
                     if next_open != next_open_day:
                         continue
-                    # 计算总账户价值
-                    
+                    # 计算总账户价值                    
                     total_account_value = self._total_value(date, simulator)
                     max_investment_cash = total_account_value//self.position_limit
                     max_investment = simulator.portfolio['cash']//available_slots
@@ -325,7 +350,7 @@ class BacktestOrchestrator:
                     if max_afford > 0:
                         # 获取信号信息
                         symbol_data = scored_signals[scored_signals['symbol'] == row['symbol']]
-                        signal_info = self.Selector.generate_report(symbol_data)
+                        signal_info = self.Report.generate_report(symbol_data)
                         if next_open_day not in simulator.buy_signals:
                             simulator.buy_signals[next_open_day] = []
                         simulator.buy_signals[next_open_day].append([row['symbol'],next_open_price,next_open_day,max_afford,signal_info])
@@ -339,12 +364,17 @@ class BacktestOrchestrator:
     def _get_next_open_price(self, date, symbol):
         """获取下一个有效开盘价"""
         next_date = self._get_next_open_day(date)
-        while next_date:
+        not_find_price = True
+        while not_find_price:
             next_price = self.price_matrix.loc[next_date, symbol]
             if pd.isna(next_price):
                 next_date = self._get_next_open_day(next_date)
-            return self.price_matrix.loc[next_date, symbol],next_date
-        return None
+                if next_date is None:
+                    return None,None
+            else:
+                not_find_price = False
+        return self.price_matrix.loc[next_date, symbol],next_date
+
     def _get_next_open_day(self,date):
         # 寻找下一个有效交易日
         if isinstance(date, str):
@@ -532,12 +562,10 @@ class BacktestOrchestrator:
 
 # 使用示例
 if __name__ == "__main__":
-    from strategy import EnhancedTDXStrategy    
-    # 初始化策略
-    strategy = EnhancedTDXStrategy()    
+  
     # 运行回测
-    orchestrator = BacktestOrchestrator(strategy,live_plot=True)
-    report = orchestrator.run(start_date='2016-01-19', end_date='2020-12-31')    
+    orchestrator = BacktestOrchestrator(live_plot=True)
+    report = orchestrator.run(start_date='2016-03-13', end_date='2018-03-21')    
     print("回测结果摘要:")
     print(f"最终净值: {report['summary']['final_value']:,.2f}")
     print(f"总收益率: {report['summary']['total_return']:.2%}")
