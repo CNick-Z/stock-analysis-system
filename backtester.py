@@ -418,6 +418,8 @@ class BacktestOrchestrator:
                         continue
                     # 计算总账户价值                    
                     total_account_value = self._total_value(date, simulator)
+                    if (total_account_value-simulator.portfolio['cash'])/total_account_value>current_position:
+                        continue
                     max_investment_cash = total_account_value*current_position//self.position_limit
                     max_investment = simulator.portfolio['cash']//available_slots
                     max_investment = min(max_investment, max_investment_cash)
@@ -639,7 +641,7 @@ if __name__ == "__main__":
   
     # 运行回测
     orchestrator = BacktestOrchestrator(live_plot=True)
-    report = orchestrator.run(start_date='2015-01-13', end_date='2018-12-31')    
+    report = orchestrator.run(start_date='2016-01-13', end_date='2024-12-31')    
     print("回测结果摘要:")
     print(f"最终净值: {report['summary']['final_value']:,.2f}")
     print(f"总收益率: {report['summary']['total_return']:.2%}")
