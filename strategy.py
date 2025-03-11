@@ -11,9 +11,9 @@ class StockScorer:
     def __init__(self, config: Dict = None):
         self.config = config or {
             'weights': {
-                'technical': 0.25,  # 调整权重
+                'technical': 0.20,  # 调整权重
                 'capital_flow': 0.35,  # 新增资金流向权重
-                'fundamental': 0.2,
+                'fundamental': 0.25,
                 'market_heat': 0.2  # 调整市场热度权重
             },
              # 新增资金流子项权重配置
@@ -58,9 +58,9 @@ class StockScorer:
         """技术指标评分（基于策略信号）"""
         tech_score = 0
         # 均线系统评分
-        tech_score += (row['ma_5'] > row['ma_20']) * 0.2
+        tech_score += (row['ma_5'] > row['ma_20']) * 0.25
         tech_score += (row['angle_ma_10'] > 30) * 0.15
-        tech_score += (row['macd'] > row['macd_signal']) * 0.35
+        tech_score += (row['macd'] > row['macd_signal']) * 0.30
         
         # 成交量动能
         volume_score = min(row['volume'] / row['volume_ma5'], 3)  # 限制最大3倍
@@ -140,7 +140,7 @@ class StockScorer:
         # 评分
         scored_df = self.score_daily_signals(signals)
         if scored_df.empty: return None
-        scored_df = scored_df[scored_df['total_score'] > 1.1]
+        scored_df = scored_df[scored_df['total_score'] > 1]
         if scored_df.empty:
             return None
         else:
@@ -224,6 +224,7 @@ class EnhancedTDXStrategy:
         }
         
         # 加载技术指标数据
+        print("加载技术指标数据...")
         tech_df = self.db_manager.load_data(
             table=TechnicalIndicators,
             filter_conditions={
@@ -232,6 +233,7 @@ class EnhancedTDXStrategy:
         ).rename(columns=tech_columns)
         
         # 加载行情数据
+        print("加载行情数据...")
         price_df = self.db_manager.load_data(
             table=DailyData,
             filter_conditions={
@@ -243,6 +245,7 @@ class EnhancedTDXStrategy:
         )
         
         #加载基础数据
+        print("加载基础数据...")
         info_df = self.db_manager.load_data(
             table=StockBasicInfo,
             filter_conditions={
@@ -252,6 +255,7 @@ class EnhancedTDXStrategy:
         )
 
         # 合并数据集
+        print("合并数据集...")
         merged_df = pd.merge(
             tech_df,
             price_df,

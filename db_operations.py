@@ -29,8 +29,9 @@ class DailyData(Base):
     turnover_rate = Column(Float)
     processed = Column(Boolean, default=False)
     __table_args__ = (
-        Index('idx_symbol_date', 'symbol', 'date'),
+        Index('idx_date_symbol', 'date', 'symbol'),
         Index('idx_processed_symbol', 'processed', 'symbol'),
+        Index('idx_date', 'date'),
     )
 
 class TechnicalIndicators(Base):
@@ -56,7 +57,8 @@ class TechnicalIndicators(Base):
     bb_middle = Column(Float)
     bb_lower = Column(Float)
     __table_args__ = (
-        Index('idx_tec_symbol_date', 'symbol', 'date'),
+        Index('idx_tec_date_symbol', 'date', 'symbol'),
+        Index('idx_tec_date', 'date'),
     )
 
 class StockBasicInfo(Base):
