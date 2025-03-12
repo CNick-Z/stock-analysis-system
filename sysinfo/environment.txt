@@ -8,3 +8,4 @@ pip install sqlalchemy
 pip install openpyxl
 pip install scikit-learn
 pip install seaborn
+pip install numba

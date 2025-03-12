@@ -7,7 +7,6 @@ from datetime import datetime
 from db_operations import *
 from tqdm import tqdm
 import talib as ta
-from numba import njit, prange
 
 class StockScorer:
     def __init__(self, config: Dict = None):
@@ -160,7 +159,14 @@ class EnhancedTDXStrategy:
                     'ma_windows': (5, 10, 20, 55, 240),
                     'angle_window': 5,
                     'volume_ma_window': 5,
-                    'macd_params': (12, 26, 9)
+                    'macd_params': (12, 26, 9),
+                    'trend_strategy': {
+                    'ema_period': 55,
+                    'breakout_multiplier': 1.19,
+                    'persistence_window': 21,
+                    'divergence_lookback': 14,
+                    'support_resistance_window': 30
+                    }
                  }):
         """
         深度优化后的策略类，保留原有核心逻辑
@@ -276,7 +282,119 @@ class EnhancedTDXStrategy:
         merged_df['date'] = pd.to_datetime(merged_df['date'])
         return merged_df.sort_values(['symbol', 'date']).reset_index(drop=True)
 
+    def _calculate_ema_breakout(self, df: pd.DataFrame) -> pd.DataFrame:
+        """EMA突破策略计算（向量化优化版）"""
+        # 使用 numexpr 加速计算
+        ema_period = self.config['trend_strategy']['ema_period']
+        multiplier = self.config['trend_strategy']['breakout_multiplier']
+        
+        # 向量化EMA计算
+        df['ema_55'] = df['close'].ewm(span=ema_period, adjust=False).mean()
+        df['ema_breakout'] = df['close'] > (df['ema_55'] * multiplier)
+        return df
     
+    def _dynamic_trend_persistence(self, df: pd.DataFrame) -> pd.DataFrame:
+        """动态趋势持续性策略（矩阵运算优化版）"""
+        window = self.config['trend_strategy']['persistence_window']
+        close_vals = df['close'].values  # 转换为numpy数组加速
+        
+        # 预计算时间序列矩阵
+        x = np.arange(window)
+        x_mean = x.mean()
+        y_mean = df['close'].rolling(window, min_periods=1).mean().values
+        
+        # 向量化线性回归斜率计算
+        numerator = ((x - x_mean) * (close_vals.reshape(-1,1) - y_mean.reshape(-1,1))).sum(axis=1)
+        denominator = ((x - x_mean)**2).sum()
+        df['trend_strength'] = (numerator / denominator) * 100
+        
+        # 二值化趋势方向后快速滚动求和
+        trend_dir = (df['trend_strength'] > 0).astype(int)
+        df['trend_consistency'] = trend_dir.rolling(window, min_periods=1).mean()
+        
+        # 布尔索引向量化
+        ema_cond = df['close'] > df['ema_55']
+        strength_cond = df['trend_strength'] > 0.5
+        consistency_cond = df['trend_consistency'] > 0.7
+        df['strong_uptrend'] = strength_cond & consistency_cond & ema_cond
+        return df
+
+    def _multi_dim_divergence(self, df: pd.DataFrame) -> pd.DataFrame:
+        """多维度背离检测（滑动窗口视图优化）"""
+        lookback = self.config['trend_strategy']['divergence_lookback']
+        close = df['close'].values
+        macd = df['macd'].values
+        rsi = df['rsi_14'].values
+        volume = df['volume'].values
+        
+        # 创建滑动窗口视图（避免复制数据）
+        def rolling_view(arr, window):
+            shape = (arr.size - window + 1, window)
+            strides = (arr.strides[0], arr.strides[0])
+            return np.lib.stride_tricks.as_strided(arr, shape=shape, strides=strides)
+        
+        # 价格极值检测（向量化）
+        close_view = rolling_view(close, lookback)
+        df['price_peak'] = np.max(close_view, axis=1)
+        df['price_valley'] = np.min(close_view, axis=1)
+        
+        # ---- MACD顶背离检测 ----
+        macd_view = rolling_view(macd, lookback)
+        macd_peak = np.max(macd_view, axis=1)  # 窗口内MACD峰值
+        # 当前价格创新高但MACD未创新高
+        macd_top_divergence = (close[lookback-1:] > np.roll(price_peak, lookback)[lookback-1:]) & \
+                            (macd[lookback-1:] < np.roll(macd_peak, lookback)[lookback-1:])
+        
+        # ---- RSI顶背离检测 ----
+        rsi_view = rolling_view(rsi, lookback)
+        rsi_peak = np.max(rsi_view, axis=1)  # 窗口内RSI峰值
+        # 当前价格创新高但RSI未创新高
+        rsi_top_divergence = (close[lookback-1:] > np.roll(price_peak, lookback)[lookback-1:]) & \
+                        (rsi[lookback-1:] < np.roll(rsi_peak, lookback)[lookback-1:])
+        
+        # ---- 成交量顶背离检测 ----
+        volume_view = rolling_view(volume, lookback)
+        volume_peak = np.max(volume_view, axis=1)  # 窗口内成交量峰值
+        # 当前价格创新高但成交量未创新高
+        volume_top_divergence = (close[lookback-1:] > np.roll(price_peak, lookback)[lookback-1:]) & \
+                            (volume[lookback-1:] < np.roll(volume_peak, lookback)[lookback-1:])
+        
+        # ---- 结果对齐 ----
+        # 前lookback-1行填充NaN
+        nan_pad = np.full(lookback-1, np.nan)
+        df['price_peak'] = np.concatenate([nan_pad, price_peak])
+        df['price_valley'] = np.concatenate([nan_pad, price_valley])
+        
+        df['macd_divergence'] = np.concatenate([nan_pad, macd_top_divergence])
+        df['rsi_divergence'] = np.concatenate([nan_pad, rsi_top_divergence])
+        df['volume_divergence'] = np.concatenate([nan_pad, volume_top_divergence])
+        return df
+
+    def _band_support_resistance(self, df: pd.DataFrame) -> pd.DataFrame:
+        """带状支撑压力策略（并行滚动计算）"""
+        window = self.config['trend_strategy']['support_resistance_window']
+        
+        # 使用numba加速滚动计算
+        @njit(parallel=True)
+        def rolling_min_max(arr, window):
+            n = len(arr)
+            min_vals = np.empty(n)
+            max_vals = np.empty(n)
+            for i in prange(n):
+                start = max(0, i - window + 1)
+                min_vals[i] = np.min(arr[start:i+1])
+                max_vals[i] = np.max(arr[start:i+1])
+            return min_vals, max_vals
+        
+        low = df['low'].values
+        high = df['high'].values
+        df['dynamic_support'], df['dynamic_resistance'] = rolling_min_max(low, window), rolling_min_max(high, window)
+        
+        # 向量化条件判断
+        df['support_break'] = df['close'] < df['dynamic_support'].shift(1)
+        df['resistance_break'] = df['close'] > df['dynamic_resistance'].shift(1)
+        df['band_buy_signal'] = (df['close'] > 1.02*df['dynamic_support']) & (df['close'] < 0.98*df['dynamic_resistance'])
+        return df
 
     def _calculate_angle(self,series, window):
         """
@@ -518,7 +636,7 @@ class EnhancedTDXStrategy:
         #涨幅条件
         #df['growth'] = (df['close'] - df['open']) / df['open'] * 100
         #df['growth'] = df['growth'].round(1)
-        df['growth'] = (df['close']>=df['open']*1.03) & (df['high']<=df['open']*1.05)
+        df['growth'] = df['close']>=df['open']*1.03
 
         # 计算多周期MACD
         print('计算多周期MACD...')
@@ -589,7 +707,11 @@ class EnhancedTDXStrategy:
             (df['ma_20'] > df['ma_20'].shift(1)) &  # MA20 上升
             (abs(df['ma_5'] - df['ma_20']) / df['ma_20'] < 0.02)  # MA5 和 MA20 的差值占 MA20 的比例小于 2%
         )
-
+        print('计算量价共振三重滤波顶底背离指标...')
+        df = self._calculate_ema_breakout(df)
+        df = self._dynamic_trend_persistence(df)
+        df = self._multi_dim_divergence(df)
+        df = self._band_support_resistance(df)
         return df
     def _calculate_market_heat(self, data: pd.DataFrame) -> pd.DataFrame:
         """
@@ -625,7 +747,7 @@ class EnhancedTDXStrategy:
 
         # 计算市场热度
         print("正在计算市场热度...")
-        market_heat = self._calculate_market_heat(signals)
+        market_heat = self._calculate_market_heat(raw_data)
 
         # 计量价共振三重滤波顶底背离指标
         #volume_price_resonance = self._calculate_volume_price_resonance(raw_data)
@@ -648,8 +770,24 @@ class EnhancedTDXStrategy:
             #(signals['close'] > signals['support'])  # 价格在支撑线上方
             #(signals['底背离'])  # 底背离信号
         )
+        enhanced_buy_condition= (
+            df['ema_breakout'] &
+            df['strong_uptrend'] &
+            (~df['macd_divergence']) &
+            df['band_buy_signal'] &
+            (df['volume_divergence'] == False)
+        )
 
-        buy_signals= signals[buy_condition][[
+        macd_buy_condition = (
+            (df['macd_daily_jc'] | df['macd_weekly_jc'] | df['macd_monthly_jc']) &  # 至少一个周期金叉
+            (
+                (df['macd_daily_jc'].rolling(3).sum() >= 1) &  # 日线近期有金叉
+                (df['macd_weekly_jc'].rolling(6).sum() >= 1) &  # 周线近期有金叉
+                (df['macd_monthly_jc'].rolling(12).sum() >= 1)  # 月线近期有金叉
+            )
+        )
+        combined_buy_condition = buy_condition | enhanced_buy_condition |macd_buy_condition
+        buy_signals= signals[combined_buy_condition][[
             'date', 'symbol', 'name',  'industry','ma_5', 'ma_10', 'ma_20', 'angle_ma_10',
             'volume_ma5', 'macd', 'macd_signal', 'volume', 'rsi_14','macd_jc',
             'kdj_k', 'kdj_d', 'cci_20', 'williams_r', 'bb_upper',
@@ -678,14 +816,19 @@ class EnhancedTDXStrategy:
         )
 
         profitable_sell_condition = (           
-                (signals['close'] < signals['ma_20']) &  # 价格跌破20日均线
+                (signals['close'] < signals['ma_20']) |  # 价格跌破20日均线
                 (signals['money_flow_trend'] == False)  # 资金流向趋势转弱
 
         )
 
+        enhanced_sell_condition = (
+            df['support_break'] |
+            df['macd_divergence'] |
+            (df['trend_consistency'] < 0.3)
+        )
 
         # 合并卖出条件
-        combined_sell_condition =  sell_condition |profitable_sell_condition
+        combined_sell_condition = sell_condition | profitable_sell_condition | enhanced_sell_condition
         
         sell_signals= signals[combined_sell_condition][[
             'date', 'symbol',  'name',  'industry','ma_5', 'ma_10', 'ma_20', 'angle_ma_10',

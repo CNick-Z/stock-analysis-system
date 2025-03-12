@@ -27,7 +27,7 @@ class DynamicPositionManager:
         """根据当前组合价值更新仓位"""
         self.previous_values.append(current_value)
         if len(self.previous_values) > self.window_size:
-            self.previous_values.pop(0)  # 保持窗口大小
+            self.previous_values=[]  # 保持窗口大小
         
         if len(self.previous_values) >= self.window_size:
             # 计算多日收益率
@@ -193,7 +193,7 @@ class TradingSimulator:
 
 class BacktestOrchestrator:
     """回测总控模块"""
-    def __init__(self, db_path='c:/db/stock_data.db', live_plot=False,position_limit=10, commission_rate=0.0003):
+    def __init__(self, db_path='c:/db/stock_data.db', live_plot=False,position_limit=5, commission_rate=0.0003):
         self.position_limit = position_limit  # 新增参数
         self.position_limit_base = position_limit  # 基础持仓限制
         self.db = DatabaseIntegrator(db_path)
@@ -204,7 +204,7 @@ class BacktestOrchestrator:
         self.trading_dates = None
         self.live_plot = live_plot
         self.commission_rate = commission_rate 
-        self.trailing_stop_ratio = 0.1
+        self.trailing_stop_ratio = 0.05
         self.position_manager = DynamicPositionManager(initial_position=0.5, position_levels=[0.3,0.5,0.8,1], window_size=3)
         if self.live_plot:
             plt.ion()  # 启用交互模式
@@ -401,8 +401,10 @@ class BacktestOrchestrator:
             return
         
         # 获取买入信号
+        if signals is None: 
+            return
         scored_signals = signals[signals.index == date]
-        if scored_signals.empty: 
+        if scored_signals.empty or scored_signals is None: 
             return
         holding_symbols = list(simulator.portfolio['positions'].keys())
         
@@ -501,14 +503,14 @@ class BacktestOrchestrator:
             if  simulator.portfolio['positions'][symbol]['entry_date']== date_obj.strftime('%Y-%m-%d'):
                 continue
             # 成本止损
-            if current_price <= cost_basis * 0.88:
+            if current_price <= cost_basis * 0.9:
                 try:
                     next_open_price,next_open_day = self._get_next_open_price(date_obj.strftime('%Y-%m-%d'), symbol)
                     if next_open_price:
                         # 记录止损信息
                         signal_info = {
                             'type': 'stop_loss',
-                            'reason': f"价格跌至成本价的85%以下，触发止损。成本价：{cost_basis}, 当前价格：{current_price}"
+                            'reason': f"价格跌至成本价的90%以下，触发止损。"
                         }
                         if next_open_day not in simulator.sell_signals:
                             simulator.sell_signals[next_open_day] = []
@@ -516,7 +518,7 @@ class BacktestOrchestrator:
                         #simulator.execute_order('sell', symbol, next_open_price, next_open_day, pos['qty'])
                 except:
                     continue
-            
+            '''
             # 跟踪止损
             if 'highest_price' not in pos:
                 pos['highest_price'] = current_price
@@ -530,13 +532,14 @@ class BacktestOrchestrator:
                             # 记录跟踪止损信息
                             signal_info = {
                                 'type': 'trailing_stop',
-                                'reason': f"价格回撤达到跟踪止损比例，触发止损。最高价：{pos['highest_price']}, 当前价格：{current_price}"
+                                'reason': f"价格回撤达到跟踪止损比例，触发止损。"
                             }
                             if next_open_day not in simulator.sell_signals:
                                 simulator.sell_signals[next_open_day] = []
                             simulator.sell_signals[next_open_day].append([symbol, next_open_price, next_open_day,simulator.portfolio['positions'][symbol]['qty'], signal_info])
                     except:
                         continue
+            '''
             
            
 
@@ -641,7 +644,7 @@ if __name__ == "__main__":
   
     # 运行回测
     orchestrator = BacktestOrchestrator(live_plot=True)
-    report = orchestrator.run(start_date='2016-01-13', end_date='2024-12-31')    
+    report = orchestrator.run(start_date='2016-01-13', end_date='2020-12-31')    
     print("回测结果摘要:")
     print(f"最终净值: {report['summary']['final_value']:,.2f}")
     print(f"总收益率: {report['summary']['total_return']:.2%}")
