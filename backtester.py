@@ -323,6 +323,7 @@ class BacktestOrchestrator:
             year_buy_signals,year_sell_signals=self.strategy.get_signals(start_date,end_date)
             self._mian_process(dates,simulator,year_buy_signals,year_sell_signals)
         return self._generate_report(simulator)
+        
     def _mian_process(self,dates,simulator,year_buy_signals,year_sell_signals):
         current_year=dates[0].year
         for date in tqdm(dates, desc=f"{current_year}回测进度"):

@@ -63,17 +63,26 @@ class DataFetcher:
             return pd.DataFrame()
 
     def load_existing_data(self, start_date, end_date, table_name="daily_data"):
-        """一次性加载所有已存在的数据到内存"""
+        """使用load_data方法加载已存在数据"""
         start_date = pd.to_datetime(start_date).strftime("%Y-%m-%d")
         end_date = pd.to_datetime(end_date).strftime("%Y-%m-%d")
-
-        with self.db_manager.get_session() as session:
-            query = session.query(DailyData.symbol, DailyData.date).filter(
-                DailyData.date >= start_date,
-                DailyData.date <= end_date
-            )
-            existing_data = pd.read_sql(query.statement, session.bind)
+        # 构建过滤条件
+        filter_conditions = {
+            'date': {
+                '$between': [start_date, end_date]
+            }
+        }
+        # 指定需要加载的列
+        columns = ['symbol', 'date']
+        # 使用load_data方法获取数据
+        existing_data = self.db_manager.load_data(
+            table=DailyData,
+            filter_conditions=filter_conditions,
+            columns=columns
+        )
+        # 转换为字典格式
         existing_data_dict = existing_data.groupby('symbol')['date'].apply(set).to_dict()
+        
         return existing_data_dict
 
     def process_symbol(self, symbol, start_date, end_date, table_name):
@@ -108,8 +117,7 @@ class DataFetcher:
         logging.info("Fetching all stock and fund symbols...")
         stock_list = ak.stock_zh_a_spot_em()
         #symbols = ~stock_list['代码'].str.startswith("8").tolist()
-        symbols = stock_list.query("代码.str[0] != '8'")['代码'].tolist()
-        symbols = stock_list.query("代码.str[0] != '4'")['代码'].tolist()
+        symbols = stock_list[~stock_list['代码'].str.startswith('8','4')]['代码'].tolist()
         # 一次性加载所有已存在的数据
         self.existing_data = self.load_existing_data(start_date, end_date, table_name)
         
@@ -132,6 +140,6 @@ if __name__ == "__main__":
     pd.options.mode.copy_on_write = True
     db_url = "sqlite:///c:/db/stock_data.db"  
     fetcher = DataFetcher(db_url)
-    start_date = "20140101"
-    end_date = "20230102"
+    start_date = "20120101"
+    end_date = "20140101"
     fetcher.fetch_and_save_all_data(start_date, end_date)

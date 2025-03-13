@@ -1,7 +1,7 @@
 # db_operations.py
-from sqlalchemy import create_engine, Column, String, Float, Boolean, inspect, Index,event
+from sqlalchemy import create_engine, Column, String, Float, Boolean, inspect, Index,event,INTEGER 
 from sqlalchemy.orm import sessionmaker, scoped_session
-from sqlalchemy import text
+from sqlalchemy import text,asc,desc
 from sqlalchemy.sql import or_, and_
 from sqlalchemy.ext.declarative import declarative_base
 import logging
@@ -75,6 +75,43 @@ class StockBasicInfo(Base):
         Index('idx_info_symbol', 'symbol'),
     )
 
+class PositionDetail(Base):
+    """持仓明细表"""
+    __tablename__ = 'position_details'
+    
+    id = Column(INTEGER , primary_key=True, autoincrement=True)
+    date = Column(String, nullable=False, comment='交易日期') 
+    symbol = Column(String(10), nullable=False, comment='股票代码')
+    price = Column(Float, nullable=False, comment='成交价格')
+    quantity = Column(Float, nullable=False, comment='成交数量')
+    commission = Column(Float, nullable=False, comment='手续费')
+    sell_date = Column(String, comment='卖出日期')  # 卖出相关字段允许为空
+    sell_price = Column(Float, comment='卖出价格')
+    pnl = Column(Float, comment='盈亏金额')
+    
+    # 复合索引
+    __table_args__ = (
+        Index('idx_detail_symbol_date', 'symbol', 'date'),  # 按股票+日期查询
+        Index('idx_sell_date', 'sell_date'),  # 卖出日期查询
+    )
+
+class PositionStatus(Base):
+    """持仓情况表"""
+    __tablename__ = 'position_status'
+    
+    date = Column(String, primary_key=True, comment='统计日期')
+    total_assets = Column(Float, nullable=False, comment='总资产')
+    stock_value = Column(Float, nullable=False, comment='持仓市值')
+    cash = Column(Float, nullable=False, comment='可用现金')
+    position_ratio = Column(Float, nullable=False, comment='仓位比例')
+    available_position = Column(Float, nullable=False, comment='可用仓位额度')
+    
+    # 时间索引
+    __table_args__ = (
+        Index('idx_status_date', 'date'),  # 日期主键自动建立索引
+    )
+
+
 class DatabaseManager:
     def __init__(self, db_url):
         self.db_url = db_url
@@ -101,7 +138,11 @@ class DatabaseManager:
             TechnicalIndicators.__table__.create(self.engine)
         if "stock_basic_info" not in existing_tables:
             StockBasicInfo.__table__.create(self.engine)
-    
+        if "position_details" not in existing_tables:
+            PositionDetail.__table__.create(self.engine)
+        if  "position_status" not in existing_tables:
+            PositionStatus.__table__.create(self.engine)
+
     @contextmanager
     def get_session(self):
         """获取数据库会话"""
@@ -115,7 +156,7 @@ class DatabaseManager:
         finally:
             session.close()
     
-    def load_data(self, table, filter_conditions=None, distinct_column=None, limit=None, columns=None):
+    def load_data(self, table, filter_conditions=None, distinct_column=None, limit=None, columns=None, order_by=None):
         """增强版数据加载方法，支持动态过滤条件和指定列查询"""
         from sqlalchemy import text
         from sqlalchemy.sql import or_, and_
@@ -201,6 +242,35 @@ class DatabaseManager:
                     else:
                         # 精确匹配
                         query = query.filter(column == value)
+             # 处理排序条件
+            if order_by:
+                order_conditions = []
+                for condition in order_by:
+                    if isinstance(condition, str):
+                        # 如果是字符串，表示按该列升序排序
+                        column_name = condition
+                        column = getattr(table, column_name, None)
+                        if not column:
+                            raise AttributeError(f"Column '{column_name}' not found in table '{table.__name__}'")
+                        order_conditions.append(asc(column))
+                    elif isinstance(condition, dict):
+                        # 如果是字典，表示按该列的指定方向排序
+                        if 'column' not in condition or 'direction' not in condition:
+                            raise ValueError("Invalid order_by condition format. Expected 'column' and 'direction' keys.")
+                        column_name = condition['column']
+                        direction = condition['direction'].lower()
+                        column = getattr(table, column_name, None)
+                        if not column:
+                            raise AttributeError(f"Column '{column_name}' not found in table '{table.__name__}'")
+                        if direction == 'asc':
+                            order_conditions.append(asc(column))
+                        elif direction == 'desc':
+                            order_conditions.append(desc(column))
+                        else:
+                            raise ValueError(f"Invalid direction '{direction}' for order_by. Use 'asc' or 'desc'.")
+                    else:
+                        raise ValueError("Invalid order_by condition format. Use string or dictionary.")
+                query = query.order_by(*order_conditions)
             
             # 处理结果限制
             if limit:

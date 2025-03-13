@@ -80,16 +80,16 @@ if __name__ == "__main__":
     date =date.today().strftime("%Y-%m-%d")
     strategy = EnhancedTDXStrategy()
     #signals = strategy.get_buy_signals(start_date,end_date)
-    signals = strategy.get_signals('2016-02-15','2016-06-18')
-    if signals[0].empty: 
+    signals = strategy.get_signals('2025-03-12','2025-03-12')
+    daily_buy_signals = signals[0][signals.index == date]
+    if daily_buy_signals.empty: 
         print("没有符合策略条件的股票。")
         exit()
     else:
         # 执行选股评分
         reporter = StockReport()
-        report = reporter.generate_report(signals[0])        
+        report = reporter.generate_report(daily_buy_signals)        
         print("最终选股结果：")
-
-        print(signals[0].reset_index()[['date', 'symbol',  'name',  'industry','total_score']])
+        print(daily_buy_signals.reset_index()[['date', 'symbol',  'name',  'industry','total_score']])
         print("\n详细分析：")
-        print(report)                                                   
+        print(report)
