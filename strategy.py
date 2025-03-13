@@ -7,7 +7,6 @@ from datetime import datetime
 from db_operations import *
 from tqdm import tqdm
 import talib as ta
-from numba import njit, prange
 
 class StockScorer:
     def __init__(self, config: Dict = None):
