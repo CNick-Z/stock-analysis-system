@@ -77,11 +77,10 @@ class StockBasicInfo(Base):
 
 class PositionDetail(Base):
     """持仓明细表"""
-    __tablename__ = 'position_details'
-    
-    id = Column(INTEGER , primary_key=True, autoincrement=True)
-    date = Column(String, nullable=False, comment='交易日期') 
-    symbol = Column(String(10), nullable=False, comment='股票代码')
+    __tablename__ = 'position_details'    
+    #id = Column(INTEGER , primary_key=True, autoincrement=True)
+    date = Column(String, primary_key=True,nullable=False, comment='交易日期') 
+    symbol = Column(String(10),primary_key=True, nullable=False, comment='股票代码')
     price = Column(Float, nullable=False, comment='成交价格')
     quantity = Column(Float, nullable=False, comment='成交数量')
     commission = Column(Float, nullable=False, comment='手续费')
@@ -98,7 +97,6 @@ class PositionDetail(Base):
 class PositionStatus(Base):
     """持仓情况表"""
     __tablename__ = 'position_status'
-    
     date = Column(String, primary_key=True, comment='统计日期')
     total_assets = Column(Float, nullable=False, comment='总资产')
     stock_value = Column(Float, nullable=False, comment='持仓市值')
@@ -322,7 +320,20 @@ class DatabaseManager:
                     if field not in item:
                         raise KeyError(f"Missing field '{field}' in data")
                     filter_dict[field] = item[field]
-                update_dict = update_fields.copy() 
+                # 根据 update_fields 的类型构建更新字典
+                if isinstance(update_fields, list):
+                    # 如果 update_fields 是列表，使用列表元素作为键，从 item 中获取值
+                    update_dict = {field: item[field] for field in update_fields if field in item}
+                    if len(update_dict) != len(update_fields):
+                        missing_fields = [field for field in update_fields if field not in item]
+                        raise KeyError(f"Missing update fields in data: {missing_fields}")
+                elif isinstance(update_fields, dict):
+                    # 如果 update_fields 是字典，使用字典的键作为键，字典的值作为更新的值
+                    update_dict = update_fields.copy()
+                else:
+                    raise TypeError("update_fields must be a list or a dictionary")
+            
+                # 合并过滤条件和更新字典
                 update_values.append({
                     **filter_dict,
                     **update_dict
@@ -330,6 +341,7 @@ class DatabaseManager:
             
             # 批量更新
             session.bulk_update_mappings(table, update_values)
+            session.commit()
     
     def query_count(self, table, filter_conditions=None):
         """查询数据数量"""

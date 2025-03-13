@@ -193,7 +193,7 @@ class TradingSimulator:
 
 class BacktestOrchestrator:
     """回测总控模块"""
-    def __init__(self, db_path='c:/db/stock_data.db', live_plot=False,position_limit=5, commission_rate=0.0003):
+    def __init__(self, db_path='c:/db/stock_data_his.db', live_plot=False,position_limit=5, commission_rate=0.0003):
         self.position_limit = position_limit  # 新增参数
         self.position_limit_base = position_limit  # 基础持仓限制
         self.db = DatabaseIntegrator(db_path)

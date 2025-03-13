@@ -47,7 +47,7 @@ class SignalTraderecord:
                 pnl = 0
                 sell_date = None
                 sell_price = None
-                db_data =db_data.append({'date': date,
+                db_data.append({'date': date,
                         'symbol': symbol,
                         'price': price,
                         'quantity': quantity,
@@ -68,11 +68,13 @@ class SignalTraderecord:
                 price=item[2]
                 quantity=item[3]
                 commission = price * quantity * (self.commission_rate*2+0.0005)
-                buy_price=self.holding_stocks.loc[self.holding_stocks['symbol']==symbol,'price']
+                #id=self.holding_stocks.loc[self.holding_stocks['symbol']==symbol,'id'].iloc[0]
+                buy_price=self.holding_stocks.loc[self.holding_stocks['symbol']==symbol,'price'].iloc[0]
                 pnl = (price - buy_price) * quantity-commission
                 sell_date = date
-                buy_day=self.holding_stocks.loc[self.holding_stocks['symbol']==symbol,'date']
-                db_data =db_data.append({'date': buy_day,
+                buy_day=self.holding_stocks.loc[self.holding_stocks['symbol']==symbol,'date'].iloc[0]
+                db_data.append({
+                        'date': buy_day,
                         'symbol': symbol,
                         'price': buy_price,
                         'quantity': quantity,
@@ -81,11 +83,11 @@ class SignalTraderecord:
                         'sell_date': sell_date,
                         'sell_price':price
                     })
-            filter_fields=['symbol','date']
+            filter_fields=['date','symbol']
             self.db_manager.bulk_update(
             table=PositionDetail,
             data=db_data,
-            update_fields=['sell_date','pnl','sell_date','commission'],
+            update_fields=['sell_date','pnl','sell_price','commission'],
             filter_fields=filter_fields
             )
         
@@ -178,11 +180,18 @@ db_manager.create_additional_indexes()
 def update_PositionDetail():
 '''
 if __name__ == '__main__':
-    recorder=SignalTraderecord('c:/db/stock_data.db')
+    recorder=SignalTraderecord('c:/db/stock_data.db')    
+    buylist=[('2025-02-21','300041',9.03,1200),
+            ('2025-02-24','601311',8.48,1200),
+            ('2025-02-24','603100',21.3,500),
+            ('2025-02-26','688308',21.41,500),
+            ('2025-03-05','600764',27.41,400),
+            ('2025-03-07','600893',38.28,300),
+            ('2025-03-12','600798',3.08,3500),
+            ('2025-03-12','603301',21.52,600)]
+    #selllist=[('2025-03-14','603301',21.41,600)]
+    recorder.record_trade(buylist,'buy')
     recorder.get_unsell_stock()
-    #buylist=[('2025-03-12','603301',21.52,600)]
-    selllist=[('2025-03-14','603301',21.41,600)]
-    #recorder.record_trade(buylist,'buy')
-    recorder.record_trade(selllist)
+    #recorder.record_trade(selllist)
     
 
