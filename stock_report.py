@@ -78,7 +78,8 @@ class StockReport:
 if __name__ == "__main__":
     # 生成策略信号
     date =date.today().strftime("%Y-%m-%d")
-    strategy = EnhancedTDXStrategy()
+    db_url = "c:/db/stock_data.db"
+    strategy = EnhancedTDXStrategy(db_url)
     #signals = strategy.get_buy_signals(start_date,end_date)
     signals = strategy.get_signals('2025-03-12','2025-03-12')
     daily_buy_signals = signals[0][signals.index == date]

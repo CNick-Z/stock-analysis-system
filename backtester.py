@@ -197,7 +197,7 @@ class BacktestOrchestrator:
         self.position_limit = position_limit  # 新增参数
         self.position_limit_base = position_limit  # 基础持仓限制
         self.db = DatabaseIntegrator(db_path)
-        self.strategy = EnhancedTDXStrategy()
+        self.strategy = EnhancedTDXStrategy(db_path)
         self.Report = StockReport()
         self.Scorer = StockScorer()
         self.price_matrix = None
@@ -645,7 +645,7 @@ if __name__ == "__main__":
   
     # 运行回测
     orchestrator = BacktestOrchestrator(live_plot=True)
-    report = orchestrator.run(start_date='2016-01-13', end_date='2020-12-31')    
+    report = orchestrator.run(start_date='2006-01-13', end_date='2025-02-28')    
     print("回测结果摘要:")
     print(f"最终净值: {report['summary']['final_value']:,.2f}")
     print(f"总收益率: {report['summary']['total_return']:.2%}")

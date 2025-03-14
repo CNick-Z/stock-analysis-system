@@ -155,7 +155,8 @@ class StockScorer:
             return pd.concat(final_picks)
 class EnhancedTDXStrategy:
     def __init__(self, 
-                 config: Dict = {
+                db_path='c:/db/stock_data.db',
+                config: Dict = {
                     'ma_windows': (5, 10, 20, 55, 240),
                     'angle_window': 5,
                     'volume_ma_window': 5,
@@ -171,8 +172,7 @@ class EnhancedTDXStrategy:
         - macd_params: MACD参数（short, long, signal）
         """
         self.config = config
-        self.db_url = "sqlite:///c:/db/stock_data.db"
-        self.db_manager = DatabaseManager(self.db_url)
+        self.db_manager = DatabaseManager(f"sqlite:///{db_path}")
         self.db_manager.ensure_tables_exist()
         self.Scorer = StockScorer()
         
