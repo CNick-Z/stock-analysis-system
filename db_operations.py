@@ -82,6 +82,8 @@ class PositionDetail(Base):
     date = Column(String, primary_key=True,nullable=False, comment='交易日期') 
     symbol = Column(String(10),primary_key=True, nullable=False, comment='股票代码')
     price = Column(Float, nullable=False, comment='成交价格')
+    newprice = Column(Float, comment='最新价格')
+    highprice = Column(Float, comment='最高价格')
     quantity = Column(Float, nullable=False, comment='成交数量')
     commission = Column(Float, nullable=False, comment='手续费')
     sell_date = Column(String, comment='卖出日期')  # 卖出相关字段允许为空

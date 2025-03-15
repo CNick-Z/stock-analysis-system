@@ -22,6 +22,8 @@ class SignalTraderecord:
         self.holding_stocks=[]
         self.commission_rate=0.00011
         self.price_matrix=None
+        self.position_limit=10
+        self.report = StockReport()
         self.position_manager = self.DynamicPositionAdjuster(
             initial_position=0.5, position_levels=[0.3, 0.5, 0.8, 1], window_size=3, db_manager=self.db_manager
         )
@@ -79,31 +81,46 @@ class SignalTraderecord:
 
     def _get_unsell_stock(self):
         table=PositionDetail
-        column=['date','symbol','price','quantity','commission']
+        column=['date','symbol','price','newprice','highprice','quantity','commission']
         unsell_stocks=self.db_manager.load_data(table=table,columns=column,filter_conditions={'sell_date':None})
         self.holding_stocks=unsell_stocks
 
     def _get_PositionStatus(self,date):
         table=PositionStatus
-        column=['date','total_assets','stock_value','cash','position_ratio','available_position']
-        position_status=self.db_manager.load_data(table=table,columns=column,filter_conditions={'date':date})
-        if position_status.empty:
-            position_status={'date':date,'total_assets':0,'stock_value':0,'cash':100000,'position_ratio':0,'available_position':10,'db_data':'no'}
+        #获取数据库中最后更新仓位记录的日期
+        lastdate=self.db_manager.load_data(table=table,columns=['date'],order_by=[{'column':'date','direction':'desc'}],limit=1)
+        if lastdate.empty:
+            position_status={'date':date,'total_assets':0,'stock_value':0,'cash':100000,'position_ratio':0.5,'available_position':10,'db_data':'no'}
         else:
+            column=['date','total_assets','stock_value','cash','position_ratio','available_position']
+            position_status=self.db_manager.load_data(table=table,columns=column,filter_conditions={'date':lastdate['date'].iloc[0]})
             position_status=position_status.to_dict(orient='records')[0]
-            position_status['db_data']='yes'
+            position_status['db_data']='yes'            
         self.PositionStatus=position_status
     
 
     def _set_PositionStatus(self,date):
+
         self._get_unsell_stock()
         stock_value=0
         for index,row in self.holding_stocks.iterrows():
+            buydate=row['date']
             symbol = row['symbol']
             quantity = row['quantity']
+            highprice = row['highprice']
             # 查询价格矩阵中的价格
             if symbol in self.price_matrix.columns:
                 price = self.price_matrix[symbol].values[0]
+                #更新持仓股票最新价格和最高价格
+                if price>highprice:
+                    highprice=price
+                update_fields=['newprice','highprice',]
+                self.db_manager.bulk_update(
+                    table=PositionDetail,
+                    data=[{'symbol':symbol,'date':buydate,'newprice':price,'highprice':highprice}],
+                    update_fields=['newprice','highprice'],
+                    filter_fields={'symbol':symbol,'date':buydate}
+                )
             else:
                 price = row['price']
             stock_value+=quantity*price
@@ -115,7 +132,8 @@ class SignalTraderecord:
                 'available_position':self.PositionStatus['available_position'],
                 'total_assets':stock_value+self.PositionStatus['cash']
                 }]
-        if  self.PositionStatus['db_data']=='no':            
+        if  self.PositionStatus['db_data']=='no' or date != self.PositionStatus['date']:
+
             data=pd.DataFrame(db_data)
             self.db_manager.bulk_insert(
             table=table,
@@ -128,6 +146,8 @@ class SignalTraderecord:
             update_fields=['stock_value','cash','position_ratio','available_position','total_assets'],
             filter_fields=['date']
             )
+        self.position_manager.update_position(self.PositionStatus['total_assets'],date)
+        
             
 
 
@@ -149,6 +169,8 @@ class SignalTraderecord:
                 db_data.append({'date': date,
                         'symbol': symbol,
                         'price': price,
+                        'newprice': price,
+                        'highprice': price,
                         'quantity': quantity,
                         'commission': commission,
                         'pnl': pnl,
@@ -177,6 +199,7 @@ class SignalTraderecord:
                         'date': buy_day,
                         'symbol': symbol,
                         'price': buy_price,
+                        'newprice': price,
                         'quantity': quantity,
                         'commission': commission,
                         'pnl': pnl,
@@ -221,10 +244,9 @@ class SignalTraderecord:
                 max_afford = (max_afford // 100) * 100
                 if max_afford > 0:
                     symbol_data = scored_signals[scored_signals['symbol'] == row['symbol']]
-                    signal_info = StockReport.generate_report(symbol_data)
+                    signal_info = self.report.generate_report(symbol_data)
                     buy_advice.append(
                         f"建议买入 {row['symbol']}，可买入数量: {max_afford}，信号评分报告: {signal_info}")
-                    available_slots -= 1
                     cash -= max_investment
             else:
                 break
@@ -240,15 +262,40 @@ class SignalTraderecord:
         holding_symbols = self.holding_stocks['symbol'].to_list()
         for _, row in scored_signals.iterrows():
             if row['symbol'] in holding_symbols:
-                sell_advice.append(f"建议卖出 {row['symbol']}")
+                sell_advice.append(f"出现卖出信号，建议卖出 {row['symbol']}")
         return sell_advice
         
     def generate_trading_advice(self, date):
+        # 获取当前仓位状态
         self._get_PositionStatus(date)
-        self._get_unsell_stock()
         self._generate_daily_signals(date)
+        self._fetch_price_matrix(date)
+
+        # 更新仓位
+        current_position = self.position_manager.update_position(self.PositionStatus['total_assets'], date)
+        current_position_ratio = self.PositionStatus['position_ratio']
+        available_position = self.PositionStatus['available_position']
+
+        # 生成买入和卖出建议
         buy_advice = self._process_buy_signals(date)
         sell_advice = self._process_sell_signals(date)
+
+        # 仓位控制建议
+        position_control_advice = []
+        if current_position_ratio < current_position:
+            position_control_advice.append(f"当前仓位比例为 {current_position_ratio:.2f}，低于目标仓位 {current_position:.2f}。建议适当增加仓位。")
+        elif current_position_ratio > current_position:
+            position_control_advice.append(f"当前仓位比例为 {current_position_ratio:.2f}，高于目标仓位 {current_position:.2f}。建议适当减少仓位。")
+        else:
+            position_control_advice.append(f"当前仓位比例为 {current_position_ratio:.2f}，符合目标仓位 {current_position:.2f}。无需调整仓位。")
+
+        # 如果可用仓位不足，提醒用户
+        if available_position <= 0:
+            position_control_advice.append("当前持股数量已达上限，无法进行新的买入操作。")
+        else:
+            position_control_advice.append(f"当前剩余持股数量 {available_position}，可以进行新的买入操作。")
+
+        # 汇总建议文本
         advice_text = f"日期: {date}\n"
         if buy_advice:
             advice_text += "买入建议:\n"
@@ -258,112 +305,88 @@ class SignalTraderecord:
             advice_text += "卖出建议:\n"
             for advice in sell_advice:
                 advice_text += f" - {advice}\n"
-        if not buy_advice and not sell_advice:
-            advice_text += "今日无交易建议。"
+        if position_control_advice:
+            advice_text += "仓位控制建议:\n"
+            for advice in position_control_advice:
+                advice_text += f" - {advice}\n"
+        if not buy_advice and not sell_advice and not position_control_advice:
+            advice_text += "今日无交易建议。\n"
+
         return advice_text
 
     def run(self,buy_list,sell_list,date):
-        #self._get_PositionStatus(date)
-        #self._generate_daily_signals()
-        #self.record_trade(buylist,'buy')
-        #self.record_trade(selllist)
-        #self._fetch_price_matrix(date)
-        #self._set_PositionStatus(date)
+        self._get_PositionStatus(date)
+        self._generate_daily_signals(date)
+        if buy_list:
+            self.record_trade(buy_list,'buy')
+        if sell_list:
+            self.record_trade(sell_list)
+        self._fetch_price_matrix(date)
+        self._set_PositionStatus(date)
         advice=self.generate_trading_advice(date)
         print(advice)
 
-'''
-simulator = TradingSimulator(
-            initial_capital=1e5,
-            commission=0.0003,
-            position_limit=5
-            )
-portfolio = {
-            'cash': initial_capital,
-            'positions': {},  # {symbol: {'qty': int, 'cost': float}}
-            'history': []
-        }
+    def get_dates_list(self,start_date_str, end_date_str):
+        start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+        end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+        dates_list = []
 
-def _execute_sell(self, symbol, price, date, quantity,signal_info):
-        position = self.portfolio['positions'].get(symbol)
-        if not position or position['qty'] < quantity:
-            return False   
-        # 计算交易金额
-        proceeds = price * quantity
-        commission = proceeds * self.commission_rate
-        net_proceeds = proceeds - commission
-        
-        # 更新现金和持仓
-        self.portfolio['cash'] += net_proceeds
-        position['qty'] -= quantity
-        if position['qty'] == 0:
-            del self.portfolio['positions'][symbol]
-            
-        # 记录交易
-        self.portfolio['history'].append({
-            'date': date,
-            'symbol': symbol,
-            'type': 'sell',
-            'price': price,
-            'quantity': quantity,
-            'commission': commission,
-            'pnl': net_proceeds - (position['cost'] * quantity / (quantity + position['qty'])),
-            'signal_info': signal_info  # 新增字段，记录交易信号信息
-        })
-        print(f"\n{date} 卖出 {symbol}，价格: {price}，数量: {quantity}，佣金: {commission}")
-        return True
+        current_date = start_date
+        while current_date <= end_date:
+            dates_list.append(current_date.strftime('%Y-%m-%d'))
+            current_date += timedelta(days=1)
 
-def _execute_buy(self, symbol, price, date, quantity,signal_info):
-        # 计算交易成本
-        commission = price * quantity * self.commission_rate
-        total_cost = price * quantity + commission
-        if total_cost > self.portfolio['cash']:
-            return False
-            
-        # 更新持仓
-        if symbol in self.portfolio['positions']:
-            self.portfolio['positions'][symbol]['qty'] += quantity
-            self.portfolio['positions'][symbol]['cost'] += total_cost
-        else:
-            self.portfolio['positions'][symbol] = {
-                'qty': quantity,
-                'cost': total_cost,
-                'entry_date': date
-            }
-            
-        # 更新现金
-        self.portfolio['cash'] -= total_cost
-        
-        # 记录交易
-        self.portfolio['history'].append({
-            'date': date,
-            'symbol': symbol,
-            'type': 'buy',
-            'price': price,
-            'quantity': quantity,
-            'commission': commission,
-            'signal_info': signal_info  # 新增字段，记录交易信号信息
-        })
-        print(f"\n{date} 买入 {symbol}，价格: {price}，数量: {quantity}，佣金: {commission}")
-        return True
+        return dates_list
 
-db_manager = DatabaseManager(db_url)
-db_manager.ensure_tables_exist()
-db_manager.create_additional_indexes()
 
-def update_PositionDetail():
-'''
 if __name__ == '__main__':
     recorder=SignalTraderecord('c:/db/stock_data.db')
     date =date.today().strftime("%Y-%m-%d")
-    buylist=[('2025-02-21','300041',9.03,1200),
-            ('2025-02-24','601311',8.48,1200),
-            ('2025-02-24','603100',21.3,500),
-            ('2025-02-26','688308',21.41,500),
-            ('2025-03-05','600764',27.41,400),
-            ('2025-03-07','600893',38.28,300),
-            ('2025-03-12','603301',21.52,600)]
-    selllist=[('2025-03-14','603301',21.41,600)]
-    recorder.run(buylist,selllist,'2025-03-02')
+    buydic={}
+    '''
+    '2025-02-21':[('300041',9.03,1200)],
+    '2025-02-24':[('601311',8.48,1200),('603100',21.3,500)],
+    '2025-02-26':[('688308',21.41,500)],
+    '2025-03-05':[('600764',27.41,400)],
+    '2025-03-07':[('600893',38.28,300)],
+    '2025-03-12':[('603301',21.52,600)],
+    '2025-03-12':[('600798',3.08,3500)]
+    '''
+    selldic={}
+    '''
+    '2025-03-14':[('600798',3.13,3500)]
+    '''
+    '''
+    datelist=recorder.get_dates_list('2025-02-21','2025-03-14')
+    for date in datelist:
+        buylist_day=[]
+        selllist_day=[]
+        if date in buydic.keys():
+            for item in buydic[date]:
+                buylist=list(item)
+            buylist.insert(0,date)
+            buylist_day.append(tuple(buylist))
+        if date in selldic.keys():
+            for item in selldic[date]:
+                selllist=list(item)
+            selllist.insert(0,date)
+            selllist_day.append(tuple(selllist))
+        recorder.run(buylist_day,selllist_day,date)
+    '''
+    buylist_day=[]
+    selllist_day=[]
+    if buydic is not {}:
+        if date in buydic.keys():
+            for item in buydic[date]:
+                buylist=list(item)
+            buylist.insert(0,date)
+            buylist_day.append(tuple(buylist))
+    if selldic is not {}:
+        if date in selldic.keys():
+            for item in selldic[date]:
+                selllist=list(item)
+            selllist.insert(0,date)
+            selllist_day.append(tuple(selllist))
+    recorder.run(buylist_day,selllist_day,date)
     
 
