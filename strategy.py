@@ -227,7 +227,7 @@ class EnhancedTDXStrategy:
         # 加载技术指标数据
         print("加载技术指标数据...")
         tech_df = self.db_manager.load_data(
-            table=TechnicalIndicators,
+            table_class=TechnicalIndicatorsBase,
             filter_conditions={
                 'date': {'$between':[extended_start_date, end_date]}  # 需要扩展过滤逻辑
             }
@@ -236,7 +236,7 @@ class EnhancedTDXStrategy:
         # 加载行情数据
         print("加载行情数据...")
         price_df = self.db_manager.load_data(
-            table=DailyData,
+            table_class=DailyDataBase,
             filter_conditions={
                 'date': {'$between':[extended_start_date, end_date]}  # 需要扩展过滤逻辑
             },
@@ -248,7 +248,7 @@ class EnhancedTDXStrategy:
         #加载基础数据
         print("加载基础数据...")
         info_df = self.db_manager.load_data(
-            table=StockBasicInfo,
+            table_class=StockBasicInfo,
             filter_conditions={
                 'name': {'$not_like': 'ST'}  # 需要扩展过滤逻辑
             },

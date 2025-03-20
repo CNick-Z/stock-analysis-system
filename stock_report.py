@@ -81,9 +81,9 @@ if __name__ == "__main__":
     db_url = "c:/db/stock_data.db"
     strategy = EnhancedTDXStrategy(db_url)
     #signals = strategy.get_buy_signals(start_date,end_date)
-    signals = strategy.get_signals('2025-02-21','2025-03-12')
+    signals = strategy.get_signals('2024-08-21','2024-10-12')
     daily_buy_signals = signals[0]
-    if daily_buy_signals.empty: 
+    if daily_buy_signals.empty or daily_buy_signals is None: 
         print("没有符合策略条件的股票。")
         exit()
     else:

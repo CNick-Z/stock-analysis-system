@@ -97,7 +97,7 @@ class DatabaseIntegrator:
             }
         }
         # 查询数据
-        df = self.db_manager.load_data(DailyData, filter_conditions, columns=['date', 'symbol', 'open','close'])
+        df = self.db_manager.load_data(DailyDataBase, filter_conditions, columns=['date', 'symbol', 'open','close'])
 
         # 生成交易日期索引
         trading_dates = pd.to_datetime(df['date']).sort_values().unique()
@@ -193,7 +193,7 @@ class TradingSimulator:
 
 class BacktestOrchestrator:
     """回测总控模块"""
-    def __init__(self, db_path='c:/db/stock_data_his.db', live_plot=False,position_limit=5, commission_rate=0.0003):
+    def __init__(self, db_path='c:/db/stock_data.db', live_plot=False,position_limit=5, commission_rate=0.0003):
         self.position_limit = position_limit  # 新增参数
         self.position_limit_base = position_limit  # 基础持仓限制
         self.db = DatabaseIntegrator(db_path)
@@ -549,7 +549,7 @@ class BacktestOrchestrator:
         simulator.portfolio['history'].append({'date': date, 'value': total_value})
          # 更新仓位管理
         current_position = self.position_manager.update_position(total_value)
-        simulator.position_limit = int(current_position * self.position_limit_base)
+        #simulator.position_limit = int(current_position * self.position_limit_base)
 
     def _total_value(self, date, simulator):
         """计算当前组合价值"""
@@ -645,7 +645,7 @@ if __name__ == "__main__":
   
     # 运行回测
     orchestrator = BacktestOrchestrator(live_plot=True)
-    report = orchestrator.run(start_date='2006-01-13', end_date='2025-02-28')    
+    report = orchestrator.run(start_date='2006-01-13', end_date='2015-02-28')    
     print("回测结果摘要:")
     print(f"最终净值: {report['summary']['final_value']:,.2f}")
     print(f"总收益率: {report['summary']['total_return']:.2%}")

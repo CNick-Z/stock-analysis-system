@@ -10,3 +10,4 @@ pip install scikit-learn
 pip install seaborn
 pip install numba
 pip install --upgrade akshare
+pip install requests

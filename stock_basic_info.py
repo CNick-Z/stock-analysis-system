@@ -62,7 +62,7 @@ def fetch_symbols_from_daily_data(db_url):
     :return: 股票代码列表
     """
     db_manager = DatabaseManager(db_url=db_url)
-    symbols = db_manager.load_data(DailyData, distinct_column="symbol" )['symbol'].tolist()
+    symbols = db_manager.load_data(DailyDataBase, distinct_column="symbol" )['symbol'].tolist()
     return symbols
 
 def fetch_and_save_all_stock_basic_info(db_url):

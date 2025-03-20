@@ -19,13 +19,13 @@ class TechnicalIndicatorCalculator:
     def load_unprocessed_stocks(self):
         """加载所有包含未处理的股票列表"""
         filter_conditions = {"processed": False}
-        df = self.db_manager.load_data(DailyData, filter_conditions=filter_conditions,distinct_column="symbol" )
+        df = self.db_manager.load_data(DailyDataBase, filter_conditions=filter_conditions,distinct_column="symbol" )
         return df
 
     def load_full_stock_data(self,symbol):
         """加载指定股票的完整历史数据"""
         filter_conditions = {"symbol": symbol}
-        df = self.db_manager.load_data(DailyData, filter_conditions=filter_conditions)
+        df = self.db_manager.load_data(DailyDataBase, filter_conditions=filter_conditions)
         return df
     def calculate_indicators(self, df):
         """计算各种技术指标"""
@@ -74,7 +74,7 @@ class TechnicalIndicatorCalculator:
 
     def save_to_database(self, indicators):
         """将技术指标保存到 technical_indicators 表"""
-        self.db_manager.bulk_insert(TechnicalIndicators, indicators)
+        self.db_manager.bulk_insert(TechnicalIndicatorsBase, indicators)
 
     def mark_as_processed(self, data):
         """标记数据为已处理"""
@@ -85,7 +85,7 @@ class TechnicalIndicatorCalculator:
         data_dict = data.to_dict(orient='records')
         update_fields = {'processed': 1}
         filter_fields = ['date', 'symbol']
-        self.db_manager.bulk_update(DailyData, data_dict, update_fields, filter_fields)
+        self.db_manager.bulk_update(DailyDataBase, data_dict, update_fields, filter_fields)
 
     def process_by_stock(self):
         """按股票逐个处理模式"""

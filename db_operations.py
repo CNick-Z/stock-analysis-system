@@ -13,8 +13,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 
 Base = declarative_base()
 
-class DailyData(Base):
-    __tablename__ = "daily_data"
+dynamic_tables_cache = {}
+
+class DailyDataBase(Base):
+    __tablename__ = "daily_data"  # 映射到原始表
     date = Column(String, primary_key=True)
     symbol = Column(String, primary_key=True)
     open = Column(Float)
@@ -34,8 +36,8 @@ class DailyData(Base):
         Index('idx_date', 'date'),
     )
 
-class TechnicalIndicators(Base):
-    __tablename__ = "technical_indicators"
+class TechnicalIndicatorsBase(Base):
+    __tablename__ = "technical_indicators"  # 映射到原始表
     date = Column(String, primary_key=True)
     symbol = Column(String, primary_key=True)
     sma_5 = Column(Float)
@@ -60,6 +62,119 @@ class TechnicalIndicators(Base):
         Index('idx_tec_date_symbol', 'date', 'symbol'),
         Index('idx_tec_date', 'date'),
     )
+from sqlalchemy import Table, Column, String, Float, Boolean, Index
+
+def create_daily_data_table(year):
+    table_name = f"daily_data_{year}"
+    # 检查表类是否已经存在缓存中
+    if table_name in dynamic_tables_cache:
+        return dynamic_tables_cache[table_name]
+    
+    # 检查表是否已经存在于元数据中
+    if table_name in Base.metadata.tables:
+        # 如果表已经存在，直接返回对应的表类
+        dynamic_table = type(f"DailyData_{year}", (Base,), {
+            "__tablename__": table_name,
+            "__table__": Base.metadata.tables[table_name],
+            "__abstract__": False,
+            "__extend_existing__": True
+        })
+        dynamic_tables_cache[table_name] = dynamic_table
+        return dynamic_table
+    
+    # 动态创建表
+    table = Table(
+        table_name,
+        Base.metadata,
+        Column("date", String, primary_key=True),
+        Column("symbol", String, primary_key=True),
+        Column("open", Float),
+        Column("high", Float),
+        Column("low", Float),
+        Column("close", Float),
+        Column("volume", Float),
+        Column("amount", Float),
+        Column("amplitude", Float),
+        Column("change_pct", Float),
+        Column("change_amount", Float),
+        Column("turnover_rate", Float),
+        Column("processed", Boolean, default=False),
+        Index(f'idx_{table_name}_date_symbol', 'date', 'symbol'),
+        Index(f'idx_{table_name}_processed_symbol', 'processed', 'symbol'),
+        Index(f'idx_{table_name}_date', 'date'),
+    )
+    
+    # 创建表类
+    dynamic_table = type(f"DailyData_{year}", (Base,), {
+        "__tablename__": table_name,
+        "__table__": table,
+        "__abstract__": False,
+        "__extend_existing__": True
+    })
+
+    # 缓存表类
+    dynamic_tables_cache[table_name] = dynamic_table
+    
+    return dynamic_table
+
+def create_technical_indicators_table(year):
+    table_name = f"technical_indicators_{year}"
+    # 检查表类是否已经存在缓存中
+    if table_name in dynamic_tables_cache:
+        return dynamic_tables_cache[table_name]
+    
+    # 检查表是否已经存在于元数据中
+    if table_name in Base.metadata.tables:
+        # 如果表已经存在，直接返回对应的表类
+        dynamic_table = type(f"technical_indicators_{year}", (Base,), {
+            "__tablename__": table_name,
+            "__table__": Base.metadata.tables[table_name],
+            "__abstract__": False,
+            "__extend_existing__": True
+        })
+        dynamic_tables_cache[table_name] = dynamic_table
+        return dynamic_table
+    
+    # 动态创建表
+    table = Table(
+        table_name,
+        Base.metadata,
+        Column("date", String, primary_key=True),
+        Column("symbol", String, primary_key=True),
+        Column("sma_5", Float),
+        Column("sma_10", Float),
+        Column("sma_20", Float),
+        Column("sma_55", Float),
+        Column("sma_240", Float),
+        Column("vol_ma5", Float),
+        Column("macd", Float),
+        Column("macd_signal", Float),
+        Column("macd_histogram", Float),
+        Column("rsi_14", Float),
+        Column("kdj_k", Float),
+        Column("kdj_d", Float),
+        Column("kdj_j", Float),
+        Column("cci_20", Float),
+        Column("williams_r", Float),
+        Column("bb_upper", Float),
+        Column("bb_middle", Float),
+        Column("bb_lower", Float),
+        Index(f'idx_{table_name}_date_symbol', 'date', 'symbol'),
+        Index(f'idx_{table_name}_date', 'date'),
+    )
+    
+    # 创建表类
+    dynamic_table = type(f"TechnicalIndicators_{year}", (Base,), {
+        "__tablename__": table_name,
+        "__table__": table,
+        "__abstract__": False,
+        "__extend_existing__": True
+    })
+
+    # 缓存表类
+    dynamic_tables_cache[table_name] = dynamic_table
+    
+    return dynamic_table
 
 class StockBasicInfo(Base):
     __tablename__ = "stock_basic_info"
@@ -113,10 +228,13 @@ class PositionStatus(Base):
 
 
 class DatabaseManager:
-    def __init__(self, db_url):
+    def __init__(self, db_url,historical_db_url=None):
         self.db_url = db_url
+        self.historical_db_url = db_url.replace('.db','_his.db') if historical_db_url is None else historical_db_url            
         self.engine = create_engine(self.db_url,connect_args={'check_same_thread': False})
+        self.historical_engine = create_engine(self.historical_db_url, connect_args={'check_same_thread': False})
         self.Session = scoped_session(sessionmaker(bind=self.engine))
+        self.HistoricalSession = scoped_session(sessionmaker(bind=self.historical_engine))
     
      # 监听连接事件，在连接建立时设置 PRAGMA journal_mode = WAL
         @event.listens_for(self.engine, "connect")
@@ -133,9 +251,9 @@ class DatabaseManager:
         inspector = inspect(self.engine)
         existing_tables = inspector.get_table_names()
         if "daily_data" not in existing_tables:
-            DailyData.__table__.create(self.engine)
+            DailyDataBase.__table__.create(self.engine)
         if "technical_indicators" not in existing_tables:
-            TechnicalIndicators.__table__.create(self.engine)
+            TechnicalIndicatorsBase.__table__.create(self.engine)
         if "stock_basic_info" not in existing_tables:
             StockBasicInfo.__table__.create(self.engine)
         if "position_details" not in existing_tables:
@@ -155,131 +273,377 @@ class DatabaseManager:
             logging.error(f"Database error: {e}")
         finally:
             session.close()
+
+    @contextmanager
+    def get_his_session(self):
+        """获取数据库会话"""
+        his_session = self.HistoricalSession()
+        try:
+            yield his_session
+            his_session.commit()
+        except Exception as e:
+            his_session.rollback()
+            logging.error(f"Database error: {e}")
+        finally:
+            his_session.close()
+
     
-    def load_data(self, table, filter_conditions=None, distinct_column=None, limit=None, columns=None, order_by=None):
-        """增强版数据加载方法，支持动态过滤条件和指定列查询"""
+    def load_data(self, table_class, filter_conditions=None, distinct_column=None, limit=None, columns=None, order_by=None):
+        """增强版数据加载方法，支持动态分表和多库查询"""
         from sqlalchemy import text
         from sqlalchemy.sql import or_, and_
         from sqlalchemy import inspect
+        from datetime import datetime
 
-        with self.get_session() as session:
-            # 处理指定列查询
-            if columns:
-                if not isinstance(columns, list):
-                    columns = [columns]
-                # 检查指定的列是否存在
-                mapper = inspect(table)
-                columns_attr = []
-                for col in columns:
-                    if isinstance(col, str):
-                        col_attr = getattr(table, col, None)
-                        if col_attr is None:
-                            raise AttributeError(f"Column '{col}' not found in table '{table.__name__}'")
-                        columns_attr.append(col_attr)
+        # 如果传入的是基类，则需要动态确定表名
+        if table_class in [DailyDataBase, TechnicalIndicatorsBase]:
+            # 动态确定表名
+            if 'date' in (filter_conditions or {}):
+                # 提取年份
+                date_value = filter_conditions['date']
+                current_year = datetime.now().year
+
+                # 判断是否查询历史数据
+                query_history = False
+                query_real_time = False
+                start_year = None
+                end_year = None
+
+                if isinstance(date_value, dict):
+                    # 处理嵌套条件
+                    for op, op_value in date_value.items():
+                        if op == '$between':
+                            if isinstance(op_value, list) and len(op_value) == 2:
+                                start_date = op_value[0]
+                                end_date = op_value[1]
+                                start_year = int(start_date[:4])
+                                end_year = int(end_date[:4])
+                        elif op == '$lt':
+                            end_date = op_value
+                            end_year = int(end_date[:4])
+                            start_year = None
+                        elif op == '$gt':
+                            start_date = op_value
+                            start_year = int(start_date[:4])
+                            end_year = None
+                        elif op == '$lte':
+                            end_date = op_value
+                            end_year = int(end_date[:4])
+                            start_year = None
+                        elif op == '$gte':
+                            start_date = op_value
+                            start_year = int(start_date[:4])
+                            end_year = None
+
+                    # 判断查询范围
+                    if end_year is not None and end_year < current_year:
+                        query_history = True
+                    elif start_year is not None and start_year < current_year:
+                        query_history = True
+                        query_real_time = True
+                    elif end_year is not None and end_year >= current_year:
+                        query_real_time = True
+                elif isinstance(date_value, str):
+                    year = int(date_value[:4])
+                    if year < current_year:
+                        query_history = True
                     else:
-                        columns_attr.append(col)
-                # 构建查询对象
-                if distinct_column:
-                    # 如果存在 distinct_column，则需要单独处理
-                    if distinct_column not in columns:
-                        # 确保 distinct_column 总是被包含
-                        columns_attr.append(getattr(table, distinct_column))
-                    query = session.query(*columns_attr).distinct()
+                        query_real_time = True
+                elif isinstance(date_value, list):
+                    start_year = int(date_value[0][:4])
+                    end_year = int(date_value[1][:4])
+                    if end_year < current_year:
+                        query_history = True
+                    elif start_year < current_year and end_year >= current_year:
+                        query_history = True
+                        query_real_time = True
                 else:
-                    query = session.query(*columns_attr)
+                    raise ValueError("Unsupported date format in filter_conditions")
+
+                # 动态生成查询
+                results = []
+                if query_history:
+                    # 如果 start_year 或 end_year 为 None，需要合理推断
+                    if start_year is None:
+                        # 如果 start_year 为 None，假设从最早可能的年份开始
+                        # 这里可以根据实际需求调整逻辑，比如从数据库中获取最早的年份
+                        start_year = end_year - 1  # 默认值，可以根据实际需求调整
+                    if end_year is None:
+                        # 如果 end_year 为 None，假设到当前年份的前一年
+                        end_year = current_year
+
+                    for year in range(start_year, end_year + 1):
+                        table_name = f"{table_class.__tablename__}_{year}"
+                        dynamic_table = self._get_dynamic_table(table_class, year)
+                        result = self._query_data(dynamic_table, filter_conditions, distinct_column, limit, columns, order_by)
+                        results.append(result)
+                if query_real_time:
+                    real_time_result = self._query_data(table_class, filter_conditions, distinct_column, limit, columns, order_by)
+                    results.append(real_time_result)
+
+                # 合并结果
+                if results:
+                    return pd.concat(results)
+                else:
+                    return pd.DataFrame()
             else:
-                if distinct_column:
-                    query = session.query(getattr(table, distinct_column).distinct())
-                else:
-                    query = session.query(table)
-            
-            # 操作符映射
-            operator_mapping = {
-                '$eq': '__eq__',
-                '$ne': '__ne__',
-                '$gt': '__gt__',
-                '$lt': '__lt__',
-                '$gte': '__ge__',
-                '$lte': '__le__',
-                '$like': 'like',
-                '$not_like': 'notlike',
-                '$in': 'in_',
-                '$between': 'between',  # 添加 `$between` 操作符
-                '$not': '__neg__',
-            }
-            if filter_conditions:
-                # 处理过滤条件
-                for key, value in filter_conditions.items():
-                    column = getattr(table, key, None)
-                    if not column:
-                        raise AttributeError(f"Attribute '{key}' not found in table '{table.__name__}'")
-                    
-                    # 处理复合条件
-                    if isinstance(value, dict):
-                        conditions = []
-                        for op, op_value in value.items():
-                            if op not in operator_mapping:
-                                raise ValueError(f"Unsupported operator '{op}' for field '{key}'")
-                            method = operator_mapping[op]
-                            if method == 'like':
-                                # 处理模糊匹配
-                                conditions.append(getattr(column, 'like')(text(f"'%{op_value}%'")))
-                            elif method == 'notlike':
-                                # 处理 NOT LIKE 查询
-                                conditions.append(getattr(column, 'notlike')(text(f"'%{op_value}%'")))
-                            elif method == 'in_':
-                                # 处理 IN 查询
-                                conditions.append(getattr(column, 'in_')(op_value))
-                            elif method == 'between':
-                                # 处理范围查询
-                                if not isinstance(op_value, list) or len(op_value) != 2:
-                                    raise ValueError(f"Expected list of two elements for '$between' in field '{key}'")
-                                conditions.append(getattr(column, 'between')(op_value[0], op_value[1]))
-                            else:
-                                # 处理其他二元操作符
-                                conditions.append(getattr(column, method)(op_value))
-                        query = query.filter(and_(*conditions)) if len(conditions) > 1 else query.filter(*conditions)
-                    else:
-                        # 精确匹配
-                        query = query.filter(column == value)
-             # 处理排序条件
-            if order_by:
-                order_conditions = []
-                for condition in order_by:
-                    if isinstance(condition, str):
-                        # 如果是字符串，表示按该列升序排序
-                        column_name = condition
-                        column = getattr(table, column_name, None)
-                        if not column:
-                            raise AttributeError(f"Column '{column_name}' not found in table '{table.__name__}'")
-                        order_conditions.append(asc(column))
-                    elif isinstance(condition, dict):
-                        # 如果是字典，表示按该列的指定方向排序
-                        if 'column' not in condition or 'direction' not in condition:
-                            raise ValueError("Invalid order_by condition format. Expected 'column' and 'direction' keys.")
-                        column_name = condition['column']
-                        direction = condition['direction'].lower()
-                        column = getattr(table, column_name, None)
-                        if not column:
-                            raise AttributeError(f"Column '{column_name}' not found in table '{table.__name__}'")
-                        if direction == 'asc':
-                            order_conditions.append(asc(column))
-                        elif direction == 'desc':
-                            order_conditions.append(desc(column))
+                # 如果没有 date 条件，默认查询实时数据
+                return self._query_data(table_class, filter_conditions, distinct_column, limit, columns, order_by)
+        else:
+            return self._query_data(table_class, filter_conditions, distinct_column, limit, columns, order_by)
+
+    def _get_dynamic_table(self, base_table, year):
+        """根据年份动态生成表类"""
+        if base_table == DailyDataBase:
+            return create_daily_data_table(year)
+        elif base_table == TechnicalIndicatorsBase:
+            return create_technical_indicators_table(year)
+        else:
+            return base_table
+
+    def _query_data(self, table, filter_conditions=None, distinct_column=None, limit=None, columns=None, order_by=None):
+        """实际执行查询的方法"""
+        # 判断是否是历史表
+        if table.__tablename__.startswith('daily_data_') or table.__tablename__.startswith('technical_indicators_'):
+            # 历史表
+            with self.get_his_session() as session:
+                # 处理指定列查询
+                if columns:
+                    if not isinstance(columns, list):
+                        columns = [columns]
+                    # 检查指定的列是否存在
+                    mapper = inspect(table)
+                    columns_attr = []
+                    for col in columns:
+                        if isinstance(col, str):
+                            col_attr = getattr(table, col, None)
+                            if col_attr is None:
+                                raise AttributeError(f"Column '{col}' not found in table '{table.__name__}'")
+                            columns_attr.append(col_attr)
                         else:
-                            raise ValueError(f"Invalid direction '{direction}' for order_by. Use 'asc' or 'desc'.")
+                            columns_attr.append(col)
+                    # 构建查询对象
+                    if distinct_column:
+                        # 如果存在 distinct_column，则需要单独处理
+                        if distinct_column not in columns:
+                            # 确保 distinct_column 总是被包含
+                            columns_attr.append(getattr(table, distinct_column))
+                        query = session.query(*columns_attr).distinct()
                     else:
-                        raise ValueError("Invalid order_by condition format. Use string or dictionary.")
-                query = query.order_by(*order_conditions)
+                        query = session.query(*columns_attr)
+                else:
+                    if distinct_column:
+                        query = session.query(getattr(table, distinct_column).distinct())
+                    else:
+                        query = session.query(table)
+                
+                # 操作符映射
+                operator_mapping = {
+                    '$eq': '__eq__',
+                    '$ne': '__ne__',
+                    '$gt': '__gt__',
+                    '$lt': '__lt__',
+                    '$gte': '__ge__',
+                    '$lte': '__le__',
+                    '$like': 'like',
+                    '$not_like': 'notlike',
+                    '$in': 'in_',
+                    '$between': 'between',  # 添加 `$between` 操作符
+                    '$not': '__neg__',
+                }
+                if filter_conditions:
+                    # 处理过滤条件
+                    for key, value in filter_conditions.items():
+                        column = getattr(table, key, None)
+                        if not column:
+                            raise AttributeError(f"Attribute '{key}' not found in table '{table.__name__}'")
+                        
+                        # 处理复合条件
+                        if isinstance(value, dict):
+                            conditions = []
+                            for op, op_value in value.items():
+                                if op not in operator_mapping:
+                                    raise ValueError(f"Unsupported operator '{op}' for field '{key}'")
+                                method = operator_mapping[op]
+                                if method == 'like':
+                                    # 处理模糊匹配
+                                    conditions.append(getattr(column, 'like')(text(f"'%{op_value}%'")))
+                                elif method == 'notlike':
+                                    # 处理 NOT LIKE 查询
+                                    conditions.append(getattr(column, 'notlike')(text(f"'%{op_value}%'")))
+                                elif method == 'in_':
+                                    # 处理 IN 查询
+                                    conditions.append(getattr(column, 'in_')(op_value))
+                                elif method == 'between':
+                                    # 处理范围查询
+                                    if not isinstance(op_value, list) or len(op_value) != 2:
+                                        raise ValueError(f"Expected list of two elements for '$between' in field '{key}'")
+                                    conditions.append(getattr(column, 'between')(op_value[0], op_value[1]))
+                                else:
+                                    # 处理其他二元操作符
+                                    conditions.append(getattr(column, method)(op_value))
+                            query = query.filter(and_(*conditions)) if len(conditions) > 1 else query.filter(*conditions)
+                        else:
+                            # 精确匹配
+                            query = query.filter(column == value)
+                # 处理排序条件
+                if order_by:
+                    order_conditions = []
+                    for condition in order_by:
+                        if isinstance(condition, str):
+                            # 如果是字符串，表示按该列升序排序
+                            column_name = condition
+                            column = getattr(table, column_name, None)
+                            if not column:
+                                raise AttributeError(f"Column '{column_name}' not found in table '{table.__name__}'")
+                            order_conditions.append(asc(column))
+                        elif isinstance(condition, dict):
+                            # 如果是字典，表示按该列的指定方向排序
+                            if 'column' not in condition or 'direction' not in condition:
+                                raise ValueError("Invalid order_by condition format. Expected 'column' and 'direction' keys.")
+                            column_name = condition['column']
+                            direction = condition['direction'].lower()
+                            column = getattr(table, column_name, None)
+                            if not column:
+                                raise AttributeError(f"Column '{column_name}' not found in table '{table.__name__}'")
+                            if direction == 'asc':
+                                order_conditions.append(asc(column))
+                            elif direction == 'desc':
+                                order_conditions.append(desc(column))
+                            else:
+                                raise ValueError(f"Invalid direction '{direction}' for order_by. Use 'asc' or 'desc'.")
+                        else:
+                            raise ValueError("Invalid order_by condition format. Use string or dictionary.")
+                    query = query.order_by(*order_conditions)
+                
+                # 处理结果限制
+                if limit:
+                    query = query.limit(limit)
+                
+                # 获取数据
+                df = pd.read_sql(query.statement, session.bind)
             
-            # 处理结果限制
-            if limit:
-                query = query.limit(limit)
+            return df
+        else:
+            # 实时表
+            with self.get_session() as session:
+                # 处理指定列查询
+                if columns:
+                    if not isinstance(columns, list):
+                        columns = [columns]
+                    # 检查指定的列是否存在
+                    mapper = inspect(table)
+                    columns_attr = []
+                    for col in columns:
+                        if isinstance(col, str):
+                            col_attr = getattr(table, col, None)
+                            if col_attr is None:
+                                raise AttributeError(f"Column '{col}' not found in table '{table.__name__}'")
+                            columns_attr.append(col_attr)
+                        else:
+                            columns_attr.append(col)
+                    # 构建查询对象
+                    if distinct_column:
+                        # 如果存在 distinct_column，则需要单独处理
+                        if distinct_column not in columns:
+                            # 确保 distinct_column 总是被包含
+                            columns_attr.append(getattr(table, distinct_column))
+                        query = session.query(*columns_attr).distinct()
+                    else:
+                        query = session.query(*columns_attr)
+                else:
+                    if distinct_column:
+                        query = session.query(getattr(table, distinct_column).distinct())
+                    else:
+                        query = session.query(table)
+                
+                # 操作符映射
+                operator_mapping = {
+                    '$eq': '__eq__',
+                    '$ne': '__ne__',
+                    '$gt': '__gt__',
+                    '$lt': '__lt__',
+                    '$gte': '__ge__',
+                    '$lte': '__le__',
+                    '$like': 'like',
+                    '$not_like': 'notlike',
+                    '$in': 'in_',
+                    '$between': 'between',  # 添加 `$between` 操作符
+                    '$not': '__neg__',
+                }
+                if filter_conditions:
+                    # 处理过滤条件
+                    for key, value in filter_conditions.items():
+                        column = getattr(table, key, None)
+                        if not column:
+                            raise AttributeError(f"Attribute '{key}' not found in table '{table.__name__}'")
+                        
+                        # 处理复合条件
+                        if isinstance(value, dict):
+                            conditions = []
+                            for op, op_value in value.items():
+                                if op not in operator_mapping:
+                                    raise ValueError(f"Unsupported operator '{op}' for field '{key}'")
+                                method = operator_mapping[op]
+                                if method == 'like':
+                                    # 处理模糊匹配
+                                    conditions.append(getattr(column, 'like')(text(f"'%{op_value}%'")))
+                                elif method == 'notlike':
+                                    # 处理 NOT LIKE 查询
+                                    conditions.append(getattr(column, 'notlike')(text(f"'%{op_value}%'")))
+                                elif method == 'in_':
+                                    # 处理 IN 查询
+                                    conditions.append(getattr(column, 'in_')(op_value))
+                                elif method == 'between':
+                                    # 处理范围查询
+                                    if not isinstance(op_value, list) or len(op_value) != 2:
+                                        raise ValueError(f"Expected list of two elements for '$between' in field '{key}'")
+                                    conditions.append(getattr(column, 'between')(op_value[0], op_value[1]))
+                                else:
+                                    # 处理其他二元操作符
+                                    conditions.append(getattr(column, method)(op_value))
+                            query = query.filter(and_(*conditions)) if len(conditions) > 1 else query.filter(*conditions)
+                        else:
+                            # 精确匹配
+                            query = query.filter(column == value)
+                # 处理排序条件
+                if order_by:
+                    order_conditions = []
+                    for condition in order_by:
+                        if isinstance(condition, str):
+                            # 如果是字符串，表示按该列升序排序
+                            column_name = condition
+                            column = getattr(table, column_name, None)
+                            if not column:
+                                raise AttributeError(f"Column '{column_name}' not found in table '{table.__name__}'")
+                            order_conditions.append(asc(column))
+                        elif isinstance(condition, dict):
+                            # 如果是字典，表示按该列的指定方向排序
+                            if 'column' not in condition or 'direction' not in condition:
+                                raise ValueError("Invalid order_by condition format. Expected 'column' and 'direction' keys.")
+                            column_name = condition['column']
+                            direction = condition['direction'].lower()
+                            column = getattr(table, column_name, None)
+                            if not column:
+                                raise AttributeError(f"Column '{column_name}' not found in table '{table.__name__}'")
+                            if direction == 'asc':
+                                order_conditions.append(asc(column))
+                            elif direction == 'desc':
+                                order_conditions.append(desc(column))
+                            else:
+                                raise ValueError(f"Invalid direction '{direction}' for order_by. Use 'asc' or 'desc'.")
+                        else:
+                            raise ValueError("Invalid order_by condition format. Use string or dictionary.")
+                    query = query.order_by(*order_conditions)
+                
+                # 处理结果限制
+                if limit:
+                    query = query.limit(limit)
+                
+                # 获取数据
+                df = pd.read_sql(query.statement, session.bind)
             
-            # 获取数据
-            df = pd.read_sql(query.statement, session.bind)
-        
-        return df
+            return df
     
     def bulk_insert(self, table, data):
         """批量插入数据"""
@@ -354,3 +718,13 @@ class DatabaseManager:
                     query = query.filter(getattr(table, key) == value)
             count = query.count()
         return count
+
+if __name__ == "__main__":
+    pd.options.mode.copy_on_write = True
+    db_url = "sqlite:///c:/db/stock_data.db"
+    filter_conditions = {
+    'date': {'$between': ['2020-01-01', '2023-12-31']}
+    }
+    db_manager = DatabaseManager(db_url=db_url)
+    df = db_manager.load_data(DailyDataBase, filter_conditions=filter_conditions)
+    print(df)

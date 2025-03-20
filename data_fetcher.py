@@ -1,6 +1,6 @@
 import akshare as ak
 import pandas as pd
-from db_operations import DatabaseManager, DailyData
+from db_operations import DatabaseManager, DailyDataBase
 import concurrent.futures
 import os
 from functools import lru_cache
@@ -76,7 +76,7 @@ class DataFetcher:
         columns = ['symbol', 'date']
         # 使用load_data方法获取数据
         existing_data = self.db_manager.load_data(
-            table=DailyData,
+            table_class=DailyDataBase,
             filter_conditions=filter_conditions,
             columns=columns
         )
@@ -106,7 +106,7 @@ class DataFetcher:
             # 确保 symbol 字段存在
             new_data.loc[:, 'symbol'] = symbol
             # 保存到数据库
-            result=self.db_manager.bulk_insert(DailyData, new_data)
+            result=self.db_manager.bulk_insert(DailyDataBase, new_data)
             if result==1:
                 logging.info(f"All data for {symbol} saved successfully.")
         else:
