@@ -21,3 +21,4 @@ bin-release/
 # information for Eclipse / Flash Builder.
 stock-analysis-system.code-workspace
 conf/config.cfg
+trades_report.xlsx

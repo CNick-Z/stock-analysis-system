@@ -297,7 +297,7 @@ class SignalTraderecord:
             price=row['price']  
             # 成本止损
             if newprice <= price * 0.9:
-                stoploss_advice.append(f"{row['symbol']}价格跌至成本价的90%以下,止损卖出。 ")
+                stoploss_advice.append(f"{row['symbol']}价格跌至成本价的90%以下,建议止损卖出。 ")
             return stoploss_advice
 
 

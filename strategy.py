@@ -12,16 +12,16 @@ class StockScorer:
     def __init__(self, config: Dict = None):
         self.config = config or {
             'weights': {
-                'technical': 0.20,  # 调整权重
+                'technical': 0.35,  # 调整权重
                 'capital_flow': 0.35,  # 新增资金流向权重
-                'fundamental': 0.25,
-                'market_heat': 0.2  # 调整市场热度权重
+                'fundamental': 0,
+                'market_heat': 0.3  # 调整市场热度权重
             },
              # 新增资金流子项权重配置
             'capital_flow_weights': {
-                'positive_flow': 0.2,    # 资金流入
+                'positive_flow': 0.25,    # 资金流入
                 'flow_increasing': 0.25,  # 流入加速
-                'trend_strength': 0.3,    # 趋势强度
+                'trend_strength': 0.25,    # 趋势强度
                 'weekly_flow': 0.15,      # 周级别流入
                 'weekly_increasing': 0.1  # 周流入加速
             },
@@ -59,9 +59,9 @@ class StockScorer:
         """技术指标评分（基于策略信号）"""
         tech_score = 0
         # 均线系统评分
-        tech_score += (row['ma_5'] > row['ma_20']) * 0.25
+        tech_score += (row['ma_5'] > row['ma_20']) * 0.3
         tech_score += (row['angle_ma_10'] > 30) * 0.15
-        tech_score += (row['macd'] > row['macd_signal']) * 0.30
+        tech_score += (row['macd'] > row['macd_signal']) * 0.25
         
         # 成交量动能
         volume_score = min(row['volume'] / row['volume_ma5'], 3)  # 限制最大3倍
@@ -81,7 +81,7 @@ class StockScorer:
         
         # 资金流入基础分
         if row['money_flow_positive']:
-            flow_score += self.config['capital_flow_weights']['positive_flow'] * 1.2  # 正值强化
+            flow_score += self.config['capital_flow_weights']['positive_flow'] * 1.4  # 正值强化
             
         # 流入加速
         if row['money_flow_increasing']:
@@ -98,7 +98,7 @@ class StockScorer:
             
         # 周流入加速
         if row['money_flow_weekly_increasing']:
-            flow_score += self.config['capital_flow_weights']['weekly_increasing'] * 1.5  # 加速给予更高权重
+            flow_score += self.config['capital_flow_weights']['weekly_increasing'] * 1.3  # 加速给予更高权重
             
         # 量增幅强化
         if row['量增幅'] > 10:  # 显著增长
@@ -520,8 +520,8 @@ class EnhancedTDXStrategy:
         df['growth'] = (df['close']>=df['open']*1.03) & (df['high']<=df['open']*1.05)
 
         # 计算多周期MACD
-        print('计算多周期MACD...')
-        df = self._calculate_multi_period_macd(df)
+        #print('计算多周期MACD...')
+        #df = self._calculate_multi_period_macd(df)
 
         # 均线条件
         df['ma_condition'] = (
@@ -552,8 +552,8 @@ class EnhancedTDXStrategy:
         df['macd_jc']=(df['macd'] > df['macd_signal']) & (df['macd'].shift(1) < df['macd_signal'].shift(1))
 
         #df['macd_daily_jc'] = (df['macd'] > df['macd_signal']) & (df['macd'].shift(1) < df['macd_signal'].shift(1))
-        df['macd_weekly_jc'] = (df['weekly_macd'] > df['weekly_signal']) & (df['weekly_macd'].shift(1) < df['weekly_signal'].shift(1))
-        df['macd_monthly_jc'] = (df['monthly_macd'] > df['monthly_signal']) & (df['monthly_macd'].shift(1) < df['monthly_signal'].shift(1))
+        #df['macd_weekly_jc'] = (df['weekly_macd'] > df['weekly_signal']) & (df['weekly_macd'].shift(1) < df['weekly_signal'].shift(1))
+        #df['macd_monthly_jc'] = (df['monthly_macd'] > df['monthly_signal']) & (df['monthly_macd'].shift(1) < df['monthly_signal'].shift(1))
         
         # 新增超买超卖条件
         df['rsi_overbought'] = df['rsi_14'] > 70
@@ -591,19 +591,18 @@ class EnhancedTDXStrategy:
 
         return df
     def _calculate_market_heat(self, data: pd.DataFrame) -> pd.DataFrame:
-        """
-        计算市场热度，并将结果整合到原始数据中。
-        市场热度基于股票的成交量计算，按日计算每个股票的市场热度。
-        """
-        # 确保数据中包含必要的列
         required_columns = ['date', 'symbol', 'volume', 'industry']
         if not all(col in data.columns for col in required_columns):
             raise ValueError(f"数据中缺少必要的列：{required_columns}")
         
-        # 按日期和行业分组，计算每个日期每个行业的平均成交量
-        data['market_heat'] = data.groupby(['date', 'industry'])['volume'].transform(lambda x: x / x.mean())
+        # 计算每个日期每个行业的平均成交量
+        mean_volumes = data.groupby(['date', 'industry'])['volume'].mean().reset_index()
+        mean_volumes.columns = ['date', 'industry', 'mean_volume']
         
-        # 返回包含市场热度的完整数据集
+        # 合并数据并计算市场热度
+        data = data.merge(mean_volumes, on=['date', 'industry'], how='left')
+        data['market_heat'] = data['volume'] / data['mean_volume']
+        
         return data
 
     def generate_features(self, start_date: str,end_date:str) -> pd.DataFrame:

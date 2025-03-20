@@ -113,7 +113,7 @@ class TradingSimulator:
     def __init__(self, initial_capital=5e5, commission=0.0003,position_limit=5):
         self.portfolio = {
             'cash': initial_capital,
-            'positions': {},  # {symbol: {'qty': int, 'cost': float}}
+            'positions': {},  # {symbol: {'qty': int, 'cost': float, 'latest_price': float}}
             'history': []
         }
         self.commission_rate = commission
@@ -143,7 +143,8 @@ class TradingSimulator:
             self.portfolio['positions'][symbol] = {
                 'qty': quantity,
                 'cost': total_cost,
-                'entry_date': date
+                'entry_date': date,
+                'latest_price': price  # 初始化最新价格为买入价格
             }
             
         # 更新现金
@@ -277,7 +278,7 @@ class BacktestOrchestrator:
             for i, (symbol, pos) in enumerate(positions.items()):
                 self.ax_info.text(
                     0.05, text_y,
-                    f"{symbol}: QTY={pos['qty']}, Cost={pos['cost']:.2f}",
+                    f"{symbol}: QTY={pos['qty']}, Cost={pos['cost']:.2f},Value={pos['latest_price']*pos['qty']:.2f}",
                     transform=self.ax_info.transAxes,
                     fontsize=10,
                     verticalalignment='top'
@@ -340,21 +341,18 @@ class BacktestOrchestrator:
                     for info in simulator.buy_signals[date]:
                         simulator.execute_order('buy', info[0],info[1],info[2],info[3],info[4])
                     del simulator.buy_signals[date]
-                # 处理卖出信号
-            #print("处理卖出信号")
-            self._process_sell_signals(date,simulator,year_sell_signals)
-            # 检查止损
-            #print("检查止损")
-            self._check_stop_loss(date, simulator)            
-            # 处理买入信号
-            #print("处理买入信号")
-            self._process_buy_signals(date,simulator,year_buy_signals)
             # 记录每日净值
             self._record_daily_value(date, simulator)            
             # 更新实时图表
             if self.live_plot:
                 self._update_live_plot(simulator)            
-        
+            # 检查止损
+            self._check_stop_loss(date, simulator)
+            # 处理卖出信号
+            self._process_sell_signals(date,simulator,year_sell_signals)           
+            # 处理买入信号
+            self._process_buy_signals(date,simulator,year_buy_signals)
+            
 
     def _process_sell_signals(self, date, simulator,signals):
         """处理卖出信号"""
@@ -370,9 +368,8 @@ class BacktestOrchestrator:
         # 筛选出盈利的持仓股票
         profitable_sell_signals = []
         for symbol, pos in list(simulator.portfolio['positions'].items()):
-            current_price = self.price_matrix.loc[date,('close',symbol)]
             cost_per_share = pos['cost'] / pos['qty']
-            if current_price > cost_per_share:  # 筛选出盈利的持仓
+            if pos['latest_price'] > cost_per_share: 
                 profitable_sell_signals.append(symbol)
         
         # 只对盈利的持仓股票处理卖出信号
@@ -499,9 +496,13 @@ class BacktestOrchestrator:
         else:
             date_obj = date
         for symbol, pos in list(simulator.portfolio['positions'].items()):
-            current_price = self.price_matrix.loc[date_obj.strftime('%Y-%m-%d'), ('close',symbol)] 
+            try:
+                current_price = self.price_matrix.loc[date_obj.strftime('%Y-%m-%d'), ('close',symbol)]
+                pos['latest_price']=current_price
+            except:
+                continue
             cost_basis = pos['cost'] / pos['qty']
-            if  simulator.portfolio['positions'][symbol]['entry_date']== date_obj.strftime('%Y-%m-%d'):
+            if  pos['entry_date']== date_obj.strftime('%Y-%m-%d'):
                 continue
             # 成本止损
             if current_price <= cost_basis * 0.9:
@@ -555,19 +556,7 @@ class BacktestOrchestrator:
         """计算当前组合价值"""
         position_value = 0.0
         for symbol, pos in simulator.portfolio['positions'].items():
-            try:
-                current_price = self.price_matrix.loc[date, ('close',symbol)]
-                if pd.isna(current_price):
-                    # 如果当前价格为 NaN，尝试使用前一交易日的价格
-                    previous_date = self._get_previous_open_day(date,symbol)
-                    if previous_date:
-                        current_price = self.price_matrix.loc[previous_date, ('close',symbol)]
-                    else:
-                        continue
-            except KeyError:
-                # 如果日期或股票符号不在价格矩阵中，跳过该股票的计算
-                continue
-            position_value += current_price * pos['qty']
+            position_value += pos['latest_price'] * pos['qty']  # 使用最新价格计算市值
         total_value = simulator.portfolio['cash'] + position_value
         return total_value
     
@@ -645,7 +634,7 @@ if __name__ == "__main__":
   
     # 运行回测
     orchestrator = BacktestOrchestrator(live_plot=True)
-    report = orchestrator.run(start_date='2006-01-13', end_date='2015-02-28')    
+    report = orchestrator.run(start_date='2016-01-13', end_date='2016-12-28')    
     print("回测结果摘要:")
     print(f"最终净值: {report['summary']['final_value']:,.2f}")
     print(f"总收益率: {report['summary']['total_return']:.2%}")
