@@ -7,6 +7,7 @@ bin-release/
 # Other files and folders
 .settings/
 .db/
+.backtestresult/
 
 # Executables
 *.swf
@@ -22,3 +23,5 @@ bin-release/
 stock-analysis-system.code-workspace
 conf/config.cfg
 trades_report.xlsx
+backtestresult/trades_report_1742532995.xlsx
+backtestresult/trades_report_1742539249.xlsx

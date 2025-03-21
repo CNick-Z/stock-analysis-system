@@ -1,21 +1,35 @@
 #result_analysis.py
 import pandas as pd
 import re
+import json
 from sklearn.preprocessing import LabelEncoder
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
 import seaborn as sns
+from utils.strategy import StockScorer
 
 # 1. 数据加载与预处理
-def load_and_pair_transactions(file_path):
-    # 加载原始数据
-    df = pd.read_excel(file_path, sheet_name='Transactions')
-    df = df[df['symbol'].notna()].reset_index(drop=True)
+def load_and_pair_transactions(directory_path):
+    # 遍历目录中的所有文件
+    all_files = [f for f in os.listdir(directory_path) if f.endswith('.xlsx')]
+    # 初始化一个空的 DataFrame 用于存储所有文件的数据
+    all_data = pd.DataFrame()
+    
+    # 遍历每个文件
+    for file_name in all_files:
+        file_path = os.path.join(directory_path, file_name)
+        
+        # 加载单个文件的数据
+        df = pd.read_excel(file_path, sheet_name='Transactions')
+        df = df[df['symbol'].notna()].reset_index(drop=True)
+        
+        # 将单个文件的数据合并到总的 DataFrame 中
+        all_data = pd.concat([all_data, df], ignore_index=True)
     
     # 分离买入和卖出记录
-    buys = df[df['type'] == 'buy'].copy()
-    sells = df[df['type'] == 'sell'].copy()
+    buys = all_data[all_data['type'] == 'buy'].copy()
+    sells = all_data[all_data['type'] == 'sell'].copy()
     
     # 按股票代码分组并排序
     buys_grouped = buys.sort_values('date').groupby('symbol')
@@ -129,6 +143,7 @@ def prepare_features(parsed_df):
 
 # 4. 分析与建模
 def analyze_features(final_df):
+
     # 相关性热力图
     corr_matrix = final_df.corr()
     plt.figure(figsize=(10, 8))
@@ -153,13 +168,89 @@ def analyze_features(final_df):
     
     print("\n=== 特征重要性分析 ===")
     print(feature_importance)
+
+    # 新增：动态获取当前权重配置
+    scorer = StockScorer()  # 实例化 StockScorer
+    current_weights = scorer.config['weights']
+    capital_flow_weights = scorer.config.get('capital_flow_weights', {})
+    # 生成优化建议
+    weight_suggestions, signal_suggestions = generate_optimization_suggestions(
+        feature_importance, 
+        current_weights,
+        capital_flow_weights
+    )
     
-    return feature_importance
+    return feature_importance, weight_suggestions, signal_suggestions
+    
+def generate_optimization_suggestions(feature_importance, current_weights, capital_flow_weights):
+    """根据特征重要性生成优化建议"""
+    # 权重调整规则
+    POSITIVE_ADJUST = 0.05
+    NEGATIVE_ADJUST = -0.05
+    
+    # 映射特征到权重类别
+    feature_mapping = {
+        'tech_score': ('technical', None),
+        'funds_score': ('capital_flow', None),
+        'heat_score': ('market_heat', None),
+        'macd_cross': ('technical', 'macd_cross'),
+        'bollinger_position': ('technical', 'bollinger'),
+        'main_fund_direction': ('capital_flow', 'positive_flow'),
+        'flow_increasing': ('capital_flow', 'flow_increasing'),
+        'weekly_flow': ('capital_flow', 'weekly_flow')
+    }
+    
+    # 初始化建议配置
+    weight_suggestions = current_weights.copy()
+    cf_weight_suggestions = capital_flow_weights.copy()
+    signal_suggestions = {'add': [], 'remove': []}
+    
+    for _, row in feature_importance.iterrows():
+        feat = row['Feature']
+        importance = row['Importance']
+        
+        # 主权重调整
+        if feat in feature_mapping:
+            category, sub_feature = feature_mapping[feat]
+            if importance > 0.1:
+                if sub_feature:  # 处理子权重
+                    cf_weight_suggestions[sub_feature] = min(
+                        cf_weight_suggestions.get(sub_feature, 0) + POSITIVE_ADJUST, 
+                        0.4  # 防止子项权重过高
+                    )
+                else:  # 处理主权重
+                    weight_suggestions[category] += POSITIVE_ADJUST
+            elif importance < -0.1:
+                if sub_feature:
+                    cf_weight_suggestions[sub_feature] = max(
+                        cf_weight_suggestions.get(sub_feature, 0) + NEGATIVE_ADJUST,
+                        0.0  # 防止负权重
+                    )
+                else:
+                    weight_suggestions[category] += NEGATIVE_ADJUST
+        
+        # 信号增删建议
+        if importance > 0.2 and feat not in current_weights:
+            signal_suggestions['add'].append(feat)
+        elif importance < -0.2 and feat in current_weights.values():
+            signal_suggestions['remove'].append(feat)
+    
+    # 权重归一化处理
+    total_main = sum(weight_suggestions.values())
+    for k in weight_suggestions:
+        weight_suggestions[k] = round(weight_suggestions[k]/total_main, 2)
+        
+    total_cf = sum(cf_weight_suggestions.values())
+    for k in cf_weight_suggestions:
+        cf_weight_suggestions[k] = round(cf_weight_suggestions[k]/total_cf, 2)
+    
+    return {'main': weight_suggestions, 'capital_flow': cf_weight_suggestions}, signal_suggestions
+
 
 # 主流程
 if __name__ == "__main__":
     # 数据加载与匹配
-    paired_df = load_and_pair_transactions("./backtestresult/trades_report.xlsx")
+    paired_df = load_and_pair_transactions("./backtestresult/")
     print(f"成功匹配 {len(paired_df)} 笔完整交易")
     
     # 信号解析
@@ -168,19 +259,47 @@ if __name__ == "__main__":
     # 特征工程
     final_df = prepare_features(parsed_df)
     
-    # 分析
-    feature_importance = analyze_features(final_df)
+    # 获取分析结果
+    feature_importance, weight_suggestions, signal_suggestions = analyze_features(final_df)
     
     # 输出优化建议
-    print("\n=== 优化建议 ===")
-    print("应加强的指标：")
-    for feat in feature_importance[feature_importance['Importance'] > 0]['Feature']:
-        print(f"  - {feat}")
-        
-    print("\n需谨慎处理的指标：")
-    for feat in feature_importance[feature_importance['Importance'] < 0]['Feature']:
-        print(f"  - {feat}")
-
+    print("\n=== 自动生成的优化建议 ===")
+    
+    # 1. 主权重调整建议
+    print("\n主权重调整建议（strategy.py 的 weights 配置）:")
+    print("当前配置:", json.dumps(StockScorer().config['weights'], indent=4))
+    print("建议调整:")
+    print(json.dumps(weight_suggestions['main'], indent=4))
+    
+    # 2. 资金流子权重建议
+    print("\n资金流向子项调整（capital_flow_weights 配置）:")
+    print("当前配置:", json.dumps(StockScorer().config['capital_flow_weights'], indent=4))
+    print("建议调整:")
+    print(json.dumps(weight_suggestions['capital_flow'], indent=4))
+    
+    # 3. 信号增删建议
+    print("\n信号优化建议:")
+    if signal_suggestions['add']:
+        print("需增加的信号:")
+        for feat in signal_suggestions['add']:
+            imp = feature_importance[feature_importance['Feature'] == feat]['Importance'].values[0]
+            print(f"  - {feat}（重要性: {imp:.2f}）")
+    if signal_suggestions['remove']:
+        print("\n需移除的信号:")
+        for feat in signal_suggestions['remove']:
+            imp = feature_importance[feature_importance['Feature'] == feat]['Importance'].values[0]
+            print(f"  - {feat}（重要性: {imp:.2f}）")
+    
+    # 4. 配置代码示例
+    print("\n配置代码修改示例（更新 strategy.py）:")
+    print('''
+    # strategy.py 修改部分
+    'weights': %s,
+    'capital_flow_weights': %s
+    ''' % (
+        json.dumps(weight_suggestions['main'], indent=4),
+        json.dumps(weight_suggestions['capital_flow'], indent=4)
+    ))
 # 使用说明：
 # 1. 依赖库：pandas, openpyxl, scikit-learn, matplotlib, seaborn
 # 2. 确保Excel文件路径正确

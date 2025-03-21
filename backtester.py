@@ -139,6 +139,7 @@ class TradingSimulator:
         if symbol in self.portfolio['positions']:
             self.portfolio['positions'][symbol]['qty'] += quantity
             self.portfolio['positions'][symbol]['cost'] += total_cost
+            self.portfolio['positions'][symbol]['latest_price'] = price
         else:
             self.portfolio['positions'][symbol] = {
                 'qty': quantity,
@@ -496,11 +497,8 @@ class BacktestOrchestrator:
         else:
             date_obj = date
         for symbol, pos in list(simulator.portfolio['positions'].items()):
-            try:
-                current_price = self.price_matrix.loc[date_obj.strftime('%Y-%m-%d'), ('close',symbol)]
-                pos['latest_price']=current_price
-            except:
-                continue
+            current_price = self.price_matrix.loc[date_obj.strftime('%Y-%m-%d'), ('close',symbol)].fillna(pos['latest_price'])
+            pos['latest_price'] = current_price
             cost_basis = pos['cost'] / pos['qty']
             if  pos['entry_date']== date_obj.strftime('%Y-%m-%d'):
                 continue
@@ -565,7 +563,9 @@ class BacktestOrchestrator:
         df = pd.DataFrame(simulator.portfolio['history']).set_index('date')
         df['returns'] = df['value'].pct_change()
         trades = pd.DataFrame(simulator.portfolio['history'])
-        trade_filename = './backtestresult/trades_report.xlsx'
+        import time
+        now=str(time.time()).split('.')[0]
+        trade_filename = f'./backtestresult/trades_report_{now}.xlsx'
         with pd.ExcelWriter(trade_filename) as writer:
             # 保存交易记录
             trades.to_excel(writer, sheet_name='Transactions', index=False)
@@ -634,7 +634,7 @@ if __name__ == "__main__":
   
     # 运行回测
     orchestrator = BacktestOrchestrator(live_plot=True)
-    report = orchestrator.run(start_date='2016-01-13', end_date='2016-12-28')    
+    report = orchestrator.run(start_date='2013-01-01', end_date='2020-12-28')    
     print("回测结果摘要:")
     print(f"最终净值: {report['summary']['final_value']:,.2f}")
     print(f"总收益率: {report['summary']['total_return']:.2%}")

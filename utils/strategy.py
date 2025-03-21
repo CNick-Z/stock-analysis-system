@@ -4,7 +4,7 @@ import pandas as pd
 from scipy.stats import linregress
 from typing import Dict, Tuple
 from datetime import datetime
-from db_operations import *
+from utils.db_operations import *
 from tqdm import tqdm
 import talib as ta
 
@@ -12,10 +12,10 @@ class StockScorer:
     def __init__(self, config: Dict = None):
         self.config = config or {
             'weights': {
-                'technical': 0.35,  # 调整权重
-                'capital_flow': 0.35,  # 新增资金流向权重
+                'technical': 0.33,  # 调整权重
+                'capital_flow': 0.33,  # 新增资金流向权重
                 'fundamental': 0,
-                'market_heat': 0.3  # 调整市场热度权重
+                'market_heat': 0.33  # 调整市场热度权重
             },
              # 新增资金流子项权重配置
             'capital_flow_weights': {
