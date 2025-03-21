@@ -1,6 +1,6 @@
 # stock_basic_info.py
 import akshare as ak
-from db_operations import *
+from utils.db_operations import *
 import logging
 from sqlalchemy import distinct
 from datetime import datetime

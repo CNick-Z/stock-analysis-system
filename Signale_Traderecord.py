@@ -1,11 +1,11 @@
 # Signale_Traderecord.py
-from db_operations import *
+from utils.db_operations import *
 import pandas as pd
 import numpy as np
 from datetime import datetime,timedelta,date
-from stock_report import StockReport
-from strategy import EnhancedTDXStrategy
-from get_notion_database_info import NotionDatabaseManager
+from utils.stock_report import StockReport
+from utils.strategy import EnhancedTDXStrategy
+from utils.get_notion_database_info import NotionDatabaseManager
 
 
 class SignalTraderecord:
@@ -395,45 +395,12 @@ class SignalTraderecord:
 if __name__ == '__main__':
     recorder=SignalTraderecord('c:/db/stock_data.db')
     date = datetime.today()+timedelta(days=-1)
-    date = datetime.strftime(date,'%Y%m%d')
+    date = datetime.strftime(date,'%Y-%m-%d')
     notion=NotionDatabaseManager()
-    '''
-    buydic={
-    '2025-02-21':[('300041',9.03,1200)],
-    '2025-02-24':[('601311',8.48,1200),('603100',21.3,500)],
-    '2025-02-26':[('688308',21.41,500)],
-    '2025-03-05':[('600764',27.41,400)],
-    '2025-03-07':[('600893',38.28,300)],
-    '2025-03-12':[('603301',21.52,600),('600798',3.08,3500)],
-    '2025-03-17':[('601860',2.8,4000)],
-    '2025-03-18':[('688337',39.1,300),('603099',34.19,300),('301286',30.63,400)]
-    }
-    selldic={
-    '2025-03-14':[('600798',3.13,3500)],
-    '2025-03-18':[('600764',31.63,400),('300041',9.46,1200),('603100',21.61,500),('600893',38.1,300)]
-    }
-    '''
-    datelist=recorder.get_dates_list('2025-02-06','2025-03-19')
+    datelist=recorder.get_dates_list(date,date)
     for date in datelist:
         buylist_day,selllist_day = notion.query_notion_database(date)
         recorder.run(buylist_day,selllist_day,date)
-    '''
-    buylist_day=[]
-    selllist_day=[]
-    if buydic is not {}:
-        if date in buydic.keys():
-            for item in buydic[date]:
-                buylist=list(item)
-                buylist.insert(0,date)
-                buylist_day.append(tuple(buylist))
-    if selldic is not {}:
-        if date in selldic.keys():
-            for item in selldic[date]:
-                selllist=list(item)
-                selllist.insert(0,date)
-                selllist_day.append(tuple(selllist))
-    recorder.run(buylist_day,selllist_day,date)
-    '''
-    
+
     
 

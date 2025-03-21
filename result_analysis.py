@@ -159,7 +159,7 @@ def analyze_features(final_df):
 # 主流程
 if __name__ == "__main__":
     # 数据加载与匹配
-    paired_df = load_and_pair_transactions("trades_report.xlsx")
+    paired_df = load_and_pair_transactions("./backtestresult/trades_report.xlsx")
     print(f"成功匹配 {len(paired_df)} 笔完整交易")
     
     # 信号解析

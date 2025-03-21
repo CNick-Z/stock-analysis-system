@@ -1,8 +1,8 @@
 #get_today_data.py
-import data_fetcher
-import DataProcessor
+import utils.data_fetcher
+import utils.DataProcessor
 from datetime import date,timedelta,datetime
-from db_operations import *
+from utils.db_operations import *
 
 def get_today_data(start_date, end_date,db_url):
     fetcher = data_fetcher.DataFetcher(db_url)

@@ -4,7 +4,7 @@ from ta.momentum import rsi, stoch, stoch_signal,williams_r
 from ta.trend import cci,macd, macd_signal, macd_diff
 import talib
 import logging
-from db_operations import *
+from utils.db_operations import *
 import logging
 from contextlib import contextmanager
 

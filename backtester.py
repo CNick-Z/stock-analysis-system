@@ -1,5 +1,5 @@
 # backtester.py
-from db_operations import *
+from utils.db_operations import *
 import pandas as pd
 import numpy as np
 import matplotlib
@@ -8,8 +8,8 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from tqdm import tqdm
 from datetime import datetime, timedelta
-from stock_report import  *
-from strategy import *
+from utils.stock_report import  *
+from utils.strategy import *
 
 class DynamicPositionManager:
     """动态仓位管理模块"""
@@ -565,7 +565,7 @@ class BacktestOrchestrator:
         df = pd.DataFrame(simulator.portfolio['history']).set_index('date')
         df['returns'] = df['value'].pct_change()
         trades = pd.DataFrame(simulator.portfolio['history'])
-        trade_filename = 'trades_report.xlsx'
+        trade_filename = './backtestresult/trades_report.xlsx'
         with pd.ExcelWriter(trade_filename) as writer:
             # 保存交易记录
             trades.to_excel(writer, sheet_name='Transactions', index=False)
