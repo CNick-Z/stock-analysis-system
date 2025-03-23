@@ -114,7 +114,6 @@ def create_daily_data_table(year):
 
     # 缓存表类
     dynamic_tables_cache[table_name] = dynamic_table
-    
     return dynamic_table
 
 def create_technical_indicators_table(year):
@@ -173,7 +172,6 @@ def create_technical_indicators_table(year):
 
     # 缓存表类
     dynamic_tables_cache[table_name] = dynamic_table
-    
     return dynamic_table
 
 class StockBasicInfo(Base):
@@ -260,6 +258,19 @@ class DatabaseManager:
             PositionDetail.__table__.create(self.engine)
         if  "position_status" not in existing_tables:
             PositionStatus.__table__.create(self.engine)
+    
+    def ensure_dynamic_table_exists(self, table_class, year):
+        """确保动态分表存在"""
+        if table_class == DailyDataBase:
+            dynamic_table = create_daily_data_table(year)
+        elif table_class == TechnicalIndicatorsBase:
+            dynamic_table = create_technical_indicators_table(year)
+        else:
+            return
+        # 检查历史库中是否存在该表
+        inspector = inspect(self.historical_engine)
+        if dynamic_table.__tablename__ not in inspector.get_table_names():
+            dynamic_table.__table__.create(self.historical_engine)
 
     @contextmanager
     def get_session(self):
@@ -393,13 +404,15 @@ class DatabaseManager:
             return self._query_data(table_class, filter_conditions, distinct_column, limit, columns, order_by)
 
     def _get_dynamic_table(self, base_table, year):
-        """根据年份动态生成表类"""
         if base_table == DailyDataBase:
-            return create_daily_data_table(year)
+            dynamic_table = create_daily_data_table(year)
         elif base_table == TechnicalIndicatorsBase:
-            return create_technical_indicators_table(year)
-        else:
-            return base_table
+            dynamic_table = create_technical_indicators_table(year)
+        # 显式创建表到历史数据库
+        inspector = inspect(self.historical_engine)
+        if dynamic_table.__tablename__ not in inspector.get_table_names():
+            dynamic_table.__table__.create(self.historical_engine)
+        return dynamic_table
 
     def _query_data(self, table, filter_conditions=None, distinct_column=None, limit=None, columns=None, order_by=None):
         """实际执行查询的方法"""

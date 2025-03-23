@@ -9,7 +9,7 @@ import matplotlib.dates as mdates
 from tqdm import tqdm
 from datetime import datetime, timedelta
 from utils.stock_report import  *
-from utils.strategy import *
+from utils.strategy import StockScorer,EnhancedTDXStrategy
 
 class DynamicPositionManager:
     """动态仓位管理模块"""
@@ -121,14 +121,14 @@ class TradingSimulator:
         self.buy_signals = {}
         self.sell_signals = {}
         
-    def execute_order(self, order_type: str, symbol: str, price: float, date: datetime, quantity: int,signal_info):
+    def execute_order(self, order_type: str, symbol: str, price: float, date: datetime, quantity: int,signal_info,signal=None):
         """执行订单并更新持仓"""
         if order_type == 'buy':
-            return self._execute_buy(symbol, price, date, quantity,signal_info)
+            return self._execute_buy(symbol, price, date, quantity,signal_info,signal)
         elif order_type == 'sell':
             return self._execute_sell(symbol, price, date, quantity,signal_info)
         
-    def _execute_buy(self, symbol, price, date, quantity,signal_info):
+    def _execute_buy(self, symbol, price, date, quantity,signal_info,signal):
         # 计算交易成本
         commission = price * quantity * self.commission_rate
         total_cost = price * quantity + commission
@@ -159,7 +159,8 @@ class TradingSimulator:
             'price': price,
             'quantity': quantity,
             'commission': commission,
-            'signal_info': signal_info  # 新增字段，记录交易信号信息
+            'signal_info': signal_info,  # 新增字段，记录交易信号信息
+            'signal':signal
         })
         print(f"\n{date} 买入 {symbol}，价格: {price}，数量: {quantity}，佣金: {commission}")
         return True
@@ -200,8 +201,8 @@ class BacktestOrchestrator:
         self.position_limit_base = position_limit  # 基础持仓限制
         self.db = DatabaseIntegrator(db_path)
         self.strategy = EnhancedTDXStrategy(db_path)
-        self.Report = StockReport()
-        self.Scorer = StockScorer()
+        self.Scorer= StockScorer()
+        self.Report = StockReport(self.Scorer)
         self.price_matrix = None
         self.trading_dates = None
         self.live_plot = live_plot
@@ -340,7 +341,7 @@ class BacktestOrchestrator:
             if simulator.buy_signals:
                 if date in simulator.buy_signals:
                     for info in simulator.buy_signals[date]:
-                        simulator.execute_order('buy', info[0],info[1],info[2],info[3],info[4])
+                        simulator.execute_order('buy', info[0],info[1],info[2],info[3],info[4],info[5])
                     del simulator.buy_signals[date]
             # 记录每日净值
             self._record_daily_value(date, simulator)            
@@ -432,7 +433,7 @@ class BacktestOrchestrator:
                         signal_info = self.Report.generate_report(symbol_data)
                         if next_open_day not in simulator.buy_signals:
                             simulator.buy_signals[next_open_day] = []
-                        simulator.buy_signals[next_open_day].append([row['symbol'],next_open_price,next_open_day,max_afford,signal_info])
+                        simulator.buy_signals[next_open_day].append([row['symbol'],next_open_price,next_open_day,max_afford,signal_info,symbol_data.to_dict(orient='records')[0]])
                         #simulator.execute_order('buy', row['symbol'], next_open_price, next_open_day, max_afford)
                         available_slots-=1
                 except:
@@ -496,28 +497,30 @@ class BacktestOrchestrator:
             date_obj = datetime.strptime(date, "%Y-%m-%d").date()
         else:
             date_obj = date
-        for symbol, pos in list(simulator.portfolio['positions'].items()):
-            current_price = self.price_matrix.loc[date_obj.strftime('%Y-%m-%d'), ('close',symbol)].fillna(pos['latest_price'])
-            pos['latest_price'] = current_price
-            cost_basis = pos['cost'] / pos['qty']
+        for symbol, pos in list(simulator.portfolio['positions'].items()):            
             if  pos['entry_date']== date_obj.strftime('%Y-%m-%d'):
                 continue
-            # 成本止损
-            if current_price <= cost_basis * 0.9:
-                try:
-                    next_open_price,next_open_day = self._get_next_open_price(date_obj.strftime('%Y-%m-%d'), symbol)
-                    if next_open_price:
-                        # 记录止损信息
-                        signal_info = {
-                            'type': 'stop_loss',
-                            'reason': f"价格跌至成本价的90%以下，触发止损。"
-                        }
-                        if next_open_day not in simulator.sell_signals:
-                            simulator.sell_signals[next_open_day] = []
-                        simulator.sell_signals[next_open_day].append([symbol,next_open_price,next_open_day,simulator.portfolio['positions'][symbol]['qty'],signal_info])
-                        #simulator.execute_order('sell', symbol, next_open_price, next_open_day, pos['qty'])
-                except:
-                    continue
+            current_price = self.price_matrix.loc[date_obj.strftime('%Y-%m-%d'), ('close',symbol)]
+            # 如果获取到价格，则更新 pos['latest_price']
+            if current_price == current_price:
+                pos['latest_price'] = current_price
+                cost_basis = pos['cost'] / pos['qty']
+                # 成本止损
+                if current_price <= cost_basis * 0.9:
+                    try:
+                        next_open_price,next_open_day = self._get_next_open_price(date_obj.strftime('%Y-%m-%d'), symbol)
+                        if next_open_price:
+                            # 记录止损信息
+                            signal_info = {
+                                'type': 'stop_loss',
+                                'reason': f"价格跌至成本价的90%以下，触发止损。"
+                            }
+                            if next_open_day not in simulator.sell_signals:
+                                simulator.sell_signals[next_open_day] = []
+                            simulator.sell_signals[next_open_day].append([symbol,next_open_price,next_open_day,simulator.portfolio['positions'][symbol]['qty'],signal_info])
+                            #simulator.execute_order('sell', symbol, next_open_price, next_open_day, pos['qty'])
+                    except:
+                        continue
             '''
             # 跟踪止损
             if 'highest_price' not in pos:
@@ -630,11 +633,10 @@ class BacktestOrchestrator:
         self.fig.canvas.flush_events()
 
 # 使用示例
-if __name__ == "__main__":
-  
+if __name__ == "__main__":  
     # 运行回测
     orchestrator = BacktestOrchestrator(live_plot=True)
-    report = orchestrator.run(start_date='2013-01-01', end_date='2020-12-28')    
+    report = orchestrator.run(start_date='2002-10-20', end_date='2024-12-31')    
     print("回测结果摘要:")
     print(f"最终净值: {report['summary']['final_value']:,.2f}")
     print(f"总收益率: {report['summary']['total_return']:.2%}")

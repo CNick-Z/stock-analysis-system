@@ -4,7 +4,7 @@ from utils.db_operations import DatabaseManager, create_daily_data_table, create
 from datetime import datetime
 
 # 初始化数据库管理器
-db_manager = DatabaseManager(db_url='sqlite:///c:/db/stock_data_his3.db', historical_db_url='sqlite:///c:/db/stock_data_his.db')
+db_manager = DatabaseManager(db_url='sqlite:///c:/db/stock_data.db', historical_db_url='sqlite:///c:/db/stock_data_his.db')
 current_year = str(datetime.now().year)
 
 # 获取所有历史数据
@@ -17,6 +17,7 @@ with db_manager.get_session() as session:
         if year == current_year:
             continue
         # 获取历史数据
+        print(year)
         daily_data = session.query(DailyDataBase).filter(DailyDataBase.date.startswith(year)).all()
         technical_indicators = session.query(TechnicalIndicatorsBase).filter(TechnicalIndicatorsBase.date.startswith(year)).all()
 

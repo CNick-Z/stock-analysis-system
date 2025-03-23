@@ -3,7 +3,7 @@ from utils.db_operations import *
 import pandas as pd
 import numpy as np
 from datetime import datetime,timedelta,date
-from utils.stock_report import StockReport
+from utils.stock_report import StockReport,StockScorer
 from utils.strategy import EnhancedTDXStrategy
 from utils.get_notion_database_info import NotionDatabaseManager
 
@@ -21,7 +21,8 @@ class SignalTraderecord:
         self.commission_rate=0.00011
         self.price_matrix=None
         self.position_limit=10
-        self.report = StockReport()
+        self.Scorer= StockScorer()
+        self.Report = StockReport(self.Scorer)
         self.position_manager = self.DynamicPositionAdjuster(
             initial_position=0.5, position_levels=[0.3, 0.5, 0.8, 1], window_size=3, db_manager=self.db_manager
         )
@@ -277,7 +278,7 @@ class SignalTraderecord:
                 max_afford = (max_afford // 100) * 100
                 if max_afford > 0:
                     symbol_data = scored_signals[scored_signals['symbol'] == row['symbol']]
-                    signal_info = self.report.generate_report(symbol_data)
+                    signal_info = self.Report.generate_report(symbol_data)
                     buy_advice.append(
                         f"建议买入 {row['symbol']}，可买入数量: {max_afford}，信号评分报告: {signal_info}")
                     cash -= max_investment

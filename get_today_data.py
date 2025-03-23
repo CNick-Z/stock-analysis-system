@@ -1,13 +1,15 @@
 #get_today_data.py
-import utils.data_fetcher
-import utils.DataProcessor
+from utils.data_fetcher import DataFetcher
+from utils.DataProcessor import TechnicalIndicatorCalculator
 from datetime import date,timedelta,datetime
 from utils.db_operations import *
+from Signale_Traderecord import SignalTraderecord
+from utils.get_notion_database_info import NotionDatabaseManager
 
 def get_today_data(start_date, end_date,db_url):
-    fetcher = data_fetcher.DataFetcher(db_url)
+    fetcher = DataFetcher(db_url)
     fetcher.fetch_and_save_all_data(start_date, end_date)
-    processor = DataProcessor.TechnicalIndicatorCalculator(db_url)
+    processor = TechnicalIndicatorCalculator(db_url)
     processor.process_by_stock()
 
 def get_data_last_day(db_url):
@@ -16,10 +18,17 @@ def get_data_last_day(db_url):
     return last_day
 
 if __name__ == "__main__":
-    db_url = "sqlite:///c:/db/stock_data.db"
+    db_path="c:/db/stock_data.db"
+    db_url = f"sqlite:///{db_path}"
     data_last_day = get_data_last_day(db_url)
     start_date = datetime.strptime(data_last_day,'%Y-%m-%d')+timedelta(days=1)
     end_date = datetime.today()+timedelta(days=-1)
-    end_date = datetime.strftime(end_date,'%Y%m%d')
+    end_date = datetime.strftime(end_date,'%Y-%m-%d')
     #end_date = date.today().strftime("%Y%m%d")
-    get_today_data(start_date.strftime("%Y%m%d"), end_date,db_url)
+    get_today_data(start_date.strftime("%Y%m%d"), end_date.strftime("%Y%m%d"),db_url)
+    recorder=SignalTraderecord(db_path)
+    notion=NotionDatabaseManager()
+    datelist=recorder.get_dates_list(start_date,end_date)
+    for date in datelist:
+        buylist_day,selllist_day = notion.query_notion_database(date)
+        recorder.run(buylist_day,selllist_day,date)

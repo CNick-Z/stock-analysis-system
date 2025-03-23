@@ -10,24 +10,45 @@ import talib as ta
 
 class StockScorer:
     def __init__(self, config: Dict = None):
-        self.config = config or {
+        default_config = {
             'weights': {
-                'technical': 0.33,  # 调整权重
-                'capital_flow': 0.33,  # 新增资金流向权重
+                'technical': 0.34,
+                'capital_flow': 0.33,
                 'fundamental': 0,
-                'market_heat': 0.33  # 调整市场热度权重
+                'market_heat': 0.33
             },
-             # 新增资金流子项权重配置
+            'technical_weights': {
+                'ma_condition': 0.19,
+                'angle_condition': 0.1,
+                'macd_condition': 0.16,
+                'volume_score': 0.2,
+                'rsi_oversold': 0.07,
+                'kdj_oversold': 0.07,
+                'cci_oversold': 0.07,
+                'bollinger_condition': 0.14
+            },
             'capital_flow_weights': {
-                'positive_flow': 0.25,    # 资金流入
-                'flow_increasing': 0.25,  # 流入加速
-                'trend_strength': 0.25,    # 趋势强度
-                'weekly_flow': 0.15,      # 周级别流入
-                'weekly_increasing': 0.1  # 周流入加速
+                'positive_flow': -0.02,
+                'flow_increasing': 0.03,
+                'trend_strength': 0.04,
+                'weekly_flow': 0.02,
+                'weekly_increasing': 0.01,
+                'volume_gain_multiplier': 0.16,
+                'volume_loss_multiplier': 0.11,
+                'volume_gain_threshold': 1.3,
+                'volume_loss_threshold': -0.65
+            },
+            'market_heat': {
+                'window': 30
             },
             'fundamental_metrics': ['pe_ratio', 'roe', 'profit_growth'],
-            'heat_window': 30  # 市场热度计算窗口
+            'scoring_rules': {
+                'max_volume_ratio': 3,
+                'max_trend_strength': 2.0,
+                'max_flow_score': 1.0
+            }
         }
+        self.config = {**default_config, **(config or {})}
 
     def _get_fundamental_score(self, symbol: str) -> float:
         """获取财务指标评分（带缓存机制）"""
@@ -56,57 +77,56 @@ class StockScorer:
         return 0
 
     def _calculate_technical_score(self, row: pd.Series) -> float:
-        """技术指标评分（基于策略信号）"""
+        weights = self.config['technical_weights']
         tech_score = 0
+        
         # 均线系统评分
-        tech_score += (row['ma_5'] > row['ma_20']) * 0.3
-        tech_score += (row['angle_ma_10'] > 30) * 0.15
-        tech_score += (row['macd'] > row['macd_signal']) * 0.25
+        tech_score += (row['ma_5'] > row['ma_20']) * weights['ma_condition']
+        tech_score += (row['angle_ma_10'] > 30) * weights['angle_condition']
+        tech_score += (row['macd'] > row['macd_signal']) * weights['macd_condition']
         
         # 成交量动能
-        volume_score = min(row['volume'] / row['volume_ma5'], 3)  # 限制最大3倍
-        tech_score += volume_score * 0.3
+        volume_score = min(row['volume'] / row['volume_ma5'], 
+                         self.config['scoring_rules']['max_volume_ratio'])
+        tech_score += volume_score * weights['volume_score']
 
-        # 超买超卖评分（新增）
-        tech_score += (row['rsi_14'] < 70) * 0.1  # 未超买加分
-        tech_score += (row['kdj_k'] < 80) * 0.1   # KDJ 未超买加分
-        tech_score += (row['cci_20'] < 100) * 0.1  # CCI 未超买加分
-        tech_score += (row['close'] < row['bb_upper']) * 0.1  # 布林带未超买加分
+        # 超买超卖评分
+        tech_score += (row['rsi_14'] < 70) * weights['rsi_oversold']
+        tech_score += (row['kdj_k'] < 80) * weights['kdj_oversold']
+        tech_score += (row['cci_20'] < 100) * weights['cci_oversold']
+        tech_score += (row['close'] < row['bb_upper']) * weights['bollinger_condition']
         
         return tech_score
 
     def _calculate_capital_flow(self, row: pd.Series) -> float:
         """基于策略生成的新资金流信号进行评分"""
+        cfg = self.config['capital_flow_weights']
         flow_score = 0
         
-        # 资金流入基础分
         if row['money_flow_positive']:
-            flow_score += self.config['capital_flow_weights']['positive_flow'] * 1.4  # 正值强化
+            flow_score += cfg['positive_flow'] * 1.4
             
-        # 流入加速
         if row['money_flow_increasing']:
-            flow_score += self.config['capital_flow_weights']['flow_increasing'] * 1.0
+            flow_score += cfg['flow_increasing']
             
-        # 趋势强度
         if row['money_flow_trend']:
-            trend_strength = min(row['主生量'] / row['量基线'], 2.0)  # 限制最大2倍
-            flow_score += self.config['capital_flow_weights']['trend_strength'] * trend_strength
+            trend_strength = min(row['主生量'] / row['量基线'], 
+                               self.config['scoring_rules']['max_trend_strength'])
+            flow_score += cfg['trend_strength'] * trend_strength
             
-        # 周级别资金流
         if row['money_flow_weekly']:
-            flow_score += self.config['capital_flow_weights']['weekly_flow'] * 1.0
+            flow_score += cfg['weekly_flow']
             
-        # 周流入加速
         if row['money_flow_weekly_increasing']:
-            flow_score += self.config['capital_flow_weights']['weekly_increasing'] * 1.3  # 加速给予更高权重
+            flow_score += cfg['weekly_increasing'] * 1.3
             
-        # 量增幅强化
-        if row['量增幅'] > 10:  # 显著增长
-            flow_score *= 1.2
-        elif row['量增幅'] < -5:  # 显著减少
-            flow_score *= 0.8
+        # 量增幅调整
+        if row['量增幅'] > cfg['volume_gain_threshold']:
+            flow_score *= cfg['volume_gain_multiplier']
+        elif row['量增幅'] < cfg['volume_loss_threshold']:
+            flow_score *= cfg['volume_loss_multiplier']
             
-        return min(flow_score, 1.0)  # 限制最大1分
+        return min(flow_score, self.config['scoring_rules']['max_flow_score'])
 
     
 
@@ -156,12 +176,19 @@ class StockScorer:
 class EnhancedTDXStrategy:
     def __init__(self, 
                 db_path='c:/db/stock_data.db',
-                config: Dict = {
+                config: Dict = None):
+        default_config = {
                     'ma_windows': (5, 10, 20, 55, 240),
                     'angle_window': 5,
                     'volume_ma_window': 5,
-                    'macd_params': (12, 26, 9)
-                 }):
+                    'macd_params': (12, 26, 9),
+                    'buy_conditions': {
+                        'growth_threshold': 1.03,
+                        'max_upper_shadow': 1.05,
+                        'ma_diff_threshold': 0.02
+                    }
+                }
+        self.config = {**default_config, **(config or {})}
         """
         深度优化后的策略类，保留原有核心逻辑
         
@@ -171,7 +198,6 @@ class EnhancedTDXStrategy:
         - volume_ma_window: 成交量均线窗口
         - macd_params: MACD参数（short, long, signal）
         """
-        self.config = config
         self.db_manager = DatabaseManager(f"sqlite:///{db_path}")
         self.db_manager.ensure_tables_exist()
         self.Scorer = StockScorer()
@@ -517,7 +543,10 @@ class EnhancedTDXStrategy:
         #涨幅条件
         #df['growth'] = (df['close'] - df['open']) / df['open'] * 100
         #df['growth'] = df['growth'].round(1)
-        df['growth'] = (df['close']>=df['open']*1.03) & (df['high']<=df['open']*1.05)
+        # 涨幅条件使用配置参数
+        buy_cfg = self.config['buy_conditions']
+        df['growth'] = (df['close'] >= df['open']*buy_cfg['growth_threshold']) & \
+                      (df['high'] <= df['open']*buy_cfg['max_upper_shadow'])
 
         # 计算多周期MACD
         #print('计算多周期MACD...')
@@ -582,12 +611,19 @@ class EnhancedTDXStrategy:
         df['money_flow_weekly'] = df['周量'] > 0  # 周资金流入
         df['money_flow_weekly_increasing'] = df['周增幅'] > 0  # 周资金流入加速
 
-        # 补充 JC 条件
+        # JC条件使用配置参数
         df['jc_condition'] = (
-            (df['ma_5'] > df['ma_5'].shift(1)) &  # MA5 上升
-            (df['ma_20'] > df['ma_20'].shift(1)) &  # MA20 上升
-            (abs(df['ma_5'] - df['ma_20']) / df['ma_20'] < 0.02)  # MA5 和 MA20 的差值占 MA20 的比例小于 2%
+            (df['ma_5'] > df['ma_5'].shift(1)) &
+            (df['ma_20'] > df['ma_20'].shift(1)) &
+            (abs(df['ma_5'] - df['ma_20']) / df['ma_20'] < buy_cfg['ma_diff_threshold'])
         )
+        # 新增布林带条件字段
+        df['bollinger_condition'] = df['close'] < df['bb_upper']
+        
+        # 显式存储RSI/KDJ/CCI超卖信号
+        df['rsi_oversold'] = df['rsi_14'] < 30
+        df['kdj_oversold'] = (df['kdj_k'] < 20) & (df['kdj_d'] < 20)
+        df['cci_oversold'] = df['cci_20'] < -100
 
         return df
     def _calculate_market_heat(self, data: pd.DataFrame) -> pd.DataFrame:
@@ -647,12 +683,24 @@ class EnhancedTDXStrategy:
             #(signals['底背离'])  # 底背离信号
         )
 
-        buy_signals= signals[buy_condition][[
-            'date', 'symbol', 'name',  'industry','ma_5', 'ma_10', 'ma_20', 'angle_ma_10',
-            'volume_ma5', 'macd', 'macd_signal', 'volume', 'rsi_14','macd_jc',
-            'kdj_k', 'kdj_d', 'cci_20', 'williams_r', 'bb_upper',
-            'bb_middle', 'bb_lower','close','money_flow_positive',
-            'money_flow_increasing','money_flow_trend','money_flow_weekly','money_flow_weekly_increasing','量增幅','量基线','主生量','growth','market_heat'
+        buy_signals = signals[buy_condition][[
+            # 基础信息
+            'date', 'symbol', 'name', 'industry',
+            
+            # 权重相关信号条件
+            'ma_condition', 'angle_condition', 'macd_condition',
+            'volume_condition', 'jc_condition', 'macd_jc','rsi_oversold',
+            'kdj_oversold', 'cci_oversold', 'bollinger_condition',
+            'money_flow_positive', 'money_flow_increasing', 
+            'money_flow_trend', 'money_flow_weekly',
+            'money_flow_weekly_increasing',
+            
+            # 原始指标值
+            'ma_5', 'ma_10', 'ma_20', 'angle_ma_10', 
+            'volume_ma5', 'macd', 'macd_signal', 'volume',
+            'rsi_14', 'kdj_k', 'kdj_d', 'cci_20', 
+            'bb_upper', 'bb_middle', 'bb_lower', 'close',
+            '量增幅', '量基线', '主生量','周增幅', 'growth', 'market_heat'
         ]].assign(signal_type='buy')
 
         selected_buy_signals = self.Scorer.select_top_stocks(buy_signals,5)
@@ -686,11 +734,23 @@ class EnhancedTDXStrategy:
         combined_sell_condition =  sell_condition |profitable_sell_condition
         
         sell_signals= signals[combined_sell_condition][[
-            'date', 'symbol',  'name',  'industry','ma_5', 'ma_10', 'ma_20', 'angle_ma_10',
-            'volume_ma5', 'macd', 'macd_signal', 'volume', 'rsi_14','macd_jc',
-            'kdj_k', 'kdj_d', 'cci_20', 'williams_r', 'bb_upper',
-            'bb_middle', 'bb_lower','close','money_flow_positive',
-            'money_flow_increasing','money_flow_trend','money_flow_weekly','money_flow_weekly_increasing','量增幅','量基线','主生量','growth','market_heat'
+            # 基础信息
+            'date', 'symbol', 'name', 'industry',
+            
+            # 权重相关信号条件
+            'ma_condition', 'angle_condition', 'macd_condition',
+            'volume_condition', 'jc_condition', 'macd_jc','rsi_oversold',
+            'kdj_oversold', 'cci_oversold', 'bollinger_condition',
+            'money_flow_positive', 'money_flow_increasing', 
+            'money_flow_trend', 'money_flow_weekly',
+            'money_flow_weekly_increasing',
+            
+            # 原始指标值
+            'ma_5', 'ma_10', 'ma_20', 'angle_ma_10', 
+            'volume_ma5', 'macd', 'macd_signal', 'volume',
+            'rsi_14', 'kdj_k', 'kdj_d', 'cci_20', 
+            'bb_upper', 'bb_middle', 'bb_lower', 'close',
+            '量增幅', '量基线', '主生量','周增幅', 'growth', 'market_heat'
         ]].assign(signal_type='sell')
         
         #scored_sell_signals = self.Scorer.score_daily_signals(sell_signals)

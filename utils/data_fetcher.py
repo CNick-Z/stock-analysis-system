@@ -4,7 +4,6 @@ from utils.db_operations import DatabaseManager, DailyDataBase
 import concurrent.futures
 import os
 from functools import lru_cache
-import concurrent.futures
 import logging
 import time
 
@@ -106,6 +105,10 @@ class DataFetcher:
             # 确保 symbol 字段存在
             new_data.loc[:, 'symbol'] = symbol
             # 保存到数据库
+            # 确保动态表存在
+            years = pd.to_datetime(df['date']).dt.year.unique()
+            for year in years:
+                self.db_manager.ensure_dynamic_table_exists(DailyDataBase, year)
             result=self.db_manager.bulk_insert(DailyDataBase, new_data)
             if result==1:
                 logging.info(f"All data for {symbol} saved successfully.")
@@ -140,6 +143,6 @@ if __name__ == "__main__":
     pd.options.mode.copy_on_write = True
     db_url = "sqlite:///c:/db/stock_data.db"  
     fetcher = DataFetcher(db_url)
-    start_date = "20120101"
-    end_date = "20140101"
+    start_date = "20140101"
+    end_date = "20141231"
     fetcher.fetch_and_save_all_data(start_date, end_date)
