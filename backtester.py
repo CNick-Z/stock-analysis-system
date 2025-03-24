@@ -1,4 +1,5 @@
 # backtester.py
+import os,time
 from utils.db_operations import *
 import pandas as pd
 import numpy as np
@@ -232,10 +233,12 @@ class BacktestOrchestrator:
             import atexit
             atexit.register(self.save_plot)
             
-    def save_plot(self, filename='strategy_performance.png'):
+    def save_plot(self):
         """保存当前图表到指定路径"""
         if hasattr(self, 'fig') and self.fig:
-            full_path = os.path.join(self.plot_save_path, filename)
+            now=str(time.time()).split('.')[0]
+            filename = f"strategy_performance_{now}.png"
+            full_path = os.path.join(self.plot_save_path, filename.replace())
             self.fig.savefig(full_path, dpi=300, bbox_inches='tight')
             plt.close(self.fig)
             print(f"策略图表已保存至：{full_path}")
@@ -578,7 +581,7 @@ class BacktestOrchestrator:
         df = pd.DataFrame(simulator.portfolio['history']).set_index('date')
         df['returns'] = df['value'].pct_change()
         trades = pd.DataFrame(simulator.portfolio['history'])
-        import time
+        
         now=str(time.time()).split('.')[0]
         trade_filename = f'./backtestresult/trades_report_{now}.xlsx'
         with pd.ExcelWriter(trade_filename) as writer:
@@ -648,7 +651,7 @@ class BacktestOrchestrator:
 if __name__ == "__main__":  
     # 运行回测
     orchestrator = BacktestOrchestrator(live_plot=True)
-    report = orchestrator.run(start_date='2016-01-01', end_date='2024-12-31')    
+    report = orchestrator.run(start_date='2012-01-01', end_date='2022-12-31')    
     print("回测结果摘要:")
     print(f"最终净值: {report['summary']['final_value']:,.2f}")
     print(f"总收益率: {report['summary']['total_return']:.2%}")

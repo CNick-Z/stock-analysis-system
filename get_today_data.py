@@ -22,7 +22,13 @@ if __name__ == "__main__":
     db_url = f"sqlite:///{db_path}"
     data_last_day = get_data_last_day(db_url)
     start_date = datetime.strptime(data_last_day,'%Y-%m-%d')+timedelta(days=1)
-    end_date = datetime.today()+timedelta(days=-1)
+    current_time = datetime.now()
+    # 获取当前时间的小时数
+    hour = current_time.hour
+    if hour>18:
+        end_date = datetime.today()
+    else:
+        end_date = datetime.today()+timedelta(days=-1)
     get_today_data(datetime.strftime(start_date,"%Y%m%d"), datetime.strftime(end_date,"%Y%m%d"),db_url)
     recorder=SignalTraderecord(db_path)
     notion=NotionDatabaseManager()
