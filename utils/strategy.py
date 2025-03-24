@@ -12,10 +12,10 @@ class StockScorer:
     def __init__(self, config: Dict = None):
         default_config = {
             'weights': {
-            "technical": 0.37,
-            "capital_flow": 0.26,
+            "technical": 0.33,
+            "capital_flow": 0.33,
             "fundamental": 0.0,
-            "market_heat": 0.37
+            "market_heat": 0.34
         },
         'technical_weights': {
             "ma_condition": 0.19,
