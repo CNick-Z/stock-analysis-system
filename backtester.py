@@ -209,6 +209,7 @@ class BacktestOrchestrator:
         self.commission_rate = commission_rate 
         self.trailing_stop_ratio = 0.05
         self.position_manager = DynamicPositionManager(initial_position=0.5, position_levels=[0.3,0.5,0.8,1], window_size=3)
+        self.plot_save_path = './backtestresult/'
         if self.live_plot:
             plt.ion()  # 启用交互模式
             # 创建网格布局，左侧显示持仓信息，右侧显示净值曲线
@@ -228,6 +229,17 @@ class BacktestOrchestrator:
             # 左侧显示持仓信息
             self.ax_info = self.fig.add_subplot(gs[0, 0])
             self.ax_info.axis('off')  # 关闭坐标轴
+            import atexit
+            atexit.register(self.save_plot)
+            
+    def save_plot(self, filename='strategy_performance.png'):
+        """保存当前图表到指定路径"""
+        if hasattr(self, 'fig') and self.fig:
+            full_path = os.path.join(self.plot_save_path, filename)
+            self.fig.savefig(full_path, dpi=300, bbox_inches='tight')
+            plt.close(self.fig)
+            print(f"策略图表已保存至：{full_path}")
+
     def _info_callback(self, msg, data=None):
         """用于实时显示回测信息"""
         # 清空之前的文本信息
@@ -636,7 +648,7 @@ class BacktestOrchestrator:
 if __name__ == "__main__":  
     # 运行回测
     orchestrator = BacktestOrchestrator(live_plot=True)
-    report = orchestrator.run(start_date='2002-10-20', end_date='2024-12-31')    
+    report = orchestrator.run(start_date='2016-01-01', end_date='2024-12-31')    
     print("回测结果摘要:")
     print(f"最终净值: {report['summary']['final_value']:,.2f}")
     print(f"总收益率: {report['summary']['total_return']:.2%}")

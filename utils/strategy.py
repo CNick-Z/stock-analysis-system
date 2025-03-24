@@ -12,32 +12,32 @@ class StockScorer:
     def __init__(self, config: Dict = None):
         default_config = {
             'weights': {
-                'technical': 0.34,
-                'capital_flow': 0.33,
-                'fundamental': 0,
-                'market_heat': 0.33
-            },
-            'technical_weights': {
-                'ma_condition': 0.19,
-                'angle_condition': 0.1,
-                'macd_condition': 0.16,
-                'volume_score': 0.2,
-                'rsi_oversold': 0.07,
-                'kdj_oversold': 0.07,
-                'cci_oversold': 0.07,
-                'bollinger_condition': 0.14
-            },
-            'capital_flow_weights': {
-                'positive_flow': -0.02,
-                'flow_increasing': 0.03,
-                'trend_strength': 0.04,
-                'weekly_flow': 0.02,
-                'weekly_increasing': 0.01,
-                'volume_gain_multiplier': 0.16,
-                'volume_loss_multiplier': 0.11,
-                'volume_gain_threshold': 1.3,
-                'volume_loss_threshold': -0.65
-            },
+            "technical": 0.37,
+            "capital_flow": 0.26,
+            "fundamental": 0.0,
+            "market_heat": 0.37
+        },
+        'technical_weights': {
+            "ma_condition": 0.19,
+            "angle_condition": 0.1,
+            "macd_condition": 0.16,
+            "volume_score": 0.2,
+            "rsi_oversold": 0.07,
+            "kdj_oversold": 0.07,
+            "cci_oversold": 0.07,
+            "bollinger_condition": 0.14
+        },
+        'capital_flow_weights': {
+            "positive_flow": -0.02,
+            "flow_increasing": 0.03,
+            "trend_strength": 0.04,
+            "weekly_flow": 0.02,
+            "weekly_increasing": 0.01,
+            "volume_gain_multiplier": 0.16,
+            "volume_loss_multiplier": 0.11,
+            "volume_gain_threshold": 1.3,
+            "volume_loss_threshold": -0.65
+        },
             'market_heat': {
                 'window': 30
             },
@@ -160,8 +160,9 @@ class StockScorer:
         """选股主流程"""
         # 评分
         scored_df = self.score_daily_signals(signals)
-        if scored_df.empty: return None
-        scored_df = scored_df[scored_df['total_score'] > 1]
+        if scored_df.empty: 
+            return None
+        #scored_df = scored_df[scored_df['total_score'] > 1]
         if scored_df.empty:
             return None
         else:

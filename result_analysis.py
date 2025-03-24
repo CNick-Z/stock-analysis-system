@@ -87,6 +87,10 @@ def parse_buy_signals(paired_df):
             # 转换布尔值为数值
             if paired_df[feat].dtype == bool:
                 paired_df[feat] = paired_df[feat].astype(int)
+    # 在parse_buy_signals函数末尾添加：
+    for category in feature_mapping:
+        # 计算主特征总分（假设子特征已转换为数值）
+        paired_df[category] = paired_df[feature_mapping[category]].sum(axis=1)
     
     return paired_df
 
@@ -118,12 +122,33 @@ def prepare_features(parsed_df):
         # 复合特征
         'trend_strength', 'volume_ratio'
     ]
-    
     # 仅保留存在的字段
     selected_features = [f for f in features if f in parsed_df]
     return parsed_df[selected_features + ['is_profit']]
 
+def analyze_loss_signals(parsed_df):
+    """分析亏损交易的特征分布"""
+    loss_df = parsed_df[parsed_df['is_profit'] == 0].copy()
+    profit_df = parsed_df[parsed_df['is_profit'] == 1].copy()
+
+    # 计算特征差异
+    feature_diff = {}
+    for col in parsed_df.columns:
+        if col in ['is_profit', 'pnl', 'buy_date', 'sell_date']:
+            continue
+        if parsed_df[col].dtype in [int, float]:
+            profit_mean = profit_df[col].mean()
+            loss_mean = loss_df[col].mean()
+            feature_diff[col] = profit_mean - loss_mean
+
+    return pd.Series(feature_diff).sort_values(ascending=False)
+
 def analyze_features(final_df):
+    """分析特征并生成优化建议"""
+    # 新增亏损特征分析
+    feature_diff = analyze_loss_signals(final_df)
+    print("\n=== 盈亏特征差异分析 ===")
+    print(feature_diff)
     """分析特征并生成优化建议"""
     # 1. 相关性分析
     corr_matrix = final_df.corr()
@@ -157,11 +182,12 @@ def analyze_features(final_df):
     
     # 5. 生成优化建议
     weight_suggestions, signal_suggestions = generate_optimization_suggestions(
-        feature_importance, current_weights, capital_flow_weights,technical_weights
+        feature_importance, feature_diff, current_weights,  # 新增 feature_diff
+        capital_flow_weights, technical_weights
     )
     return feature_importance, weight_suggestions, signal_suggestions
 
-def generate_optimization_suggestions(feature_importance, current_weights, capital_flow_weights,technical_weights):
+def generate_optimization_suggestions(feature_importance,feature_diff, current_weights, capital_flow_weights,technical_weights):
     """生成权重调整建议"""
     POSITIVE_ADJUST = 0.05
     NEGATIVE_ADJUST = -0.05
@@ -213,7 +239,30 @@ def generate_optimization_suggestions(feature_importance, current_weights, capit
                     tech_weight_suggestions[sub_feature] += NEGATIVE_ADJUST
                 elif category == 'capital_flow_weights':
                     cf_weight_suggestions[sub_feature] += NEGATIVE_ADJUST
-    
+    # 新增基于特征差异的调整
+    DIFF_THRESHOLD = 0.2  # 特征差异阈值
+    for feat, diff in feature_diff.items():
+        if feat in feature_mapping:
+            category, sub_feature = feature_mapping[feat]
+            
+            # 根据差异方向调整权重
+            if diff > DIFF_THRESHOLD:
+                adjust = min(0.1, diff * 0.05)
+                if category == 'weights':
+                    weight_suggestions[sub_feature] += adjust
+                elif category == 'technical_weights':
+                    tech_weight_suggestions[sub_feature] += adjust
+                elif category == 'capital_flow_weights':
+                    cf_weight_suggestions[sub_feature] += adjust
+            elif diff < -DIFF_THRESHOLD:
+                adjust = max(-0.1, diff * 0.05)
+                if category == 'weights':
+                    weight_suggestions[sub_feature] += adjust
+                elif category == 'technical_weights':
+                    tech_weight_suggestions[sub_feature] += adjust
+                elif category == 'capital_flow_weights':
+                    cf_weight_suggestions[sub_feature] += adjust
+
     # 归一化处理
     def normalize_sub_weights(weights, max_total=1.0):
         total = sum(weights.values())
@@ -229,6 +278,17 @@ def generate_optimization_suggestions(feature_importance, current_weights, capit
     # 对所有子权重归一化
     tech_weight_suggestions = normalize_sub_weights(tech_weight_suggestions)
     cf_weight_suggestions = normalize_sub_weights(cf_weight_suggestions)
+
+    # 新增：对主权重归一化
+    main_total = sum(weight_suggestions.values())
+    if main_total != 1.0:
+        weight_suggestions = {
+            k: round(v / main_total, 2) for k, v in weight_suggestions.items()
+        }
+    # 处理四舍五入误差
+    diff = 1.0 - sum(weight_suggestions.values())
+    max_key = max(weight_suggestions, key=lambda x: weight_suggestions[x])
+    weight_suggestions[max_key] += round(diff, 2)
     
     return {
         'main': weight_suggestions,
