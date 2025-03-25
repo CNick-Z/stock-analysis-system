@@ -14,7 +14,7 @@ from utils.strategy import StockScorer,EnhancedTDXStrategy
 
 class DynamicPositionManager:
     """动态仓位管理模块"""
-    def __init__(self, initial_position=0.5, position_levels=[0.3,0.5,0.8,1], window_size=3):
+    def __init__(self, initial_position=0.5, position_levels=[0.3,0.5,0.8,1], window_size=5):
         self.current_position = initial_position  # 当前仓位
         self.position_levels = position_levels    # 仓位档次
         self.consecutive_up_periods = 0            # 连续上涨周期数
@@ -62,6 +62,7 @@ class DynamicPositionManager:
         return self.current_position
     
     def _increase_position(self):
+    #def _decrease_position(self):
         """增加仓位"""
         if self.position_index < len(self.position_levels) - 1:
             self.position_index += 1
@@ -69,6 +70,7 @@ class DynamicPositionManager:
             print(f"仓位提升至: {self.current_position*100}%")
     
     def _decrease_position(self):
+    #def _increase_position(self):
         """减少仓位"""
         if self.position_index > 0:
             self.position_index -= 1
@@ -238,7 +240,7 @@ class BacktestOrchestrator:
         if hasattr(self, 'fig') and self.fig:
             now=str(time.time()).split('.')[0]
             filename = f"strategy_performance_{now}.png"
-            full_path = os.path.join(self.plot_save_path, filename.replace())
+            full_path = os.path.join(self.plot_save_path, filename)
             self.fig.savefig(full_path, dpi=300, bbox_inches='tight')
             plt.close(self.fig)
             print(f"策略图表已保存至：{full_path}")
@@ -651,7 +653,7 @@ class BacktestOrchestrator:
 if __name__ == "__main__":  
     # 运行回测
     orchestrator = BacktestOrchestrator(live_plot=True)
-    report = orchestrator.run(start_date='2012-01-01', end_date='2022-12-31')    
+    report = orchestrator.run(start_date='2019-01-01', end_date='2024-12-31')    
     print("回测结果摘要:")
     print(f"最终净值: {report['summary']['final_value']:,.2f}")
     print(f"总收益率: {report['summary']['total_return']:.2%}")
