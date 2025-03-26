@@ -23,6 +23,13 @@ class DynamicPositionManager:
         self.window_size = window_size            # 多日收益率窗口大小
         self.position_index = position_levels.index(initial_position) if initial_position in position_levels else 1
         self.multi_day_return = 0                  # 多日收益率
+        self.circuit_breaker = False              # 熔断状态标志
+        self.circuit_breaker_counter = 0          # 熔断持续时间计数器
+        self.max_circuit_breaker_period = 5       # 最大熔断周期数
+        self.consecutive_losses = 0               # 连续亏损次数
+        self.max_consecutive_losses = 3           # 触发熔断的最大连续亏损次数
+        self.circuit_breaker_cooldown = 2  # 熔断解除后的冷却期(单位：窗口周期数)
+        self.cooldown_counter = 0          # 冷却期计数器
 
     def update_position(self, current_value):
         """根据当前组合价值更新仓位"""
@@ -33,18 +40,32 @@ class DynamicPositionManager:
         if len(self.previous_values) >= self.window_size:
             # 计算多日收益率
             start_value = self.previous_values[0]
-            end_value = self.previous_values[-1]
+            end_value = current_value  # 使用最新值计算
             self.multi_day_return = (end_value - start_value) / start_value
             
             # 判断涨跌情况
             if self.multi_day_return > 0:
                 self.consecutive_up_periods += 1
                 self.consecutive_down_periods = 0
+                self.consecutive_losses = 0  # 重置连续亏损计数器
             elif self.multi_day_return < 0:
                 self.consecutive_down_periods += 1
                 self.consecutive_up_periods = 0
+                self.consecutive_losses += 1  # 增加连续亏损计数
             else:
                 pass
+            
+            # 熔断状态管理
+            if not self.circuit_breaker:
+                # 检查是否触发熔断
+                if self.consecutive_losses >= self.max_consecutive_losses:
+                    self._activate_circuit_breaker()
+            else:
+                # 熔断期内：不计数，只更新熔断计时器
+                self.circuit_breaker_counter += 1
+                if self.circuit_breaker_counter >= self.max_circuit_breaker_period:
+                    self._deactivate_circuit_breaker()
+                
             
             # 根据连续涨跌周期数调整仓位
             if self.consecutive_up_periods >= 2:  # 这里假设一个窗口期作为一个周期
@@ -61,16 +82,16 @@ class DynamicPositionManager:
         
         return self.current_position
     
-    def _increase_position(self):
-    #def _decrease_position(self):
+    #def _increase_position(self):
+    def _decrease_position(self):
         """增加仓位"""
         if self.position_index < len(self.position_levels) - 1:
             self.position_index += 1
             self.current_position = self.position_levels[self.position_index]
             print(f"仓位提升至: {self.current_position*100}%")
     
-    def _decrease_position(self):
-    #def _increase_position(self):
+    #def _decrease_position(self):
+    def _increase_position(self):
         """减少仓位"""
         if self.position_index > 0:
             self.position_index -= 1
@@ -80,12 +101,35 @@ class DynamicPositionManager:
     def _adjust_position_by_return(self):
         """根据多日收益率调整仓位"""
         # 如果多日收益率超过某个阈值，增加仓位
-        if self.multi_day_return > 0.20:  # 假设10%的收益率作为增加仓位的阈值
+        if self.multi_day_return > 0.20:  # 假设20%的收益率作为增加仓位的阈值
             self._increase_position()
         # 如果多日收益率低于某个阈值，减少仓位
         elif self.multi_day_return < -0.05:  # 假设-5%的收益率作为减少仓位的阈值
             self._decrease_position()
 
+    def _activate_circuit_breaker(self):
+        """触发熔断"""
+        self.circuit_breaker = True
+        self.circuit_breaker_counter = 0
+        print(f"! 触发熔断（连续{self.max_consecutive_losses}次亏损）")
+
+    def _deactivate_circuit_breaker(self):
+        """解除熔断"""
+        self.circuit_breaker = False
+        self.consecutive_losses = 0  # 重置计数器
+        self.cooldown_counter = self.circuit_breaker_cooldown
+        print("! 熔断解除，进入冷却期")
+
+    def is_circuit_breaker_active(self):
+        """检查是否处于熔断或冷却期"""
+        return self.circuit_breaker or self.cooldown_counter > 0
+
+    def update_cooldown(self):
+        """更新冷却期计数器（每日调用）"""
+        if self.cooldown_counter > 0:
+            self.cooldown_counter -= 1
+            if self.cooldown_counter == 0:
+                print("! 冷却期结束，恢复正常交易")
 class DatabaseIntegrator:
     """数据库集成模块"""
     def __init__(self, db_path):
@@ -410,6 +454,9 @@ class BacktestOrchestrator:
                 except:
                     continue
     def _process_buy_signals(self, date,  simulator,signals):
+        # 首先检查熔断状态（不更新仓位）
+        if self.position_manager.is_circuit_breaker_active():
+            return
         """处理买入信号"""
         current_position = self.position_manager.current_position
 
@@ -568,6 +615,7 @@ class BacktestOrchestrator:
         simulator.portfolio['history'].append({'date': date, 'value': total_value})
          # 更新仓位管理
         current_position = self.position_manager.update_position(total_value)
+        self.position_manager.update_cooldown()  # 新增：推进冷却期计时
         #simulator.position_limit = int(current_position * self.position_limit_base)
 
     def _total_value(self, date, simulator):
@@ -653,7 +701,7 @@ class BacktestOrchestrator:
 if __name__ == "__main__":  
     # 运行回测
     orchestrator = BacktestOrchestrator(live_plot=True)
-    report = orchestrator.run(start_date='2019-01-01', end_date='2024-12-31')    
+    report = orchestrator.run(start_date='2013-02-01', end_date='2018-12-31')    
     print("回测结果摘要:")
     print(f"最终净值: {report['summary']['final_value']:,.2f}")
     print(f"总收益率: {report['summary']['total_return']:.2%}")

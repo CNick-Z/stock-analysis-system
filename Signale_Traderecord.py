@@ -88,9 +88,11 @@ class SignalTraderecord:
 
         def _adjust_position_by_return(self):
             if self.multi_day_return > 0.1:
-                self._increase_position()
-            elif self.multi_day_return < -0.1:
+                #self._increase_position()
                 self._decrease_position()
+            elif self.multi_day_return < -0.1:
+                #self._decrease_position()
+                self._increase_position()
 
     
 

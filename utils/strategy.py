@@ -635,7 +635,8 @@ class EnhancedTDXStrategy:
         # 计算每个日期每个行业的平均成交量
         mean_volumes = data.groupby(['date', 'industry'])['volume'].mean().reset_index()
         mean_volumes.columns = ['date', 'industry', 'mean_volume']
-        
+        data = data.reset_index(drop=True)
+        mean_volumes = mean_volumes.reset_index(drop=True)
         # 合并数据并计算市场热度
         data = data.merge(mean_volumes, on=['date', 'industry'], how='left')
         data['market_heat'] = data['volume'] / data['mean_volume']
