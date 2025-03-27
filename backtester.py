@@ -43,20 +43,31 @@ class DynamicPositionManager:
             end_value = current_value  # 使用最新值计算
             self.multi_day_return = (end_value - start_value) / start_value
             
-            # 判断涨跌情况
-            if self.multi_day_return > 0:
-                self.consecutive_up_periods += 1
-                self.consecutive_down_periods = 0
-                self.consecutive_losses = 0  # 重置连续亏损计数器
-            elif self.multi_day_return < 0:
-                self.consecutive_down_periods += 1
-                self.consecutive_up_periods = 0
-                self.consecutive_losses += 1  # 增加连续亏损计数
-            else:
-                pass
-            
             # 熔断状态管理
             if not self.circuit_breaker:
+                # 判断涨跌情况
+                if self.multi_day_return > 0:
+                    self.consecutive_up_periods += 1
+                    self.consecutive_down_periods = 0
+                    self.consecutive_losses = 0  # 重置连续亏损计数器
+                elif self.multi_day_return < 0:
+                    self.consecutive_down_periods += 1
+                    self.consecutive_up_periods = 0
+                    self.consecutive_losses += 1  # 增加连续亏损计数
+                else:
+                    pass
+                # 根据连续涨跌周期数调整仓位
+                if self.consecutive_up_periods >= 2:  # 这里假设一个窗口期作为一个周期
+                    # 连续上涨一个窗口期，判断是否为温和上涨
+                    if self.multi_day_return < 0.1:  # 假设温和上涨的阈值为10%
+                        self._increase_position()
+                    # 迅速上涨，仓位不变
+                elif self.consecutive_down_periods >= 2:
+                    # 连续下跌一个窗口期，降低仓位
+                    self._decrease_position()
+                
+                # 根据多日收益率的大小进一步调整仓位
+                self._adjust_position_by_return()
                 # 检查是否触发熔断
                 if self.consecutive_losses >= self.max_consecutive_losses:
                     self._activate_circuit_breaker()
@@ -67,18 +78,7 @@ class DynamicPositionManager:
                     self._deactivate_circuit_breaker()
                 
             
-            # 根据连续涨跌周期数调整仓位
-            if self.consecutive_up_periods >= 2:  # 这里假设一个窗口期作为一个周期
-                # 连续上涨一个窗口期，判断是否为温和上涨
-                if self.multi_day_return < 0.1:  # 假设温和上涨的阈值为10%
-                    self._increase_position()
-                # 迅速上涨，仓位不变
-            elif self.consecutive_down_periods >= 2:
-                # 连续下跌一个窗口期，降低仓位
-                self._decrease_position()
             
-            # 根据多日收益率的大小进一步调整仓位
-            self._adjust_position_by_return()
         
         return self.current_position
     
@@ -118,7 +118,8 @@ class DynamicPositionManager:
         self.circuit_breaker = False
         self.consecutive_losses = 0  # 重置计数器
         self.cooldown_counter = self.circuit_breaker_cooldown
-        print("! 熔断解除，进入冷却期")
+        self.current_position = self.position_levels[1] 
+        print("! 熔断解除，仓位重置为安全水平，进入冷却期")
 
     def is_circuit_breaker_active(self):
         """检查是否处于熔断或冷却期"""
@@ -243,7 +244,7 @@ class TradingSimulator:
 
 class BacktestOrchestrator:
     """回测总控模块"""
-    def __init__(self, db_path='c:/db/stock_data.db', live_plot=False,position_limit=5, commission_rate=0.0003):
+    def __init__(self, db_path='c:/db/stock_data.db', live_plot=False,position_limit=2, commission_rate=0.0003):
         self.position_limit = position_limit  # 新增参数
         self.position_limit_base = position_limit  # 基础持仓限制
         self.db = DatabaseIntegrator(db_path)
@@ -701,7 +702,7 @@ class BacktestOrchestrator:
 if __name__ == "__main__":  
     # 运行回测
     orchestrator = BacktestOrchestrator(live_plot=True)
-    report = orchestrator.run(start_date='2013-02-01', end_date='2018-12-31')    
+    report = orchestrator.run(start_date='2019-01-01', end_date='2024-12-31')    
     print("回测结果摘要:")
     print(f"最终净值: {report['summary']['final_value']:,.2f}")
     print(f"总收益率: {report['summary']['total_return']:.2%}")

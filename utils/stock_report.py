@@ -52,6 +52,7 @@ class StockReport:
         for _, row in selected_stocks.iterrows():
             self.report=[]
             analysis = [
+                "------------------------------------------------------------------------------------------------------------------"
                 f"\n## {row['symbol']} {row['name']} 综合评分：{row['total_score']:.2f}",
                 "### 评分构成分析:",
                 f"- 技术面评分：{row['technical']:.2f} (权重 {self.scorer.config['weights']['technical']})",
@@ -76,6 +77,7 @@ class StockReport:
                 f"- 周资金流增长：{'是' if row['money_flow_weekly_increasing'] else '否'} (增益系数 x1.3)",
                 f"- 量增幅：{row['量增幅']:.1f}% → 触发阈值：{'增益' if row['量增幅'] > self.scorer.config['capital_flow_weights']['volume_gain_threshold'] else '损失' if row['量增幅'] < self.scorer.config['capital_flow_weights']['volume_loss_threshold'] else '无'} (乘数 x{self.scorer.config['capital_flow_weights']['volume_gain_multiplier'] if row['量增幅'] > self.scorer.config['capital_flow_weights']['volume_gain_threshold'] else self.scorer.config['capital_flow_weights']['volume_loss_multiplier'] if row['量增幅'] < self.scorer.config['capital_flow_weights']['volume_loss_threshold'] else '1.0'})",
                 f"- 资金流最终得分：{row['capital_flow']:.2f} (上限 {self.scorer.config['scoring_rules']['max_flow_score']})"
+                "------------------------------------------------------------------------------------------------------------------"
             ]
             self.report.append("\n".join(analysis))
         
