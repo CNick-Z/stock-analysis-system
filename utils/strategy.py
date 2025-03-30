@@ -12,32 +12,38 @@ class StockScorer:
     def __init__(self, config: Dict = None):
         default_config = {
             'weights': {
-            "technical": 0.37,
-            "capital_flow": 0.26,
-            "fundamental": 0.0,
-            "market_heat": 0.37
-        },
-        'technical_weights': {
-            "ma_condition": 0.19,
-            "angle_condition": 0.1,
-            "macd_condition": 0.16,
-            "volume_score": 0.2,
-            "rsi_oversold": 0.07,
-            "kdj_oversold": 0.07,
-            "cci_oversold": 0.07,
-            "bollinger_condition": 0.14
-        },
-        'capital_flow_weights': {
-            "positive_flow": -0.02,
-            "flow_increasing": 0.03,
-            "trend_strength": 0.04,
-            "weekly_flow": 0.02,
-            "weekly_increasing": 0.01,
-            "volume_gain_multiplier": 0.16,
-            "volume_loss_multiplier": 0.11,
-            "volume_gain_threshold": 1.3,
-            "volume_loss_threshold": -0.65
-        },
+                    "technical": 0.3716,
+                    "capital_flow": 0.2596,
+                    "market_heat": 0.3688,
+                    "fundamental":0
+                },
+                'technical_weights': {
+                    "ma_condition": 0.1583,
+                    "angle_condition": 0.0833,
+                    "macd_condition": 0.1333,
+                    "volume_score": 0.1664,
+                    "rsi_oversold": 0.0583,
+                    "kdj_oversold": 0.0583,
+                    "cci_oversold": 0.0583,
+                    "bollinger_condition": 0.117,
+                    "macd_jc": 0.0835,
+                    "price_growth": 0.0833
+                },
+                'capital_flow_weights': {
+                    "positive_flow": -0.0272,
+                    "flow_increasing": 0.041,
+                    "trend_strength": 0.0548,
+                    "weekly_flow": 0.0276,
+                    "weekly_increasing": 0.0137,
+                    "volume_gain_ratio": 0.2435,
+                    "volume_baseline": 0.1702,
+                    "primary_volume": 0.0779,
+                    "weekly_growth": 0.3985,
+                    "volume_gain_multiplier": 0,
+                    "volume_loss_multiplier": 0,
+                    "volume_gain_threshold": 0,
+                    "volume_loss_threshold": 0
+                },
             'market_heat': {
                 'window': 30
             },
@@ -95,6 +101,12 @@ class StockScorer:
         tech_score += (row['kdj_k'] < 80) * weights['kdj_oversold']
         tech_score += (row['cci_20'] < 100) * weights['cci_oversold']
         tech_score += (row['close'] < row['bb_upper']) * weights['bollinger_condition']
+
+        # 新增MACD金叉信号
+        tech_score += int(row['macd_jc']) * weights['macd_jc']
+        
+        # 修改价格增长信号处理（布尔值转换为1/0）
+        tech_score += row['growth'] * weights['price_growth']
         
         return tech_score
 
@@ -120,11 +132,18 @@ class StockScorer:
         if row['money_flow_weekly_increasing']:
             flow_score += cfg['weekly_increasing'] * 1.3
             
-        # 量增幅调整
-        if row['量增幅'] > cfg['volume_gain_threshold']:
-            flow_score *= cfg['volume_gain_multiplier']
-        elif row['量增幅'] < cfg['volume_loss_threshold']:
-            flow_score *= cfg['volume_loss_multiplier']
+
+        # 新增量增幅信号
+        flow_score += min(row['量增幅'], 5) * cfg['volume_gain_ratio']
+        
+        # 新增量基线信号
+        flow_score += (row['量基线'] > 0) * cfg['volume_baseline']
+        
+        # 新增主生量信号
+        flow_score += min(row['主生量'] / max(row['量基线'], 1e-6), 2.0) * cfg['primary_volume']
+        
+        # 新增周增幅信号
+        flow_score += min(row['周增幅'], 5) * cfg['weekly_growth']
             
         return min(flow_score, self.config['scoring_rules']['max_flow_score'])
 
@@ -542,13 +561,14 @@ class EnhancedTDXStrategy:
         生成核心交易信号（保持原有信号逻辑不变）
         """
         #涨幅条件
-        #df['growth'] = (df['close'] - df['open']) / df['open'] * 100
-        #df['growth'] = df['growth'].round(1)
+        df['growth'] = (df['close'] - df['open']) / df['open'] * 100
+        df['growth'] = df['growth'].round(1)
         # 涨幅条件使用配置参数
         buy_cfg = self.config['buy_conditions']
+        '''
         df['growth'] = (df['close'] >= df['open']*buy_cfg['growth_threshold']) & \
                       (df['high'] <= df['open']*buy_cfg['max_upper_shadow'])
-
+        '''
         # 计算多周期MACD
         #print('计算多周期MACD...')
         #df = self._calculate_multi_period_macd(df)
@@ -673,7 +693,7 @@ class EnhancedTDXStrategy:
         signals = self.generate_features(start_date,end_date)
         # 综合买入条件
         buy_condition = (
-            signals['growth'] &
+            #signals['growth'] &
             signals['ma_condition'] &
             signals['angle_condition'] &
             signals['volume_condition'] &

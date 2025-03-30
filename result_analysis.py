@@ -298,7 +298,22 @@ def generate_optimization_suggestions(feature_importance, main_weights, tech_wei
             category, key = feature_mapping[feat]
             adjust = np.clip(row['Impact'] * 0.1, -0.2, 0.2)  # 限制调整幅度
             suggestions[category][key] += adjust
-    
+    # 归一化处理并格式化
+    def normalize_and_format_weights(weights_dict):
+        total = sum(weights_dict.values())
+        if total > 0:
+            normalized = {k: round(v/total, 4) for k, v in weights_dict.items()}
+            # 确保总和为1（处理浮点精度问题）
+            diff = 1.0 - sum(normalized.values())
+            if diff != 0:
+                max_key = max(normalized.items(), key=lambda x: x[1])[0]
+                normalized[max_key] = round(normalized[max_key] + diff, 4)
+            return normalized
+        return {k: round(v, 4) for k, v in weights_dict.items()}
+    # 对每个类别进行归一化
+    suggestions['main'] = normalize_and_format_weights(suggestions['main'])
+    suggestions['technical'] = normalize_and_format_weights(suggestions['technical'])
+    suggestions['capital_flow'] = normalize_and_format_weights(suggestions['capital_flow'])
     # 阈值建议
     for indicator in ['量增幅', '周增幅', 'growth']:
         if indicator in feature_importance['Feature'].values:
@@ -306,89 +321,7 @@ def generate_optimization_suggestions(feature_importance, main_weights, tech_wei
                 feature_importance[feature_importance['Feature'] == indicator]['Impact'].iloc[0] * 0.5, 3)
     
     return suggestions
-    '''
-    # 1. 处理已映射的特征 ================================
-    for _, row in feature_importance.iterrows():
-        feat = row['Feature']
-        impact = row['Impact']
-        
-        if feat in feature_mapping:
-            category, sub_feat = feature_mapping[feat]
-            
-            # 动态调整幅度（限制在合理范围）
-            adjust = np.sign(impact) * min(0.2, abs(impact)/3)
-            suggestions[category][sub_feat] += adjust  
-            
-            
-            # 记录调整建议
-            if abs(adjust) > 0.01:
-                signal_suggestions['adjust'].append(
-                    f"{category}.{sub_feat}: {adjust:+.2f}"
-                )
-
-    # 2. 处理未映射的重要特征 ============================
-    UNMAPPED_THRESHOLD = 0.1  # 重要性阈值
-    for _, row in feature_importance.iterrows():
-        feat = row['Feature']
-        impact = abs(row['Impact'])
-        
-        # 跳过已映射和低重要性特征
-        if feat in feature_mapping or impact < UNMAPPED_THRESHOLD:
-            continue
-            
-        # 智能分类新特征
-        category = None
-        if any(x in feat for x in ['量', 'flow', '增幅', '主生']):
-            category = 'capital_flow'
-            new_feat = f"auto_{feat}"
-            suggestions['capital_flow'][new_feat] = 0.1  # 初始化权重
-            signal_suggestions['add'].append(f"capital_flow.{new_feat} (impact: {impact:.2f})")
-            
-        elif any(x in feat.lower() for x in ['ma', 'rsi', 'macd', 'kdj', 'growth']):
-            category = 'technical'
-            new_feat = f"auto_{feat}"
-            suggestions['technical'][new_feat] = 0.1  # 初始化权重
-            signal_suggestions['add'].append(f"technical.{new_feat} (impact: {impact:.2f})")
-
-    # 3. 处理原始指标阈值优化 ============================
-    RAW_INDICATORS = ['量增幅', '量基线', '主生量', '周增幅', 'growth']
-    for indicator in RAW_INDICATORS:
-        if indicator in feature_diff.index:
-            profit_mean = feature_diff.loc[indicator, 'profit_mean']
-            loss_mean = feature_diff.loc[indicator, 'loss_mean']
-            optimal = (profit_mean + loss_mean) / 2
-            suggestions['raw_indicators'][f"{indicator}_threshold"] = round(optimal, 3)
-            signal_suggestions['adjust'].append(
-                f"{indicator}_threshold -> {optimal:.3f} "
-                f"(profit: {profit_mean:.3f}, loss: {loss_mean:.3f})"
-            )
-
-    # 4. 权重归一化 ===================================
-    def normalize_weights(weights, min_weight=0.01):
-        total = sum(weights.values())
-        if total <= 0:
-            return {k: min_weight for k in weights}
-        
-        normalized = {}
-        remaining = 1.0
-        for k, v in sorted(weights.items(), key=lambda x: -abs(x[1])):
-            weight = max(min_weight, round(v/total, 3))
-            normalized[k] = weight
-            remaining -= weight
-        
-        # 处理余数
-        if abs(remaining) > 0.001:
-            max_key = max(normalized, key=lambda x: normalized[x])
-            normalized[max_key] += round(remaining, 3)
-        
-        return normalized
-
-    suggestions['main'] = normalize_weights(suggestions['main'])
-    suggestions['technical'] = normalize_weights(suggestions['technical'])
-    suggestions['capital_flow'] = normalize_weights(suggestions['capital_flow'])
-
-    return suggestions, signal_suggestions
-    '''
+    
 # ======================
 # 主程序
 # ======================
