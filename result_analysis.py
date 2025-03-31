@@ -279,8 +279,8 @@ def generate_optimization_suggestions(importance_df, main_weights, tech_weights,
     suggestions['capital_flow'] = normalize_weights(suggestions['capital_flow'])
     
     # 阈值优化
-    suggestions['thresholds'].update(
-        auto_detect_thresholds(pd.Series(), suggestions['thresholds'])
+    suggestions['thresholds'].update(PROFIT_WEIGHT_CONFIG['thresholds']
+        #auto_detect_thresholds(pd.Series(), suggestions['thresholds'])
     )
     
     # 配置验证
