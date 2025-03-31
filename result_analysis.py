@@ -17,8 +17,8 @@ from tabulate import tabulate
 # ======================
 PROFIT_WEIGHT_CONFIG = {
     'thresholds': {
-        'small': 0.04,   # 小额盈利阈值
-        'medium': 0.12,  # 中额盈利阈值 
+        'small': 0.05,   # 小额盈利阈值
+        'medium': 0.15,  # 中额盈利阈值 
         'large': 0.25    # 大幅盈利阈值
     },
     'weights': {
@@ -100,7 +100,7 @@ def parse_buy_signals(paired_df):
 
 def prepare_features(parsed_df):
     """特征工程（含动态阈值优化）"""
-    current_config = get_current_config()['thresholds']
+    current_thresholds = get_current_config()['thresholds']
     
     # 基础特征计算
     parsed_df['return_rate'] = (parsed_df['sell_price'] - parsed_df['buy_price']) / parsed_df['buy_price']
@@ -110,7 +110,7 @@ def prepare_features(parsed_df):
     if PROFIT_WEIGHT_CONFIG['auto_optimize']:
         PROFIT_WEIGHT_CONFIG['thresholds'] = auto_detect_thresholds(
             parsed_df['return_rate'], 
-            current_config
+            PROFIT_WEIGHT_CONFIG['thresholds']
         )
     
     # 动态权重分配
@@ -130,6 +130,23 @@ def prepare_features(parsed_df):
     if 'volume' in parsed_df and 'volume_ma5' in parsed_df:
         parsed_df['volume_ratio'] = parsed_df['volume'] / parsed_df['volume_ma5'].replace(0, 1e-6)
     
+        # Growth阈值优化
+    if 'growth' in parsed_df.index:
+        growth_series = parsed_df['growth'].dropna()
+        if len(growth_series) > 10:
+            q1, q3 = np.percentile(growth_series, [25, 75])
+            iqr = q3 - q1
+            PROFIT_WEIGHT_CONFIG['thresholds']['growth_min'] = max(current_thresholds['growth_min'], 
+                                          round(q1 - 0.5*iqr, 1))
+            PROFIT_WEIGHT_CONFIG['thresholds']['growth_max'] = min(current_thresholds['growth_max'], 
+                                         round(q3 + 0.5*iqr, 1))
+        # 边界保护
+    PROFIT_WEIGHT_CONFIG['thresholds'].update({
+        'volume_gain_threshold': np.clip(current_thresholds.get('volume_gain_threshold', 1.3), 1.1, 2.5),
+        'volume_loss_threshold': np.clip(current_thresholds.get('volume_loss_threshold', -0.65), -1.0, -0.3),
+        'growth_min': max(0.5, current_thresholds.get('growth_min', 1.0)),
+        'growth_max': min(10.0, current_thresholds.get('growth_max', 5.0))
+    })
     return parsed_df
 
 def auto_detect_thresholds(return_series, current_thresholds):
@@ -144,31 +161,30 @@ def auto_detect_thresholds(return_series, current_thresholds):
         y = kde(x)
         inflection_points = np.where(np.diff(np.sign(np.gradient(y))))[0]
         
+        # 确保至少有3个阈值被设置，使用默认值作为后备
         if len(inflection_points) >= 1:
             thresholds['small'] = max(0.03, round(float(x[inflection_points[0]]), 3))
+        else:
+            thresholds['small'] = max(0.03, current_thresholds['small'])
+            
         if len(inflection_points) >= 2:
             thresholds['medium'] = round(float(x[inflection_points[1]]), 3)
+        else:
+            thresholds['medium'] = current_thresholds['medium']
+            
         if len(inflection_points) >= 3:
             thresholds['large'] = round(float(x[inflection_points[2]]), 3)
-    
-    # Growth阈值优化
-    if 'growth' in return_series.index:
-        growth_series = return_series['growth'].dropna()
-        if len(growth_series) > 10:
-            q1, q3 = np.percentile(growth_series, [25, 75])
-            iqr = q3 - q1
-            thresholds['growth_min'] = max(current_thresholds['growth_min'], 
-                                          round(q1 - 0.5*iqr, 1))
-            thresholds['growth_max'] = min(current_thresholds['growth_max'], 
-                                         round(q3 + 0.5*iqr, 1))
+        else:
+            thresholds['large'] = current_thresholds['large']
     
     # 边界保护
     thresholds.update({
-        'volume_gain_threshold': np.clip(thresholds.get('volume_gain_threshold', 1.3), 1.1, 2.5),
-        'volume_loss_threshold': np.clip(thresholds.get('volume_loss_threshold', -0.65), -1.0, -0.3),
-        'growth_min': max(0.5, thresholds.get('growth_min', 1.0)),
-        'growth_max': min(10.0, thresholds.get('growth_max', 5.0))
+        'small': np.clip(thresholds.get('small', 0.05), 0.02, 0.08),
+        'medium': np.clip(thresholds.get('medium', 0.10), 0.05, 0.15),
+        'large': np.clip(thresholds.get('large', 0.15), 0.08, 0.25)
     })
+    
+
     
     return thresholds
 
