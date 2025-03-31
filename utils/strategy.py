@@ -11,38 +11,46 @@ import talib as ta
 class StockScorer:
     def __init__(self, config: Dict = None):
         default_config = {
+            # 1. 主权重配置
             'weights': {
-                    "technical": 0.3716,
-                    "capital_flow": 0.2596,
-                    "market_heat": 0.3688,
-                    "fundamental":0
+                    "technical": 0.3736,
+                    "capital_flow": 0.2571,
+                    "market_heat": 0.3693,
+                    "fundamental": 0.0
                 },
+                # 2. 子权重配置
                 'technical_weights': {
-                    "ma_condition": 0.1583,
-                    "angle_condition": 0.0833,
-                    "macd_condition": 0.1333,
-                    "volume_score": 0.1664,
-                    "rsi_oversold": 0.0583,
-                    "kdj_oversold": 0.0583,
-                    "cci_oversold": 0.0583,
-                    "bollinger_condition": 0.117,
-                    "macd_jc": 0.0835,
-                    "price_growth": 0.0833
+                    "ma_condition": 0.1607,
+                    "angle_condition": 0.0846,
+                    "macd_condition": 0.1353,
+                    "volume_score": 0.1689,
+                    "rsi_oversold": 0.0592,
+                    "kdj_oversold": 0.0592,
+                    "cci_oversold": 0.0592,
+                    "bollinger_condition": 0.1192,
+                    "macd_jc": 0.085,
+                    "price_growth": 0.0689
                 },
                 'capital_flow_weights': {
-                    "positive_flow": -0.0272,
-                    "flow_increasing": 0.041,
-                    "trend_strength": 0.0548,
-                    "weekly_flow": 0.0276,
-                    "weekly_increasing": 0.0137,
-                    "volume_gain_ratio": 0.2435,
-                    "volume_baseline": 0.1702,
-                    "primary_volume": 0.0779,
-                    "weekly_growth": 0.3985,
-                    "volume_gain_multiplier": 0,
-                    "volume_loss_multiplier": 0,
-                    "volume_gain_threshold": 0,
-                    "volume_loss_threshold": 0
+                    "positive_flow": -0.0091,
+                    "flow_increasing": 0.0137,
+                    "trend_strength": 0.0183,
+                    "weekly_flow": 0.0092,
+                    "weekly_increasing": 0.0046,
+                    "volume_gain_ratio": 0.0858,
+                    "volume_baseline": 0.0683,
+                    "primary_volume": 0.0185,
+                    "weekly_growth": 0.1397,
+                    "volume_gain_multiplier": 0.4339,
+                    "volume_loss_multiplier": 0.217
+                },
+                # 3. 阈值配置 (新增)
+                'thresholds': {                    
+                    'volume_gain_threshold': 1.3,
+                    'volume_loss_threshold': -0.65,
+                    'growth_min': 1.0,  # 最小涨幅(%)
+                    'growth_max': 5.0,  # 最大涨幅(%)
+                    'angle_min': 30,    # 均线角度最小阈值
                 },
             'market_heat': {
                 'window': 30
@@ -51,7 +59,7 @@ class StockScorer:
             'scoring_rules': {
                 'max_volume_ratio': 3,
                 'max_trend_strength': 2.0,
-                'max_flow_score': 1.0
+                'max_flow_score': 10.0
             }
         }
         self.config = {**default_config, **(config or {})}
@@ -84,11 +92,21 @@ class StockScorer:
 
     def _calculate_technical_score(self, row: pd.Series) -> float:
         weights = self.config['technical_weights']
+        thresholds = self.config['thresholds']
         tech_score = 0
+
+        # 涨幅条件 - 使用动态阈值范围
+        growth = row['growth']
+        if thresholds['growth_min'] <= growth <= thresholds['growth_max']:
+            # 在理想范围内的涨幅获得满分
+            tech_score += weights['price_growth']
+        elif growth > 0:
+            # 超出范围但仍为正的涨幅获得部分分数
+            tech_score += weights['price_growth'] * 0.5
         
         # 均线系统评分
         tech_score += (row['ma_5'] > row['ma_20']) * weights['ma_condition']
-        tech_score += (row['angle_ma_10'] > 30) * weights['angle_condition']
+        tech_score += (row['angle_ma_10'] > thresholds['angle_min']) * weights['angle_condition']
         tech_score += (row['macd'] > row['macd_signal']) * weights['macd_condition']
         
         # 成交量动能
@@ -105,14 +123,13 @@ class StockScorer:
         # 新增MACD金叉信号
         tech_score += int(row['macd_jc']) * weights['macd_jc']
         
-        # 修改价格增长信号处理（布尔值转换为1/0）
-        tech_score += row['growth'] * weights['price_growth']
         
         return tech_score
 
     def _calculate_capital_flow(self, row: pd.Series) -> float:
         """基于策略生成的新资金流信号进行评分"""
         cfg = self.config['capital_flow_weights']
+        thresholds = self.config['thresholds']
         flow_score = 0
         
         if row['money_flow_positive']:
@@ -131,7 +148,11 @@ class StockScorer:
             
         if row['money_flow_weekly_increasing']:
             flow_score += cfg['weekly_increasing'] * 1.3
-            
+        # 量增幅调整
+        if row['量增幅'] > thresholds['volume_gain_threshold']:
+            flow_score *= cfg['volume_gain_multiplier']
+        elif row['量增幅'] < thresholds['volume_loss_threshold']:
+            flow_score *= cfg['volume_loss_multiplier']    
 
         # 新增量增幅信号
         flow_score += min(row['量增幅'], 5) * cfg['volume_gain_ratio']
@@ -565,10 +586,10 @@ class EnhancedTDXStrategy:
         df['growth'] = df['growth'].round(1)
         # 涨幅条件使用配置参数
         buy_cfg = self.config['buy_conditions']
-        '''
-        df['growth'] = (df['close'] >= df['open']*buy_cfg['growth_threshold']) & \
+        
+        df['growth_condition'] = (df['close'] >= df['open']*buy_cfg['growth_threshold']) & \
                       (df['high'] <= df['open']*buy_cfg['max_upper_shadow'])
-        '''
+        
         # 计算多周期MACD
         #print('计算多周期MACD...')
         #df = self._calculate_multi_period_macd(df)
@@ -693,7 +714,7 @@ class EnhancedTDXStrategy:
         signals = self.generate_features(start_date,end_date)
         # 综合买入条件
         buy_condition = (
-            #signals['growth'] &
+            signals['growth_condition'] &
             signals['ma_condition'] &
             signals['angle_condition'] &
             signals['volume_condition'] &

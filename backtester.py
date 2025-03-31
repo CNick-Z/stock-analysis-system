@@ -702,7 +702,7 @@ class BacktestOrchestrator:
 if __name__ == "__main__":  
     # 运行回测
     orchestrator = BacktestOrchestrator(live_plot=True)
-    report = orchestrator.run(start_date='2009-01-01', end_date='2014-12-31')    
+    report = orchestrator.run(start_date='2020-01-01', end_date='2024-12-31')    
     print("回测结果摘要:")
     print(f"最终净值: {report['summary']['final_value']:,.2f}")
     print(f"总收益率: {report['summary']['total_return']:.2%}")
