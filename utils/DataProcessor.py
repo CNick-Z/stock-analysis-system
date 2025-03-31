@@ -5,8 +5,8 @@ from ta.trend import cci,macd, macd_signal, macd_diff
 import talib
 import logging
 from utils.db_operations import *
-import logging
 from contextlib import contextmanager
+from datetime import datetime, timedelta
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -22,9 +22,15 @@ class TechnicalIndicatorCalculator:
         df = self.db_manager.load_data(DailyDataBase, filter_conditions=filter_conditions,distinct_column="symbol" )
         return df
 
-    def load_full_stock_data(self,symbol):
-        """加载指定股票的完整历史数据"""
-        filter_conditions = {"symbol": symbol}
+    def load_full_stock_data(self,symbol,date):
+        """加载指定股票的历史数据"""
+        start_date = datetime.strptime(date, "%Y-%m-%d")+timedelta(days=-365)
+        start_date = start_date.strftime("%Y-%m-%d")
+        filter_conditions = {"symbol": symbol,
+                            'date': {
+                            '$gte': start_date
+                            }
+                        }
         df = self.db_manager.load_data(DailyDataBase, filter_conditions=filter_conditions)
         return df
     def calculate_indicators(self, df):
@@ -87,13 +93,13 @@ class TechnicalIndicatorCalculator:
         filter_fields = ['date', 'symbol']
         self.db_manager.bulk_update(DailyDataBase, data_dict, update_fields, filter_fields)
 
-    def process_by_stock(self):
+    def process_by_stock(self,date):
         """按股票逐个处理模式"""
         symbols = self.load_unprocessed_stocks()
         for symbol in symbols['symbol']:
             logging.info(f"Processing {symbol}...")
             # 加载完整历史数据
-            full_data = self.load_full_stock_data(symbol)            
+            full_data = self.load_full_stock_data(symbol,date)            
             # 计算技术指标
             indicators = self.calculate_indicators(full_data)            
             # 仅保留未处理日期的指标
@@ -109,4 +115,4 @@ if __name__ == "__main__":
     pd.options.mode.copy_on_write = True
     db_url = "sqlite:///c:/db/stock_data.db"
     calculator = TechnicalIndicatorCalculator(db_url=db_url)
-    calculator.process_by_stock()
+    calculator.process_by_stock('2025-01-01')

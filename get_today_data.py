@@ -10,7 +10,7 @@ def get_today_data(start_date, end_date,db_url):
     fetcher = DataFetcher(db_url)
     fetcher.fetch_and_save_all_data(start_date, end_date)
     processor = TechnicalIndicatorCalculator(db_url)
-    processor.process_by_stock()
+    processor.process_by_stock(start_date)
 
 def get_data_last_day(db_url):
     db_manager = DatabaseManager(db_url=db_url)
@@ -32,7 +32,7 @@ if __name__ == "__main__":
     get_today_data(datetime.strftime(start_date,"%Y%m%d"), datetime.strftime(end_date,"%Y%m%d"),db_url)
     recorder=SignalTraderecord(db_path)
     notion=NotionDatabaseManager()
-    datelist=recorder.get_dates_list(datetime.strftime(start_date,"%Y-%m-%d"), datetime.strftime(end_date,"%Y-%m-%d"))
+    datelist=recorder.get_trading_data(datetime.strftime(start_date,"%Y-%m-%d"), datetime.strftime(end_date,"%Y-%m-%d"))
     for date in datelist:
-        buylist_day,selllist_day = notion.query_notion_database(date)
-        recorder.run(buylist_day,selllist_day,date)
+        buylist_day,selllist_day = notion.query_notion_database(datetime.strftime(date,'%Y-%m-%d'))
+        recorder.run(buylist_day,selllist_day,datetime.strftime(date,'%Y-%m-%d'))

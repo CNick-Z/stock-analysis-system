@@ -394,16 +394,30 @@ class SignalTraderecord:
 
         return dates_list
 
+    def get_trading_data(self, start_date, end_date):
+        filter_conditions = {
+                    'date': {
+                        '$between': [start_date, end_date]
+                    }
+                }
+                # 查询数据
+        df = self.db_manager.load_data(DailyDataBase, filter_conditions, columns=['date'])
+        # 生成交易日期索引
+        trading_dates = pd.to_datetime(df['date']).sort_values().unique()
+        return trading_dates
+
 
 if __name__ == '__main__':
     recorder=SignalTraderecord('c:/db/stock_data.db')
     date = datetime.today()+timedelta(days=-1)
     date = datetime.strftime(date,'%Y-%m-%d')
     notion=NotionDatabaseManager()
-    datelist=recorder.get_dates_list(date,date)
-    for date in datelist:
-        buylist_day,selllist_day = notion.query_notion_database(date)
-        recorder.run(buylist_day,selllist_day,date)
+    #datelist=recorder.get_dates_list(date,date)
+
+    trading_dates=recorder.get_trading_data('2025-03-27','2025-03-31')
+    for date in trading_dates:
+        buylist_day,selllist_day = notion.query_notion_database(datetime.strftime(date,'%Y-%m-%d'))
+        recorder.run(buylist_day,selllist_day,datetime.strftime(date,'%Y-%m-%d'))
 
     
 
