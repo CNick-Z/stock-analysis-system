@@ -11,6 +11,7 @@ from tqdm import tqdm
 from datetime import datetime, timedelta
 from utils.stock_report import  *
 from utils.strategy import StockScorer,EnhancedTDXStrategy
+import logging
 
 class DynamicPositionManager:
     """动态仓位管理模块"""
@@ -88,7 +89,7 @@ class DynamicPositionManager:
         if self.position_index < len(self.position_levels) - 1:
             self.position_index += 1
             self.current_position = self.position_levels[self.position_index]
-            print(f"仓位提升至: {self.current_position*100}%")
+            logging.info(f"仓位提升至: {self.current_position*100}%")
     
     #def _decrease_position(self):
     def _increase_position(self):
@@ -96,7 +97,7 @@ class DynamicPositionManager:
         if self.position_index > 0:
             self.position_index -= 1
             self.current_position = self.position_levels[self.position_index]
-            print(f"仓位降低至: {self.current_position*100}%")
+            logging.info(f"仓位降低至: {self.current_position*100}%")
     
     def _adjust_position_by_return(self):
         """根据多日收益率调整仓位"""
@@ -111,7 +112,7 @@ class DynamicPositionManager:
         """触发熔断"""
         self.circuit_breaker = True
         self.circuit_breaker_counter = 0
-        print(f"! 触发熔断（连续{self.max_consecutive_losses}次亏损）")
+        logging.info(f"! 触发熔断（连续{self.max_consecutive_losses}次亏损）")
 
     def _deactivate_circuit_breaker(self):
         """解除熔断"""
@@ -119,7 +120,7 @@ class DynamicPositionManager:
         self.consecutive_losses = 0  # 重置计数器
         self.cooldown_counter = self.circuit_breaker_cooldown
         self.current_position = self.position_levels[1] 
-        print("! 熔断解除，仓位重置为安全水平，进入冷却期")
+        logging.info("! 熔断解除，仓位重置为安全水平，进入冷却期")
 
     def is_circuit_breaker_active(self):
         """检查是否处于熔断或冷却期"""
@@ -130,7 +131,7 @@ class DynamicPositionManager:
         if self.cooldown_counter > 0:
             self.cooldown_counter -= 1
             if self.cooldown_counter == 0:
-                print("! 冷却期结束，恢复正常交易")
+                logging.info("! 冷却期结束，恢复正常交易")
 class DatabaseIntegrator:
     """数据库集成模块"""
     def __init__(self, db_path):
@@ -210,7 +211,7 @@ class TradingSimulator:
             'signal_info': signal_info,  # 新增字段，记录交易信号信息
             'signal':signal
         })
-        print(f"\n{date} 买入 {symbol}，价格: {price}，数量: {quantity}，佣金: {commission}")
+        logging.info(f"\n{date} 买入 {symbol}，价格: {price}，数量: {quantity}，佣金: {commission}")
         return True
 
     def _execute_sell(self, symbol, price, date, quantity,signal_info):
@@ -239,7 +240,7 @@ class TradingSimulator:
             'pnl': net_proceeds - (position['cost'] * quantity / (quantity + position['qty'])),
             'signal_info': signal_info  # 新增字段，记录交易信号信息
         })
-        print(f"\n{date} 卖出 {symbol}，价格: {price}，数量: {quantity}，佣金: {commission}")
+        logging.info(f"\n{date} 卖出 {symbol}，价格: {price}，数量: {quantity}，佣金: {commission}")
         return True
 
 class BacktestOrchestrator:
@@ -288,7 +289,7 @@ class BacktestOrchestrator:
             full_path = os.path.join(self.plot_save_path, filename)
             self.fig.savefig(full_path, dpi=300, bbox_inches='tight')
             plt.close(self.fig)
-            print(f"策略图表已保存至：{full_path}")
+            logging.info(f"策略图表已保存至：{full_path}")
 
     def _info_callback(self, msg, data=None):
         """用于实时显示回测信息"""
@@ -350,7 +351,7 @@ class BacktestOrchestrator:
                 text_y -= line_spacing  # 调整下一行的垂直位置
     def initialize(self, start_date, end_date):
         """初始化回测环境"""
-        print("初始化回测环境,获取交易日历和价格矩阵...")
+        logging.info("初始化回测环境,获取交易日历和价格矩阵...")
         self.trading_dates, self.price_matrix = self.db.fetch_trading_dates_and_price_matrix(start_date, end_date)
 
         
@@ -702,8 +703,8 @@ class BacktestOrchestrator:
 if __name__ == "__main__":  
     # 运行回测
     orchestrator = BacktestOrchestrator(live_plot=True)
-    report = orchestrator.run(start_date='2020-01-01', end_date='2024-12-31')    
-    print("回测结果摘要:")
-    print(f"最终净值: {report['summary']['final_value']:,.2f}")
-    print(f"总收益率: {report['summary']['total_return']:.2%}")
-    print(f"最大回撤: {report['summary']['max_drawdown']:.2%}")
+    report = orchestrator.run(start_date='2008-01-01', end_date='2012-12-31')    
+    logging.info("回测结果摘要:")
+    logging.info(f"最终净值: {report['summary']['final_value']:,.2f}")
+    logging.info(f"总收益率: {report['summary']['total_return']:.2%}")
+    logging.info(f"最大回撤: {report['summary']['max_drawdown']:.2%}")

@@ -7,7 +7,10 @@ from datetime import datetime
 from utils.db_operations import *
 from tqdm import tqdm
 import talib as ta
-
+import logging
+from functools import lru_cache
+# 配置日志
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 class StockScorer:
     def __init__(self, config: Dict = None):
         default_config = {
@@ -242,6 +245,7 @@ class EnhancedTDXStrategy:
         self.db_manager = DatabaseManager(f"sqlite:///{db_path}")
         self.db_manager.ensure_tables_exist()
         self.Scorer = StockScorer()
+        self._stock_info_cache = None # 缓存股票信息
         
         # 预校验参数
         self._validate_config()
@@ -252,6 +256,31 @@ class EnhancedTDXStrategy:
             raise ValueError("均线周期必须为正整数")
         if len(self.config['macd_params']) != 3:
             raise ValueError("MACD参数需要三个值(short, long, signal)")
+    @property
+    def stock_basic_info(self):
+        """带缓存的基础信息获取属性"""
+        if self._should_refresh_cache():
+            self._refresh_info_cache()
+        return self._stock_info_cache
+    
+    def _should_refresh_cache(self):
+        """判断是否需要刷新缓存"""
+        if self._stock_info_cache is None:
+            return True
+        return False
+    
+    def _refresh_info_cache(self):
+        """刷新缓存数据"""
+        logging.info("刷新股票基础信息缓存...")
+        self._stock_info_cache = self.db_manager.load_data(
+            table_class=StockBasicInfo,
+            filter_conditions={
+                'name': {'$not_like': 'ST'},
+                # 可以添加更多过滤条件
+            },
+            columns=['symbol', 'name', 'total_shares', 'industry']
+        )
+        logging.info(f"缓存已更新，共{len(self._stock_info_cache)}条记录")
 
     def _fetch_precalculated_data(self, start_date: str,end_date:str) -> pd.DataFrame:
         """
@@ -292,20 +321,20 @@ class EnhancedTDXStrategy:
         }
         
         # 加载技术指标数据
-        print("加载技术指标数据...")
+        logging.info(f"加载技术指标数据...")
         tech_df = self.db_manager.load_data(
             table_class=TechnicalIndicatorsBase,
             filter_conditions={
-                'date': {'$between':[extended_start_date, end_date]}  # 需要扩展过滤逻辑
+                'date': {'$between':[extended_start_date, end_date]}  
             }
         ).rename(columns=tech_columns)
         
         # 加载行情数据
-        print("加载行情数据...")
+        logging.info(f"加载行情数据...")
         price_df = self.db_manager.load_data(
             table_class=DailyDataBase,
             filter_conditions={
-                'date': {'$between':[extended_start_date, end_date]}  # 需要扩展过滤逻辑
+                'date': {'$between':[extended_start_date, end_date]}  
             },
             columns=['date', 'symbol','high','low','volume','amount','open','close'],
             distinct_column=None,
@@ -313,17 +342,11 @@ class EnhancedTDXStrategy:
         )
         
         #加载基础数据
-        print("加载基础数据...")
-        info_df = self.db_manager.load_data(
-            table_class=StockBasicInfo,
-            filter_conditions={
-                'name': {'$not_like': 'ST'}  # 需要扩展过滤逻辑
-            },
-            columns=['symbol', 'name', 'total_shares', 'industry']
-        )
+        logging.info(f"加载基础数据...")
+        info_df = self.stock_basic_info
 
         # 合并数据集
-        print("合并数据集...")
+        logging.info(f"合并数据集...")
         merged_df = pd.merge(
             tech_df,
             price_df,
@@ -643,7 +666,7 @@ class EnhancedTDXStrategy:
         df['bb_lower_break'] = df['close'] < df['bb_lower']
 
         # 计算资金流向相关指标
-        print('生成资金流向指标...')
+        logging.info('生成资金流向指标...')
         df = self._calculate_money_flow_indicators(df)
         
         # 新增资金流向信号
@@ -689,19 +712,18 @@ class EnhancedTDXStrategy:
         生成完整信号（优化执行流程）
         """
         # 数据获取
-        print("正在获取数据...")
         raw_data = self._fetch_precalculated_data(start_date,end_date)
         
         # 特征工程
-        print("正在生成特征...")
+        logging.info(f"正在生成特征...")
         with_angles = self._calculate_ma_angles(raw_data)
         
         # 信号生成
-        print("正在生成信号...")
+        logging.info(f"正在生成信号...")
         signals = self._generate_core_signals(with_angles)
 
         # 计算市场热度
-        print("正在计算市场热度...")
+        logging.info(f"正在计算市场热度...")
         market_heat = self._calculate_market_heat(signals)
 
         # 计量价共振三重滤波顶底背离指标
@@ -710,7 +732,7 @@ class EnhancedTDXStrategy:
         return market_heat
     def get_signals(self, start_date: str,end_date:str) -> pd.DataFrame:        
         """获取买点信号"""
-        print("计算买点信号...")
+        logging.info(f"计算买点信号...")
         signals = self.generate_features(start_date,end_date)
         # 综合买入条件
         buy_condition = (
@@ -751,7 +773,7 @@ class EnhancedTDXStrategy:
         if selected_buy_signals is not None:
             selected_buy_signals=selected_buy_signals.set_index('date')       
         # 综合卖出条件
-        print("计算卖点信号...")
+        logging.info(f"计算卖点信号...")
         sell_condition = (
             (signals['ma_20'] > signals['ma_5']) &  # 短期均线下穿长期
             (
