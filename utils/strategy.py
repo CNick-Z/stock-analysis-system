@@ -16,36 +16,36 @@ class StockScorer:
         default_config = {
             # 1. 主权重配置
             'weights': {
-                    "technical": 0.3736,
-                    "capital_flow": 0.2571,
-                    "market_heat": 0.3693,
+                    "technical": 0.3758,
+                    "capital_flow": 0.2562,
+                    "market_heat": 0.368,
                     "fundamental": 0.0
                 },
                 # 2. 子权重配置
                 'technical_weights': {
-                    "ma_condition": 0.1607,
-                    "angle_condition": 0.0846,
-                    "macd_condition": 0.1353,
-                    "volume_score": 0.1689,
-                    "rsi_oversold": 0.0592,
-                    "kdj_oversold": 0.0592,
-                    "cci_oversold": 0.0592,
-                    "bollinger_condition": 0.1192,
+                    "ma_condition": 0.1606,
+                    "angle_condition": 0.0845,
+                    "macd_condition": 0.1352,
+                    "volume_score": 0.1687,
+                    "rsi_oversold": 0.0591,
+                    "kdj_oversold": 0.0591,
+                    "cci_oversold": 0.0591,
+                    "bollinger_condition": 0.1193,
                     "macd_jc": 0.085,
-                    "price_growth": 0.0689
+                    "price_growth": 0.0693
                 },
                 'capital_flow_weights': {
-                    "positive_flow": -0.0091,
-                    "flow_increasing": 0.0137,
-                    "trend_strength": 0.0183,
-                    "weekly_flow": 0.0092,
-                    "weekly_increasing": 0.0046,
-                    "volume_gain_ratio": 0.0858,
-                    "volume_baseline": 0.0683,
-                    "primary_volume": 0.0185,
-                    "weekly_growth": 0.1397,
-                    "volume_gain_multiplier": 0.4339,
-                    "volume_loss_multiplier": 0.217
+                    "positive_flow": -0.0075,
+                    "flow_increasing": 0.0113,
+                    "trend_strength": 0.0152,
+                    "weekly_flow": 0.0076,
+                    "weekly_increasing": 0.0038,
+                    "volume_gain_ratio": 0.1405,
+                    "volume_baseline": 0.0659,
+                    "primary_volume": 0.012,
+                    "weekly_growth": 0.2121,
+                    "volume_gain_multiplier": 0.3593,
+                    "volume_loss_multiplier": 0.1797
                 },
                 # 3. 阈值配置 (新增)
                 'thresholds': {                    

@@ -26,5 +26,5 @@ if __name__ == "__main__":
     # 初始化数据库管理器
     db_manager = DatabaseManager(db_url='sqlite:///c:/db/stock_data.db')
     current_year = str(datetime.now().year)
-    rebuild_all_indexes(db_manager,2005)
+    rebuild_all_indexes(db_manager,2002)
     print("索引重建完成。")

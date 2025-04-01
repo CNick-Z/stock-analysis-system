@@ -80,6 +80,8 @@ class DataFetcher:
             columns=columns
         )
         # 转换为字典格式
+        if existing_data.empty:
+            return {}
         existing_data_dict = existing_data.groupby('symbol')['date'].apply(set).to_dict()
         
         return existing_data_dict
@@ -87,7 +89,8 @@ class DataFetcher:
     def process_symbol(self, symbol, start_date, end_date, table_name):
         """处理单个股票的逻辑"""
         logging.info(f"Processing {symbol}...")
-        existing_dates = self.existing_data.get(symbol, set())
+        if symbol in self.existing_data:
+            existing_dates = self.existing_data.get(symbol, set())
         df = self.fetch_daily_data(symbol, start_date, end_date)
         
         # 如果没有数据，跳过

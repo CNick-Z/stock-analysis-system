@@ -703,7 +703,7 @@ class BacktestOrchestrator:
 if __name__ == "__main__":  
     # 运行回测
     orchestrator = BacktestOrchestrator(live_plot=True)
-    report = orchestrator.run(start_date='2008-01-01', end_date='2012-12-31')    
+    report = orchestrator.run(start_date='2002-03-01', end_date='2007-12-31')    
     logging.info("回测结果摘要:")
     logging.info(f"最终净值: {report['summary']['final_value']:,.2f}")
     logging.info(f"总收益率: {report['summary']['total_return']:.2%}")

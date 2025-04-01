@@ -10,7 +10,7 @@ def get_today_data(start_date, end_date,db_url):
     fetcher = DataFetcher(db_url)
     fetcher.fetch_and_save_all_data(start_date, end_date)
     processor = TechnicalIndicatorCalculator(db_url)
-    processor.process_by_stock(start_date)
+    processor.process_all_data(start_date)
 
 def get_data_last_day(db_url):
     db_manager = DatabaseManager(db_url=db_url)
