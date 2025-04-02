@@ -648,6 +648,7 @@ class BacktestOrchestrator:
                 'Turnover': trades.groupby('symbol').size().mean()
             }])
             summary_df.to_excel(writer, sheet_name='Summary', index=False)
+
         return {
             'summary': {
                 'final_value': df['value'].iloc[-1],
@@ -702,9 +703,27 @@ class BacktestOrchestrator:
 # 使用示例
 if __name__ == "__main__":  
     # 运行回测
-    orchestrator = BacktestOrchestrator(live_plot=True)
-    report = orchestrator.run(start_date='2005-01-15', end_date='2010-12-31')    
+    start_date='2012-01-15'
+    end_date='2016-12-31'
+    orchestrator = BacktestOrchestrator(position_limit=2,live_plot=True)
+    report = orchestrator.run(start_date, end_date)    
     logging.info("回测结果摘要:")
     logging.info(f"最终净值: {report['summary']['final_value']:,.2f}")
     logging.info(f"总收益率: {report['summary']['total_return']:.2%}")
     logging.info(f"最大回撤: {report['summary']['max_drawdown']:.2%}")
+    trade_recordfile='./backtestresult/trades_record.txt'
+    # 获取当前时间作为时间戳
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # 准备要写入的内容
+    record_content = (
+        f"{'*' * 40}\n"  # 分隔符
+        f"记录时间: {current_time}\n"  # 时间戳
+        f"{start_date}到{end_date}回测结果摘要\n"
+        f"同时最大持仓: {orchestrator.position_limit_base}\n"
+        f"最终净值: {report['summary']['final_value']:,.2f}\n"
+        f"总收益率: {report['summary']['total_return']:.2%}\n"
+        f"最大回撤: {report['summary']['max_drawdown']:.2%}\n"
+        f"{'*' * 40}\n"  # 分隔符
+    )
+    with open(trade_recordfile, 'a') as f:
+        f.write(record_content)
