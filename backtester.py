@@ -245,7 +245,7 @@ class TradingSimulator:
 
 class BacktestOrchestrator:
     """回测总控模块"""
-    def __init__(self, db_path='c:/db/stock_data.db', live_plot=False,position_limit=2, commission_rate=0.0003):
+    def __init__(self, db_path='c:/db/stock_data.db', live_plot=False,position_limit=3, commission_rate=0.0003):
         self.position_limit = position_limit  # 新增参数
         self.position_limit_base = position_limit  # 基础持仓限制
         self.db = DatabaseIntegrator(db_path)
@@ -703,7 +703,7 @@ class BacktestOrchestrator:
 if __name__ == "__main__":  
     # 运行回测
     orchestrator = BacktestOrchestrator(live_plot=True)
-    report = orchestrator.run(start_date='2002-03-01', end_date='2007-12-31')    
+    report = orchestrator.run(start_date='2005-01-15', end_date='2010-12-31')    
     logging.info("回测结果摘要:")
     logging.info(f"最终净值: {report['summary']['final_value']:,.2f}")
     logging.info(f"总收益率: {report['summary']['total_return']:.2%}")

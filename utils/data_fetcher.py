@@ -89,8 +89,7 @@ class DataFetcher:
     def process_symbol(self, symbol, start_date, end_date, table_name):
         """处理单个股票的逻辑"""
         logging.info(f"Processing {symbol}...")
-        if symbol in self.existing_data:
-            existing_dates = self.existing_data.get(symbol, set())
+        existing_dates = self.existing_data.get(symbol, set())
         df = self.fetch_daily_data(symbol, start_date, end_date)
         
         # 如果没有数据，跳过

@@ -412,9 +412,9 @@ if __name__ == '__main__':
     date = datetime.today()
     date = datetime.strftime(date,'%Y-%m-%d')
     notion=NotionDatabaseManager()
-    trading_dates=recorder.get_trading_data(date,date)
+    #trading_dates=recorder.get_trading_data(date,date)
 
-    #trading_dates=recorder.get_trading_data('2025-03-27','2025-03-31')
+    trading_dates=recorder.get_trading_data('2025-03-27','2025-04-01')
     for date in trading_dates:
         buylist_day,selllist_day = notion.query_notion_database(datetime.strftime(date,'%Y-%m-%d'))
         recorder.run(buylist_day,selllist_day,datetime.strftime(date,'%Y-%m-%d'))

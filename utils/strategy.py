@@ -16,43 +16,43 @@ class StockScorer:
         default_config = {
             # 1. 主权重配置
             'weights': {
-                    "technical": 0.3758,
-                    "capital_flow": 0.2562,
-                    "market_heat": 0.368,
-                    "fundamental": 0.0
+                "technical": 0.4483,
+                "capital_flow": 0.2947,
+                "market_heat": 0.257,
+                "fundamental": 0.0
                 },
-                # 2. 子权重配置
-                'technical_weights': {
-                    "ma_condition": 0.1606,
-                    "angle_condition": 0.0845,
-                    "macd_condition": 0.1352,
-                    "volume_score": 0.1687,
-                    "rsi_oversold": 0.0591,
-                    "kdj_oversold": 0.0591,
-                    "cci_oversold": 0.0591,
-                    "bollinger_condition": 0.1193,
-                    "macd_jc": 0.085,
-                    "price_growth": 0.0693
+            # 2. 子权重配置
+            'technical_weights': {
+                "ma_condition": 0.1622,
+                "angle_condition": 0.0854,
+                "macd_condition": 0.1366,
+                "volume_score": 0.1704,
+                "rsi_oversold": 0.0597,
+                "kdj_oversold": 0.0597,
+                "cci_oversold": 0.0597,
+                "bollinger_condition": 0.1191,
+                "macd_jc": 0.0873,
+                "price_growth": 0.06
                 },
-                'capital_flow_weights': {
-                    "positive_flow": -0.0075,
-                    "flow_increasing": 0.0113,
-                    "trend_strength": 0.0152,
-                    "weekly_flow": 0.0076,
-                    "weekly_increasing": 0.0038,
-                    "volume_gain_ratio": 0.1405,
-                    "volume_baseline": 0.0659,
-                    "primary_volume": 0.012,
-                    "weekly_growth": 0.2121,
-                    "volume_gain_multiplier": 0.3593,
-                    "volume_loss_multiplier": 0.1797
+            'capital_flow_weights': {
+                "positive_flow": -0.0072,
+                "flow_increasing": 0.0108,
+                "trend_strength": 0.0147,
+                "weekly_flow": 0.0072,
+                "weekly_increasing": 0.0036,
+                "volume_gain_ratio": 0.1524,
+                "volume_baseline": 0.0437,
+                "primary_volume": 0.0159,
+                "weekly_growth": 0.2438,
+                "volume_gain_multiplier": 0.3434,
+                "volume_loss_multiplier": 0.1717
                 },
                 # 3. 阈值配置 (新增)
                 'thresholds': {                    
                     'volume_gain_threshold': 1.3,
                     'volume_loss_threshold': -0.65,
-                    'growth_min': 1.0,  # 最小涨幅(%)
-                    'growth_max': 5.0,  # 最大涨幅(%)
+                    'growth_min': 0.5,  # 最小涨幅(%)
+                    'growth_max': 6.0,  # 最大涨幅(%)
                     'angle_min': 30,    # 均线角度最小阈值
                 },
             'market_heat': {
@@ -227,8 +227,8 @@ class EnhancedTDXStrategy:
                     'volume_ma_window': 5,
                     'macd_params': (12, 26, 9),
                     'buy_conditions': {
-                        'growth_threshold': 1.03,
-                        'max_upper_shadow': 1.05,
+                        'growth_threshold': 1.00,
+                        'max_upper_shadow': 1.06,
                         'ma_diff_threshold': 0.02
                     }
                 }
@@ -388,10 +388,18 @@ class EnhancedTDXStrategy:
         计算均线角度（与选股公式一致）
         """
         # 定义需要计算角度的 MA 列
-        ma_columns = ['ma_10', 'ma_20', 'ma_55', 'ma_240']
+        ma_columns = {
+                    'ma_10': 'ma_5',
+                    'ma_20': 'ma_10',
+                    'ma_55': 'ma_20',
+                    'ma_240': 'ma_55'
+                    }
         
-        for ma in ma_columns:
-            df[f'angle_{ma}'] = self._calculate_angle(df[ma], window=2)        
+        for long_ma, short_ma in ma_columns.items():
+            # 使用短周期数据填充长周期的初始空值
+            df[long_ma] = df[long_ma].fillna(df[short_ma])
+            # 计算角度
+            df[f'angle_{long_ma}'] = self._calculate_angle(df[long_ma], window=2)        
         return df
 
 

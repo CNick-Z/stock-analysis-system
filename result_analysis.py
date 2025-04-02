@@ -17,7 +17,7 @@ from tabulate import tabulate
 # ======================
 PROFIT_WEIGHT_CONFIG = {
     'thresholds': {
-        'small': 0.059,   # 小额盈利阈值
+        'small': 0.039,   # 小额盈利阈值
         'medium': 0.15,  # 中额盈利阈值 
         'large': 0.25    # 大幅盈利阈值
     },
