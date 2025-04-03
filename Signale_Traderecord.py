@@ -380,6 +380,19 @@ class SignalTraderecord:
         self._fetch_price_matrix(date)
         self._set_PositionStatus(date)
         advice=self.generate_trading_advice(date)
+        advice_recordfile='./backtestresult/advice_record.txt'
+        # 获取当前时间作为时间戳
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # 准备要写入的内容
+        advice_content = (
+            f"{'*' * 40}\n"  # 分隔符
+            f"记录时间: {current_time}\n"  # 时间戳
+            f"{date}选股建议\n"
+            f"{advice}\n"
+            f"{'*' * 40}\n"  # 分隔符
+        )
+        with open(advice_recordfile, 'a') as f:
+            f.write(advice_content)
         print(advice)
 
     def get_dates_list(self,start_date_str, end_date_str):
