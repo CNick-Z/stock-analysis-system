@@ -1,13 +1,27 @@
-#需先安装rust
-rust下载地址https://rustup.rs/
+yum groupinstall "Development Tools"
+yum install zlib-devel bzip2-devel openssl-devel ncurses-devel sqlite-devel readline-devel tk-devel gdbm-devel libffi-devel xz-devel libuuid-devel
+tar zxvf openssl-1.1.1k.tar.gz
+cd openssl-1.1.1k
+./config --prefix=/usr/local/openssl1.1
+make && make install
+cp libssl.so.1.1 /usr/lib64/
+cp libcrypto.so.1.1 /usr/lib64/
+cd Python-3.9.13
+./configure --prefix=/usr/local/python3.9  --with-openssl=/usr/local/openssl1.1 LDFLAGS="-L/usr/local/openssl1.1/lib -Wl,-rpath=/usr/local/openssl1.1/lib" CPPFLAGS="-I/usr/local/openssl1.1/include"
+make 
+make install
+echo "export PATH="/usr/local/bin:$PATH"" >> /etc/profile
 #python模块
 pip install akshare pandas==2.0.3 numpy==1.24.4 matplotlib==3.7.2 sqlalchemy==2.0.19 pandas-ta==0.3.14b retrying==1.3.4 multitasking==0.0.11 plotly==5.16.1 scipy==1.10.1 tqdm==4.65.0 pyportfolioopt==1.5.5
-pip install TA_Lib‑0.4.25‑cp38‑cp38‑win_amd64.whl
+wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.6.4-src.tar.gz
+tar -xzf ta-lib-0.4.0-src.tar.gz
+cd ta-lib/
+./configure --prefix=/usr
+make
+sudo make install
+echo "export TA_LIBRARY_PATH=/usr/lib64" >> /etc/profile
+echo "export TA_INCLUDE_PATH=/usr/include" >> /etc/profile
+source /etc/profile
+pip install ta_lib
 pip install ta
-pip install sqlalchemy
-pip install openpyxl
-pip install scikit-learn
-pip install seaborn
-pip install numba
-pip install --upgrade akshare
-pip install requests
+pip install sqlalchemy openpyxl scikit-learn seaborn numba requests notion-client

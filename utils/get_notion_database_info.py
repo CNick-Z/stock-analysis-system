@@ -1,6 +1,7 @@
 # get_notion_database_info.py
-import requests
 import configparser
+from notion_client import Client
+from datetime import datetime, timedelta
 
 class NotionDatabaseManager:
     def __init__(self):
@@ -9,27 +10,15 @@ class NotionDatabaseManager:
         self.config.read('./conf/config.cfg')
         # 获取配置信息
         self.database_id = self.config['notion']['database_id']
-        self.token = self.config['notion']['token']
-        self.base_url = self.config['notion']['base_url']
-        self.headers = {
-            "Authorization": f'Bearer {self.token}',
-            "Notion-Version": "2022-06-28",  # 使用最新的 API 版本
-            "Content-Type": "application/json"
-            }
+        self.task_database_id = self.config['notion']['task_database_id']
+        self.notion = Client(auth=self.config['notion']['token'])
+        self.userid = self.config['notion']['user_id']
 
     def query_notion_database(self,date):
         '''
-        # 构造查询数据库信息的 URL
-        query_url = f"{base_url}{database_id}"
-        # 发起请求获取数据库信息
-        response = requests.get(query_url, headers=headers)
-        database_info = response.json()
-        print(database_info)
+        # 修改为使用notion-client库查询数据库
         '''
-        # 构造查询数据库的 URL
-        target_date = date
-        query_url = f"{self.base_url}{self.database_id}/query"
-        
+        # 构造查询数据库的 URL     
         filter_data = {
                         "filter": {
                             "and": [
@@ -50,19 +39,7 @@ class NotionDatabaseManager:
                             ]
                         }
                         }
-        '''
-        filter_data = {
-                        "filter": {
-                            # 原有的日期过滤条件
-                                "property": "Siu|",
-                                "date": {
-                                    "equals": date
-                                }
-                        }
-                    }
-        '''
-        response = requests.post(query_url, headers=self.headers,json=filter_data)
-        database_info = response.json()
+        database_info = self.notion.databases.query(database_id=self.database_id, **filter_data)
         buylist=[]
         selllist=[]
         for key,item in enumerate(database_info['results']):
@@ -76,8 +53,87 @@ class NotionDatabaseManager:
                 selllist.append([date,symbol,price,abs(pos)])
         return buylist,selllist
 
+    def update_task_database(self,date,advice,action='buy'):
+        # 构造查询数据库的 URL        
+        filter_data = {
+                        "filter": {
+                            # 原有的日期过滤条件
+                                "property": "日期",
+                                "date": {
+                                   "equals": date
+                                }
+                        }
+                        }
+        database_info = self.notion.databases.query(database_id=self.task_database_id, **filter_data)
+        if len(database_info['results'])==0:
+            # 准备属性
+            title = 'Today Advice'
+            start_date = date
+            end_date = date
+            description = advice
+            status = '未开始'
+            # 构造要插入的数据
+            new_page = {
+                "parent": {
+                    "database_id": self.task_database_id
+                },
+                "properties": {
+                    "名称": {
+                        "title": [
+                            {
+                                "text": {
+                                    "content": title
+                                }
+                            }
+                        ]
+                    },
+                    "日期": {
+                        "date": {
+                            "start": date,
+                            "end": None
+                        }
+                    },
+                    "状态": {
+                        "status": {
+                            "name": "未开始"
+                        }
+                    },
+                    "负责人": {
+                        "people": [
+                            {
+                                "object": "user",
+                                "id": self.userid
+                            }
+                        ]
+                    },
+                    "文本": {
+                        "rich_text": [
+                            {
+                                "text": {
+                                    "content": advice
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+            try:
+                response = self.notion.pages.create(**new_page)
+                print("页面创建成功！")
+                print(response)
+            except Exception as e:
+                print(f"页面创建失败！{e}")
+        else:
+            return
+
+
+
+
 if __name__ == "__main__":
     # 创建 NotionDatabaseManager 实例
     db_manager = NotionDatabaseManager()
     # 获取数据库信息
-    buylist,selllist=db_manager.query_notion_database('2025-03-19')
+    #buylist,selllist=db_manager.query_notion_database('2025-04-03')
+    taskinfo = db_manager.update_task_database('2025-04-02','123')
+
+

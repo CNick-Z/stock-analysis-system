@@ -5,6 +5,7 @@ from datetime import date,timedelta,datetime
 from utils.db_operations import *
 from Signale_Traderecord import SignalTraderecord
 from utils.get_notion_database_info import NotionDatabaseManager
+import configparser
 
 def get_today_data(start_date, end_date,db_url):
     fetcher = DataFetcher(db_url)
@@ -18,7 +19,9 @@ def get_data_last_day(db_url):
     return last_day
 
 if __name__ == "__main__":
-    db_path="c:/db/stock_data.db"
+    config = configparser.ConfigParser()
+    config.read('./conf/config.cfg')
+    db_path=config['local_db']['path']
     db_url = f"sqlite:///{db_path}"
     data_last_day = get_data_last_day(db_url)
     start_date = datetime.strptime(data_last_day,'%Y-%m-%d')+timedelta(days=1)
@@ -33,6 +36,10 @@ if __name__ == "__main__":
     recorder=SignalTraderecord(db_path)
     notion=NotionDatabaseManager()
     datelist=recorder.get_trading_data(datetime.strftime(start_date,"%Y-%m-%d"), datetime.strftime(end_date,"%Y-%m-%d"))
-    for date in datelist:
-        buylist_day,selllist_day = notion.query_notion_database(datetime.strftime(date,'%Y-%m-%d'))
-        recorder.run(buylist_day,selllist_day,datetime.strftime(date,'%Y-%m-%d'))
+    if datelist==[]:
+        print('没有交易数据')
+    else:
+        for date in datelist:
+            buylist_day,selllist_day = notion.query_notion_database(datetime.strftime(date,'%Y-%m-%d'))
+            advice = recorder.run(buylist_day,selllist_day,datetime.strftime(date,'%Y-%m-%d'))
+            notion.update_task_database(datetime.strftime(date,'%Y-%m-%d'),advice)

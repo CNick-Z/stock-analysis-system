@@ -1,7 +1,5 @@
 #DataProcessor.py
 import pandas as pd
-from ta.momentum import rsi, stoch, stoch_signal,williams_r
-from ta.trend import cci,macd, macd_signal, macd_diff
 import talib
 import logging
 from utils.db_operations import *

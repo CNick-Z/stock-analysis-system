@@ -393,7 +393,7 @@ class SignalTraderecord:
         )
         with open(advice_recordfile, 'a') as f:
             f.write(advice_content)
-        print(advice)
+        return advice
 
     def get_dates_list(self,start_date_str, end_date_str):
         start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
@@ -415,6 +415,8 @@ class SignalTraderecord:
                 }
                 # 查询数据
         df = self.db_manager.load_data(DailyDataBase, filter_conditions, columns=['date'])
+        if df.empty:
+            return []
         # 生成交易日期索引
         trading_dates = pd.to_datetime(df['date']).sort_values().unique()
         return trading_dates
