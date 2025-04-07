@@ -189,7 +189,8 @@ class SignalTraderecord:
 
     def record_trade(self,data,operation_type='sell'):
         self._get_unsell_stock()
-        db_data=[]        
+        db_data=[]
+        update_data=[]       
         if operation_type == 'buy':
             for item in data:
                 date=item[0]
@@ -201,8 +202,7 @@ class SignalTraderecord:
                 self.PositionStatus['available_position']-=1
                 # 检查是否已有该股票的未卖出持仓
                 existing_position = self.holding_stocks[
-                    (self.holding_stocks['symbol'] == symbol) & 
-                    (self.holding_stocks['sell_date'].isna())
+                    (self.holding_stocks['symbol'] == symbol) 
                 ]
                 if len(existing_position) > 0:
                     # 已有持仓，更新记录
@@ -213,23 +213,19 @@ class SignalTraderecord:
                     # 更新最高价格
                     new_highprice = max(existing['highprice'], price)
                     
-                    update_data = {
+                    update_data.append(
+                        {
+                        'date': existing['date'],
+                        'symbol': symbol,
                         'quantity': new_quantity,
                         'price': new_price,
                         'newprice': price,
                         'highprice': new_highprice,
-                        'commission': existing['commission'] + commission
-                    }
-                    
-                    self.db_manager.update(
-                        table=PositionDetail,
-                        data=update_data,
-                        filter_dict={
-                            'date': existing['date'],
-                            'symbol': symbol,
-                            'sell_date': None
-                        }
-                    )
+                        'commission': existing['commission'] + commission,
+                        'pnl': 0,
+                        'sell_date': None,
+                        'sell_price': None
+                    })
                 else:
                      # 没有持仓，创建新记录
                     db_data.append({
@@ -251,6 +247,18 @@ class SignalTraderecord:
                     table=PositionDetail,
                     data=data     
                 )
+            if update_data:
+                self.db_manager.bulk_update(
+                        table=PositionDetail,
+                        data=update_data,
+                        update_fields=['quantity', 'price', 'newprice', 'highprice', 'commission'],
+                        filter_fields={
+                            'date': existing['date'],
+                            'symbol': symbol,
+                            'sell_date': None
+                        }
+                    )
+
         else:
             for item in data:
                 date=item[0]
@@ -325,10 +333,6 @@ class SignalTraderecord:
         stoploss_advice=[]
         self._get_unsell_stock()
         for index,row in self.holding_stocks.iterrows():
-            buydate=row['date']
-            symbol = row['symbol']
-            quantity = row['quantity']
-            highprice = row['highprice']
             newprice=row['newprice']
             price=row['price']  
             # 成本止损
@@ -460,9 +464,9 @@ if __name__ == '__main__':
     date = datetime.today()
     date = datetime.strftime(date,'%Y-%m-%d')
     notion=NotionDatabaseManager()
-    #trading_dates=recorder.get_trading_data(date,date)
+    trading_dates=recorder.get_trading_data(date,date)
 
-    trading_dates=recorder.get_trading_data('2025-03-27','2025-04-01')
+    #trading_dates=recorder.get_trading_data('2025-03-27','2025-04-01')
     for date in trading_dates:
         buylist_day,selllist_day = notion.query_notion_database(datetime.strftime(date,'%Y-%m-%d'))
         recorder.run(buylist_day,selllist_day,datetime.strftime(date,'%Y-%m-%d'))
