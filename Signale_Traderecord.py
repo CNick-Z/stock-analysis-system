@@ -199,25 +199,58 @@ class SignalTraderecord:
                 commission = price * quantity * self.commission_rate
                 self.PositionStatus['cash']-=commission+price * quantity
                 self.PositionStatus['available_position']-=1
-                pnl = 0
-                sell_date = None
-                sell_price = None
-                db_data.append({'date': date,
+                # 检查是否已有该股票的未卖出持仓
+                existing_position = self.holding_stocks[
+                    (self.holding_stocks['symbol'] == symbol) & 
+                    (self.holding_stocks['sell_date'].isna())
+                ]
+                if len(existing_position) > 0:
+                    # 已有持仓，更新记录
+                    existing = existing_position.iloc[0]
+                    new_quantity = existing['quantity'] + quantity
+                    # 计算新的平均价格
+                    new_price = (existing['price'] * existing['quantity'] + price * quantity) / new_quantity
+                    # 更新最高价格
+                    new_highprice = max(existing['highprice'], price)
+                    
+                    update_data = {
+                        'quantity': new_quantity,
+                        'price': new_price,
+                        'newprice': price,
+                        'highprice': new_highprice,
+                        'commission': existing['commission'] + commission
+                    }
+                    
+                    self.db_manager.update(
+                        table=PositionDetail,
+                        data=update_data,
+                        filter_dict={
+                            'date': existing['date'],
+                            'symbol': symbol,
+                            'sell_date': None
+                        }
+                    )
+                else:
+                     # 没有持仓，创建新记录
+                    db_data.append({
+                        'date': date,
                         'symbol': symbol,
                         'price': price,
                         'newprice': price,
                         'highprice': price,
                         'quantity': quantity,
                         'commission': commission,
-                        'pnl': pnl,
-                        'sell_date': sell_date,
-                        'sell_price': sell_price
+                        'pnl': 0,
+                        'sell_date': None,
+                        'sell_price': None
                     })
-            data=pd.DataFrame(db_data)
-            self.db_manager.bulk_insert(
-            table=PositionDetail,
-            data=data     
-            )
+                     # 批量插入新记录（仅针对新买入的股票）
+            if db_data:
+                data = pd.DataFrame(db_data)
+                self.db_manager.bulk_insert(
+                    table=PositionDetail,
+                    data=data     
+                )
         else:
             for item in data:
                 date=item[0]

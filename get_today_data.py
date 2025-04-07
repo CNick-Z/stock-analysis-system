@@ -36,8 +36,8 @@ if __name__ == "__main__":
     recorder=SignalTraderecord(db_path)
     notion=NotionDatabaseManager()
     datelist=recorder.get_trading_data(datetime.strftime(start_date,"%Y-%m-%d"), datetime.strftime(end_date,"%Y-%m-%d"))
-    if datelist==[]:
-        print('没有交易数据')
+    if len(datelist)==0:
+        print('没有交易数据')        
     else:
         for date in datelist:
             buylist_day,selllist_day = notion.query_notion_database(datetime.strftime(date,'%Y-%m-%d'))
