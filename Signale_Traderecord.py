@@ -274,11 +274,16 @@ class SignalTraderecord:
                 symbol=item[1]
                 price=item[2]
                 quantity=item[3]
+                existing_position = self.holding_stocks[
+                        (self.holding_stocks['symbol'] == symbol) 
+                    ]
+                existing = existing_position.iloc[0]
+                new_quantity = existing['quantity'] - quantity
                 commission = price * quantity * (self.commission_rate*2+0.0005)
-                buy_price=self.holding_stocks.loc[self.holding_stocks['symbol']==symbol,'price'].iloc[0]
+                buy_price=existing['price']
                 pnl = (price - buy_price) * quantity-commission
                 sell_date = date
-                buy_day=self.holding_stocks.loc[self.holding_stocks['symbol']==symbol,'date'].iloc[0]
+                buy_day=existing['date']
                 self.PositionStatus['cash']+=price * quantity-price * quantity * (self.commission_rate+0.0005)
                 self.PositionStatus['available_position']+=1
                 db_data.append({
@@ -286,7 +291,7 @@ class SignalTraderecord:
                         'symbol': symbol,
                         'price': buy_price,
                         'newprice': price,
-                        'quantity': quantity,
+                        'quantity': new_quantity,
                         'commission': commission,
                         'pnl': pnl,
                         'sell_date': sell_date,
@@ -296,7 +301,7 @@ class SignalTraderecord:
             self.db_manager.bulk_update(
             table=PositionDetail,
             data=db_data,
-            update_fields=['sell_date','pnl','sell_price','commission'],
+            update_fields=['sell_date','pnl','quantity','newprice','sell_price','commission'],
             filter_fields=filter_fields
             )
     def _process_buy_signals(self, date):
@@ -481,7 +486,7 @@ if __name__ == '__main__':
         buylist_day,selllist_day = notion.query_notion_database(datetime.strftime(date,'%Y-%m-%d'))
         advice,notion_update_dic = recorder.run(buylist_day,selllist_day,datetime.strftime(date,'%Y-%m-%d'))
         #notion.update_task_database(datetime.strftime(date,'%Y-%m-%d'),advice)
-        notion.update_stock_database(notion_update_dic)
+        #notion.update_stock_database(notion_update_dic)
 
     
 
