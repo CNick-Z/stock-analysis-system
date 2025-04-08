@@ -116,7 +116,7 @@ class SignalTraderecord:
     def _get_unsell_stock(self):
         table=PositionDetail
         column=['date','symbol','price','newprice','highprice','quantity','commission']
-        unsell_stocks=self.db_manager.load_data(table_class=table,columns=column,filter_conditions={'sell_date':None})
+        unsell_stocks=self.db_manager.load_data(table_class=table,columns=column,filter_conditions={'quantity':{'$gt':0}})
         self.holding_stocks=unsell_stocks
 
     def _get_PositionStatus(self,date):
