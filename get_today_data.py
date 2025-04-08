@@ -1,4 +1,5 @@
 #get_today_data.py
+import os
 from utils.data_fetcher import DataFetcher
 from utils.DataProcessor import TechnicalIndicatorCalculator
 from datetime import date,timedelta,datetime
@@ -6,6 +7,24 @@ from utils.db_operations import *
 from Signale_Traderecord import SignalTraderecord
 from utils.get_notion_database_info import NotionDatabaseManager
 import configparser
+import logging
+from logging.handlers import RotatingFileHandler
+
+def setup_logging():
+    log_dir = os.path.join(os.getcwd(), 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    
+    handler = RotatingFileHandler(
+        os.path.join(log_dir, 'get_today_data.log'),
+        maxBytes=10 * 1024 * 1024,  # 10MB
+        backupCount=5,
+        encoding='utf-8'
+    )
+    handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    logger.addHandler(handler)
 
 def get_today_data(start_date, end_date,db_url):
     fetcher = DataFetcher(db_url)
@@ -19,6 +38,8 @@ def get_data_last_day(db_url):
     return last_day
 
 if __name__ == "__main__":
+    setup_logging()
+    logging.info('开始获取数据')
     config = configparser.ConfigParser()
     config.read('./conf/config.cfg')
     db_path=config['local_db']['path']
@@ -37,9 +58,11 @@ if __name__ == "__main__":
     notion=NotionDatabaseManager()
     datelist=recorder.get_trading_data(datetime.strftime(start_date,"%Y-%m-%d"), datetime.strftime(end_date,"%Y-%m-%d"))
     if len(datelist)==0:
-        print('没有交易数据')        
+        logging.info('没有交易数据')        
     else:
         for date in datelist:
             buylist_day,selllist_day = notion.query_notion_database(datetime.strftime(date,'%Y-%m-%d'))
-            advice = recorder.run(buylist_day,selllist_day,datetime.strftime(date,'%Y-%m-%d'))
+            advice,notion_update_dic = recorder.run(buylist_day,selllist_day,datetime.strftime(date,'%Y-%m-%d'))
             notion.update_task_database(datetime.strftime(date,'%Y-%m-%d'),advice)
+            notion.update_stock_database(notion_update_dic)
+    logging.info('The app is end.')

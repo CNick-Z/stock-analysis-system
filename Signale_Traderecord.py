@@ -124,7 +124,7 @@ class SignalTraderecord:
         #获取数据库中最后更新仓位记录的日期
         lastdate=self.db_manager.load_data(table_class=table,columns=['date'],order_by=[{'column':'date','direction':'desc'}],limit=1)
         if lastdate.empty:
-            position_status={'date':date,'total_assets':0,'stock_value':0,'cash':150000,'position_ratio':0.5,'available_position':10,'db_data':'no'}
+            position_status={'date':date,'total_assets':0,'stock_value':0,'cash':200000,'position_ratio':0.5,'available_position':10,'db_data':'no'}
         else:
             column=['date','total_assets','stock_value','cash','position_ratio','available_position']
             position_status=self.db_manager.load_data(table_class=table,columns=column,filter_conditions={'date':lastdate['date'].iloc[0]})
@@ -137,6 +137,8 @@ class SignalTraderecord:
 
         self._get_unsell_stock()
         stock_value=0
+        notion_update_dic = {}
+        price_update = []
         for index,row in self.holding_stocks.iterrows():
             buydate=row['date']
             symbol = row['symbol']
@@ -148,16 +150,19 @@ class SignalTraderecord:
                 #更新持仓股票最新价格和最高价格
                 if price>highprice:
                     highprice=price
-                update_fields=['newprice','highprice',]
-                self.db_manager.bulk_update(
-                    table=PositionDetail,
-                    data=[{'symbol':symbol,'date':buydate,'newprice':price,'highprice':highprice}],
-                    update_fields=['newprice','highprice'],
-                    filter_fields={'symbol':symbol,'date':buydate}
-                )
+                price_update.append({'symbol':symbol,'date':buydate,'newprice':price,'highprice':highprice})
+                notion_update_dic[symbol]=price
             else:
                 price = row['price']
             stock_value+=quantity*price
+        if price_update:
+            update_fields=['newprice','highprice']
+            self.db_manager.bulk_update(
+                table=PositionDetail,
+                data=price_update,
+                update_fields=update_fields,
+                filter_fields={'symbol':symbol,'date':buydate}
+            )
         table=PositionStatus
         total_assets=stock_value+self.PositionStatus['cash']
         position_ratio=stock_value/total_assets
@@ -183,6 +188,7 @@ class SignalTraderecord:
             filter_fields=['date']
             )
         self.position_manager.update_position(self.PositionStatus['total_assets'],date)
+        return notion_update_dic
         
             
 
@@ -201,9 +207,12 @@ class SignalTraderecord:
                 self.PositionStatus['cash']-=commission+price * quantity
                 self.PositionStatus['available_position']-=1
                 # 检查是否已有该股票的未卖出持仓
-                existing_position = self.holding_stocks[
-                    (self.holding_stocks['symbol'] == symbol) 
-                ]
+                if self.holding_stocks.empty:
+                    existing_position = pd.DataFrame()
+                else:
+                    existing_position = self.holding_stocks[
+                        (self.holding_stocks['symbol'] == symbol) 
+                    ]
                 if len(existing_position) > 0:
                     # 已有持仓，更新记录
                     existing = existing_position.iloc[0]
@@ -415,7 +424,7 @@ class SignalTraderecord:
         if sell_list:
             self.record_trade(sell_list)
         self._fetch_price_matrix(date)
-        self._set_PositionStatus(date)
+        notion_update_dic = self._set_PositionStatus(date)
         advice=self.generate_trading_advice(date)
         advice_recordfile='./backtestresult/advice_record.txt'
         # 获取当前时间作为时间戳
@@ -430,7 +439,7 @@ class SignalTraderecord:
         )
         with open(advice_recordfile, 'a') as f:
             f.write(advice_content)
-        return advice
+        return advice,notion_update_dic
 
     def get_dates_list(self,start_date_str, end_date_str):
         start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
@@ -464,12 +473,15 @@ if __name__ == '__main__':
     date = datetime.today()
     date = datetime.strftime(date,'%Y-%m-%d')
     notion=NotionDatabaseManager()
-    trading_dates=recorder.get_trading_data(date,date)
+    #trading_dates=recorder.get_trading_data(date,date)
 
-    #trading_dates=recorder.get_trading_data('2025-03-27','2025-04-01')
+    trading_dates=recorder.get_trading_data('2025-02-06','2025-04-07')
     for date in trading_dates:
+        print(date)
         buylist_day,selllist_day = notion.query_notion_database(datetime.strftime(date,'%Y-%m-%d'))
-        recorder.run(buylist_day,selllist_day,datetime.strftime(date,'%Y-%m-%d'))
+        advice,notion_update_dic = recorder.run(buylist_day,selllist_day,datetime.strftime(date,'%Y-%m-%d'))
+        #notion.update_task_database(datetime.strftime(date,'%Y-%m-%d'),advice)
+        notion.update_stock_database(notion_update_dic)
 
     
 
