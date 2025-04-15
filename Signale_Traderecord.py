@@ -115,7 +115,7 @@ class SignalTraderecord:
 
     def _get_unsell_stock(self):
         table=PositionDetail
-        column=['date','symbol','price','newprice','highprice','quantity','commission']
+        column=['date','symbol','price','newprice','highprice','quantity','commission','pnl']
         unsell_stocks=self.db_manager.load_data(table_class=table,columns=column,filter_conditions={'quantity':{'$gt':0}})
         self.holding_stocks=unsell_stocks
 
@@ -198,58 +198,83 @@ class SignalTraderecord:
         db_data=[]
         update_data=[]       
         if operation_type == 'buy':
+            # Group buy transactions by symbol to consolidate same-day purchases
+            buy_transactions = {}
             for item in data:
                 date=item[0]
                 symbol=item[1]
                 price=item[2]
                 quantity=item[3]
-                commission = price * quantity * self.commission_rate
-                self.PositionStatus['cash']-=commission+price * quantity
-                self.PositionStatus['available_position']-=1
-                # 检查是否已有该股票的未卖出持仓
-                if self.holding_stocks.empty:
-                    existing_position = pd.DataFrame()
+                if symbol not in buy_transactions:
+                    buy_transactions[symbol] = {
+                        'date': date,
+                        'symbol': symbol,
+                        'total_quantity': quantity,
+                        'total_cost': price * quantity,
+                        'max_price': price,        # 记录最高交易价(用于highprice)
+                        'last_price': price,       # 记录最后一笔价格(用于newprice)
+                        'commission': price * quantity * self.commission_rate
+                    }
                 else:
+                    buy_transactions[symbol]['total_quantity'] += quantity
+                    buy_transactions[symbol]['total_cost'] += price * quantity
+                    buy_transactions[symbol]['max_price'] = max(buy_transactions[symbol]['max_price'], price)
+                    buy_transactions[symbol]['last_price'] = price  # 更新为最后一笔价格
+                    buy_transactions[symbol]['commission'] += price * quantity * self.commission_rate
+            # Process consolidated transactions
+            for symbol, trans in buy_transactions.items():
+                date = trans['date']
+                avg_price = trans['total_cost'] / trans['total_quantity']  # 加权平均价
+                quantity = trans['total_quantity']
+                commission = trans['commission']
+                highprice = trans['max_price']      # 使用单笔最高价作为highprice
+                newprice = trans['last_price']      # 使用最后一笔价格作为newprice
+                
+                self.PositionStatus['cash'] -= commission + trans['total_cost']
+                
+                
+                # Check if stock is already held
+                if not self.holding_stocks.empty:
                     existing_position = self.holding_stocks[
                         (self.holding_stocks['symbol'] == symbol) 
                     ]
+                else:
+                    existing_position = pd.DataFrame()
+                    
                 if len(existing_position) > 0:
-                    # 已有持仓，更新记录
+                    # Existing position, update record
                     existing = existing_position.iloc[0]
                     new_quantity = existing['quantity'] + quantity
-                    # 计算新的平均价格
-                    new_price = (existing['price'] * existing['quantity'] + price * quantity) / new_quantity
-                    # 更新最高价格
-                    new_highprice = max(existing['highprice'], price)
+                    new_avg_price = (existing['price'] * existing['quantity'] + trans['total_cost']) / new_quantity
+                    new_highprice = max(existing['highprice'], highprice)
                     
-                    update_data.append(
-                        {
+                    update_data.append({
                         'date': existing['date'],
                         'symbol': symbol,
                         'quantity': new_quantity,
-                        'price': new_price,
-                        'newprice': price,
-                        'highprice': new_highprice,
+                        'price': new_avg_price,    # 更新为新的加权平均价
+                        'newprice': newprice,      # 使用最后一笔价格
+                        'highprice': new_highprice, # 更新最高价
                         'commission': existing['commission'] + commission,
                         'pnl': 0,
                         'sell_date': None,
                         'sell_price': None
                     })
                 else:
-                     # 没有持仓，创建新记录
+                    # New position, create record
+                    self.PositionStatus['available_position'] -= 1
                     db_data.append({
                         'date': date,
                         'symbol': symbol,
-                        'price': price,
-                        'newprice': price,
-                        'highprice': price,
+                        'price': avg_price,       # 使用加权平均价
+                        'newprice': newprice,      # 使用最后一笔价格
+                        'highprice': highprice,    # 使用单笔最高价
                         'quantity': quantity,
                         'commission': commission,
                         'pnl': 0,
                         'sell_date': None,
                         'sell_price': None
                     })
-                     # 批量插入新记录（仅针对新买入的股票）
             if db_data:
                 data = pd.DataFrame(db_data)
                 self.db_manager.bulk_insert(
@@ -269,38 +294,68 @@ class SignalTraderecord:
                     )
 
         else:
+            # 第一步：按symbol分组合并当日卖出交易
+            sell_transactions = {}
             for item in data:
-                date=item[0]
-                symbol=item[1]
-                price=item[2]
-                quantity=item[3]
-                existing_position = self.holding_stocks[
-                        (self.holding_stocks['symbol'] == symbol) 
-                    ]
-                existing = existing_position.iloc[0]
-                new_quantity = existing['quantity'] - quantity
-                commission = price * quantity * (self.commission_rate*2+0.0005)
-                buy_price=existing['price']
-                pnl = (price - buy_price) * quantity-commission
-                sell_date = date
-                buy_day=existing['date']
-                self.PositionStatus['cash']+=price * quantity-price * quantity * (self.commission_rate+0.0005)
-                self.PositionStatus['available_position']+=1
-                db_data.append({
-                        'date': buy_day,
-                        'symbol': symbol,
-                        'price': buy_price,
-                        'newprice': price,
-                        'quantity': new_quantity,
-                        'commission': commission,
-                        'pnl': pnl,
-                        'sell_date': sell_date,
-                        'sell_price':price
-                    })
+                date = item[0]
+                symbol = item[1]
+                price = item[2]
+                quantity = item[3]
+                
+                if symbol not in sell_transactions:
+                    sell_transactions[symbol] = {
+                        'total_quantity': 0,
+                        'total_value': 0,
+                        'avg_price': 0,
+                        'commission': 0,
+                        'last_price': price
+                    }
+                
+                # 累加卖出数量和金额
+                sell_transactions[symbol]['total_quantity'] += quantity
+                sell_transactions[symbol]['total_value'] += price * quantity
+                sell_transactions[symbol]['commission'] += price * quantity * (self.commission_rate*2 + 0.0005)
+                sell_transactions[symbol]['last_price'] = price  # 记录最后一次卖出价
+                sell_transactions[symbol]['date'] = date
+            # 第二步：处理每个股票的卖出
+            for symbol, trans in sell_transactions.items():
+                # 计算平均卖出价
+                trans['avg_price'] = trans['total_value'] / trans['total_quantity']
+                
+                # 查找对应持仓
+                position = self.holding_stocks[
+                    (self.holding_stocks['symbol'] == symbol) & 
+                    (self.holding_stocks['quantity'] > 0)
+                ]
+                if position.empty:
+                    continue
+                position = position.iloc[0]
+                buy_price = position['price']
+                remaining_qty = position['quantity'] - trans['total_quantity']
+                
+                # 计算本次总盈亏（基于平均卖出价）
+                pnl = (trans['avg_price'] - buy_price) * trans['total_quantity'] - trans['commission']
+                
+                # 更新现金和可用仓位
+                self.PositionStatus['cash'] += trans['total_value'] - trans['commission']
+                if remaining_qty == 0: #卖完增加一个股票持仓位
+                    self.PositionStatus['available_position'] += 1
+                 # 准备更新数据（PNL累加！）
+                update_data.append({
+                    'date': position['date'],  # 买入日期
+                    'symbol': symbol,
+                    'price': buy_price,
+                    'quantity': remaining_qty,
+                    'newprice': trans['last_price'],  # 最后一次卖出价
+                    'sell_date': trans['date'],       # 卖出日期
+                    'sell_price': trans['avg_price'], # 平均卖出价
+                    'commission': position['commission'] + trans['commission'],
+                    'pnl': position['pnl'] + pnl      # PNL累加
+                })
             filter_fields=['date','symbol']
             self.db_manager.bulk_update(
             table=PositionDetail,
-            data=db_data,
+            data=update_data,
             update_fields=['sell_date','pnl','quantity','newprice','sell_price','commission'],
             filter_fields=filter_fields
             )
@@ -480,7 +535,7 @@ if __name__ == '__main__':
     notion=NotionDatabaseManager()
     #trading_dates=recorder.get_trading_data(date,date)
 
-    trading_dates=recorder.get_trading_data('2025-02-06','2025-04-07')
+    trading_dates=recorder.get_trading_data('2025-02-06','2025-04-14')
     for date in trading_dates:
         print(date)
         buylist_day,selllist_day = notion.query_notion_database(datetime.strftime(date,'%Y-%m-%d'))
