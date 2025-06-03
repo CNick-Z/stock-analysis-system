@@ -2,10 +2,9 @@ import akshare as ak
 import pandas as pd
 from utils.db_operations import DatabaseManager, DailyDataBase
 import concurrent.futures
-import os
 from functools import lru_cache
 import logging
-import time
+
 
 # 配置日志
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -39,9 +38,11 @@ class DataFetcher:
     def fetch_daily_data(self, symbol, start_date, end_date):
         """获取日线数据"""
         try:
+            #ak.set_option('request_interval', 0.5)
             df = ak.stock_zh_a_hist(
                 symbol=symbol,
                 period="daily",
+                retry_count=3,
                 start_date=start_date,
                 end_date=end_date,
                 adjust="qfq"  # 前复权
@@ -127,7 +128,7 @@ class DataFetcher:
         self.existing_data = self.load_existing_data(start_date, end_date, table_name)
         
         # 使用多线程处理
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
             futures = [
                 executor.submit(self.process_symbol, symbol, start_date, end_date, table_name)
                 for symbol in symbols

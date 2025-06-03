@@ -25,3 +25,4 @@ source /etc/profile
 pip install ta_lib
 pip install ta
 pip install sqlalchemy openpyxl scikit-learn seaborn numba requests notion-client
+pip install pytdx

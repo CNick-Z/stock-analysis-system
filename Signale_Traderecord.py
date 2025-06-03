@@ -535,13 +535,13 @@ if __name__ == '__main__':
     notion=NotionDatabaseManager()
     #trading_dates=recorder.get_trading_data(date,date)
 
-    trading_dates=recorder.get_trading_data('2025-02-06','2025-04-14')
+    trading_dates=recorder.get_trading_data('2025-04-25','2025-04-25')
     for date in trading_dates:
         print(date)
         buylist_day,selllist_day = notion.query_notion_database(datetime.strftime(date,'%Y-%m-%d'))
         advice,notion_update_dic = recorder.run(buylist_day,selllist_day,datetime.strftime(date,'%Y-%m-%d'))
-        #notion.update_task_database(datetime.strftime(date,'%Y-%m-%d'),advice)
-        #notion.update_stock_database(notion_update_dic)
+        notion.update_task_database(datetime.strftime(date,'%Y-%m-%d'),advice)
+        notion.update_stock_database(notion_update_dic)
 
     
 

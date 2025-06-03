@@ -1,6 +1,6 @@
 #get_today_data.py
 import os
-from utils.data_fetcher import DataFetcher
+from utils.data_fetcher_tdx import DataFetcher
 from utils.DataProcessor import TechnicalIndicatorCalculator
 from datetime import date,timedelta,datetime
 from utils.db_operations import *

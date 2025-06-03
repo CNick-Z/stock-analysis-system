@@ -121,7 +121,7 @@ class NotionDatabaseManager:
                 logging.info("页面创建成功！")
                 logging.info(response)
             except Exception as e:
-                logging.e(f"页面创建失败！{e}")
+                logging.error(f"页面创建失败！{e}")
         else:
             return
     def update_stock_database(self,data_dict):
