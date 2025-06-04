@@ -460,6 +460,8 @@ class SignalTraderecord:
             advice_text += "买入建议:\n"
             for advice in buy_advice:
                 advice_text += f" - {advice}\n"
+                if len(advice_text)>=1500:
+                    break
         if sell_advice:
             advice_text += "卖出建议:\n"
             for advice in sell_advice:

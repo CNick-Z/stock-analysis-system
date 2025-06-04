@@ -1,6 +1,6 @@
 #get_today_data.py
 import os
-from utils.data_fetcher_tdx import DataFetcher
+from utils.data_fetcher_tdx_v2 import DataFetcher
 from utils.DataProcessor import TechnicalIndicatorCalculator
 from datetime import date,timedelta,datetime
 from utils.db_operations import *
@@ -63,6 +63,7 @@ if __name__ == "__main__":
         for date in datelist:
             buylist_day,selllist_day = notion.query_notion_database(datetime.strftime(date,'%Y-%m-%d'))
             advice,notion_update_dic = recorder.run(buylist_day,selllist_day,datetime.strftime(date,'%Y-%m-%d'))
+            logging.info(f'{datetime.strftime(date,"%Y-%m-%d")}交易信号为{advice}')
             notion.update_task_database(datetime.strftime(date,'%Y-%m-%d'),advice)
             notion.update_stock_database(notion_update_dic)
     logging.info('The app is end.')

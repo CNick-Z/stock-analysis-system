@@ -210,7 +210,7 @@ class DataFetcher:
     def get_all_symbols_from_tdx(self):
         """从通达信目录获取所有股票代码"""
         symbols = []
-        markets = ['sh', 'sz', 'bj']
+        markets = ['sh', 'sz']
         
         for market in markets:
             market_path = os.path.join(self.tdx_base_path, market, 'lday')
