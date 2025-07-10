@@ -156,8 +156,7 @@ if __name__ == "__main__":
     # 创建 NotionDatabaseManager 实例
     db_manager = NotionDatabaseManager()
     # 获取数据库信息
-    #buylist,selllist=db_manager.query_notion_database('2025-04-03')
-    #taskinfo = db_manager.update_task_database('2025-04-02','123')
-    database_info = db_manager.update_stock_database({'601098':14.64})
+    buylist,selllist=db_manager.query_notion_database('2025-07-08')
+
 
 

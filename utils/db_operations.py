@@ -216,9 +216,9 @@ class PositionStatus(Base):
     total_assets = Column(Float, nullable=False, comment='总资产')
     stock_value = Column(Float, nullable=False, comment='持仓市值')
     cash = Column(Float, nullable=False, comment='可用现金')
-    position_ratio = Column(Float, nullable=False, comment='仓位比例')
+    position_ratio = Column(Float, nullable=False, comment='当前仓位比例')
     available_position = Column(Float, nullable=False, comment='可用仓位额度')
-    
+    available_position_ratio = Column(Float, nullable=True, comment='可用仓位比例')
     # 时间索引
     __table_args__ = (
         Index('idx_status_date', 'date'),  # 日期主键自动建立索引

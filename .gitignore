@@ -24,3 +24,4 @@ stock-analysis-system.code-workspace
 conf/config.cfg
 trades_report.xlsx
 backtestresult/*
+logs/*

@@ -23,20 +23,46 @@ class SignalTraderecord:
         self.position_limit=10
         self.Scorer= StockScorer()
         self.Report = StockReport(self.Scorer)
+        # 获取最新日期（通常是昨天）
+        last_date = self._get_last_trading_date()
+        # 获取位置状态
+        self._get_PositionStatus(last_date)
+        # 使用位置状态中的目标仓位初始化仓位管理器
         self.position_manager = self.DynamicPositionAdjuster(
-            initial_position=0.5, position_levels=[0.3, 0.5, 0.8, 1], window_size=3, db_manager=self.db_manager
+            initial_position=self.PositionStatus.get('available_position_ratio', 0.5),
+            position_levels=[0.3, 0.5, 0.8, 1],
+            window_size=3,
+            db_manager=self.db_manager
         )
+    def _get_last_trading_date(self):
+        """获取数据库中最后一个交易日期"""
+        # 查询最后一条仓位记录的日期
+        last_record = self.db_manager.load_data(
+            table_class=PositionStatus,
+            columns=['date'],
+            order_by=[{'column': 'date', 'direction': 'desc'}],
+            limit=1
+        )
+        
+        if not last_record.empty:
+            return last_record['date'].iloc[0]
+        
+        # 如果没有记录，使用昨天作为默认日期
+        return datetime.today()
+
     class DynamicPositionAdjuster:
-        def __init__(self, initial_position=0.5, position_levels=[0.3, 0.5, 0.8, 1], window_size=3, db_manager=None):
+        def __init__(self, initial_position=0.5, position_levels=[0.3, 0.5, 0.8, 1], window_size=3, db_manager=None,initial_assets=200000):
             self.initial_position = initial_position
             self.position_levels = position_levels
             self.window_size = window_size
             self.db_manager = db_manager
+            self.initial_assets = initial_assets  # 添加初始资产值
             self.previous_values = []
             self.consecutive_up_periods = 0
             self.consecutive_down_periods = 0
             self.current_position = self.initial_position
             self.multi_day_return = 0.0
+        
         
         def get_previous_total_assets(self, date):
             start_date = (pd.to_datetime(date) - pd.Timedelta(days=self.window_size)).strftime("%Y-%m-%d")
@@ -46,7 +72,11 @@ class SignalTraderecord:
                 'date': {'$between':[start_date, date]} 
             }
             data = self.db_manager.load_data(table_class=table, columns=column, filter_conditions=filter_conditions)
-            return data.set_index('date')['total_assets'].tolist()
+            # 如果查询到数据，返回总资产列表
+            if not data.empty:
+                return data.set_index('date')['total_assets'].tolist()
+            else:
+                return [self.initial_assets] * (self.window_size + 1)
 
         def update_position(self, current_assets, date):
             self.previous_values = self.get_previous_total_assets(date)
@@ -76,14 +106,15 @@ class SignalTraderecord:
                     self._decrease_position()
                 # 根据多日收益率的大小进一步调整仓位
                 self._adjust_position_by_return()
+            
             return self.current_position
 
         def _increase_position(self):
-            new_position = min(self.position_levels[-1], self.initial_position + 0.2)
+            new_position = min(self.position_levels[-1], self.current_position + 0.2)
             self.current_position = new_position
 
         def _decrease_position(self):
-            new_position = max(self.position_levels[0], self.initial_position - 0.2)
+            new_position = max(self.position_levels[0], self.current_position - 0.2)
             self.current_position = new_position
 
         def _adjust_position_by_return(self):
@@ -124,9 +155,9 @@ class SignalTraderecord:
         #获取数据库中最后更新仓位记录的日期
         lastdate=self.db_manager.load_data(table_class=table,columns=['date'],order_by=[{'column':'date','direction':'desc'}],limit=1)
         if lastdate.empty:
-            position_status={'date':date,'total_assets':0,'stock_value':0,'cash':200000,'position_ratio':0.5,'available_position':10,'db_data':'no'}
+            position_status={'date':date,'total_assets':0,'stock_value':0,'cash':200000,'position_ratio':0.5,'available_position':10,'available_position_ratio': 0.5,'db_data':'no'}
         else:
-            column=['date','total_assets','stock_value','cash','position_ratio','available_position']
+            column=['date','total_assets','stock_value','cash','position_ratio','available_position','available_position_ratio']
             position_status=self.db_manager.load_data(table_class=table,columns=column,filter_conditions={'date':lastdate['date'].iloc[0]})
             position_status=position_status.to_dict(orient='records')[0]
             position_status['db_data']='yes'            
@@ -166,12 +197,14 @@ class SignalTraderecord:
         table=PositionStatus
         total_assets=stock_value+self.PositionStatus['cash']
         position_ratio=stock_value/total_assets
+        current_position=self.position_manager.update_position(self.PositionStatus['total_assets'],date)
         db_data=[{'date':date,
                 'stock_value':stock_value,
                 'cash':self.PositionStatus['cash'],
                 'position_ratio':position_ratio,
                 'available_position':self.PositionStatus['available_position'],
-                'total_assets':total_assets
+                'total_assets':total_assets,
+                'available_position_ratio': current_position  # 添加目标仓位比例
                 }]
         if  self.PositionStatus['db_data']=='no' or date != self.PositionStatus['date']:
 
@@ -184,10 +217,10 @@ class SignalTraderecord:
             self.db_manager.bulk_update(
             table=table,
             data=db_data,
-            update_fields=['stock_value','cash','position_ratio','available_position','total_assets'],
+            update_fields=['stock_value','cash','position_ratio','available_position','total_assets','available_position'],
             filter_fields=['date']
             )
-        self.position_manager.update_position(self.PositionStatus['total_assets'],date)
+        
         return notion_update_dic
         
             
@@ -362,9 +395,7 @@ class SignalTraderecord:
     def _process_buy_signals(self, date):
         current_position = self.position_manager.update_position(self.PositionStatus['total_assets'], date)
         available_slots = self.PositionStatus['available_position']
-        cash = self.PositionStatus['cash']
-        if available_slots <= 0:
-            return []
+        cash = self.PositionStatus['cash']    
         if self.buy_signals.empty:
             return []
         scored_signals = self.buy_signals[self.buy_signals.index == date]
@@ -395,7 +426,10 @@ class SignalTraderecord:
                         f"建议买入 {row['symbol']}，可买入数量: {max_afford}，信号评分报告: {signal_info}")
                     cash -= max_investment
             else:
-                break
+                for _, row in scored_signals.iterrows():
+                    symbol_data = scored_signals[scored_signals['symbol'] == row['symbol']]
+                    signal_info = self.Report.generate_report(symbol_data)
+                    buy_advice.append(f"建议买入 {row['symbol']}，信号评分报告: {signal_info}")
         return buy_advice
     def _check_stop_loss(self):
         """执行止损检查"""
@@ -430,10 +464,9 @@ class SignalTraderecord:
         self._fetch_price_matrix(date)
 
         # 更新仓位
-        current_position = self.position_manager.update_position(self.PositionStatus['total_assets'], date)
         current_position_ratio = self.PositionStatus['position_ratio']
         available_position = self.PositionStatus['available_position']
-
+        available_position_ratio = self.PositionStatus['available_position_ratio']
         # 生成买入和卖出建议
         buy_advice = self._process_buy_signals(date)
         sell_advice = self._process_sell_signals(date)
@@ -441,12 +474,12 @@ class SignalTraderecord:
 
         # 仓位控制建议
         position_control_advice = []
-        if current_position_ratio < current_position:
-            position_control_advice.append(f"当前仓位比例为 {current_position_ratio:.2f}，低于目标仓位 {current_position:.2f}。建议适当增加仓位。")
-        elif current_position_ratio > current_position:
-            position_control_advice.append(f"当前仓位比例为 {current_position_ratio:.2f}，高于目标仓位 {current_position:.2f}。建议适当减少仓位。")
+        if current_position_ratio < available_position_ratio:
+            position_control_advice.append(f"当前仓位比例为 {current_position_ratio:.2f}，低于目标仓位 {available_position_ratio:.2f}。建议适当增加仓位。")
+        elif current_position_ratio > available_position_ratio:
+            position_control_advice.append(f"当前仓位比例为 {current_position_ratio:.2f}，高于目标仓位 {available_position_ratio:.2f}。建议适当减少仓位。")
         else:
-            position_control_advice.append(f"当前仓位比例为 {current_position_ratio:.2f}，符合目标仓位 {current_position:.2f}。无需调整仓位。")
+            position_control_advice.append(f"当前仓位比例为 {current_position_ratio:.2f}，符合目标仓位 {available_position_ratio:.2f}。无需调整仓位。")
 
         # 如果可用仓位不足，提醒用户
         if available_position <= 0:
@@ -537,13 +570,14 @@ if __name__ == '__main__':
     notion=NotionDatabaseManager()
     #trading_dates=recorder.get_trading_data(date,date)
 
-    trading_dates=recorder.get_trading_data('2025-04-25','2025-04-25')
+    trading_dates=recorder.get_trading_data('2025-02-06','2025-07-09')
     for date in trading_dates:
         print(date)
         buylist_day,selllist_day = notion.query_notion_database(datetime.strftime(date,'%Y-%m-%d'))
         advice,notion_update_dic = recorder.run(buylist_day,selllist_day,datetime.strftime(date,'%Y-%m-%d'))
-        notion.update_task_database(datetime.strftime(date,'%Y-%m-%d'),advice)
-        notion.update_stock_database(notion_update_dic)
+        print(advice)
+        #notion.update_task_database(datetime.strftime(date,'%Y-%m-%d'),advice)
+        #notion.update_stock_database(notion_update_dic)
 
     
 

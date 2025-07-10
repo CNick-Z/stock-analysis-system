@@ -49,7 +49,7 @@ if __name__ == "__main__":
     current_time = datetime.now()
     # 获取当前时间的小时数
     hour = current_time.hour
-    if hour>18:
+    if hour>=16:
         end_date = datetime.today()
     else:
         end_date = datetime.today()+timedelta(days=-1)
