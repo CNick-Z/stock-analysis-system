@@ -1,6 +1,6 @@
 #get_today_data.py
-import os
-from utils.data_fetcher_tdx_v2 import DataFetcher
+import os,shutil
+from utils.data_fetcher_tdx_v3 import DataFetcher
 from utils.DataProcessor import TechnicalIndicatorCalculator
 from datetime import date,timedelta,datetime
 from utils.db_operations import *
@@ -43,17 +43,24 @@ if __name__ == "__main__":
     config = configparser.ConfigParser()
     config.read('./conf/config.cfg')
     db_path=config['local_db']['path']
+    backup_path = db_path+".bak"
+    if os.path.exists(backup_path):
+        os.remove(backup_path)
+        logging.info('备份删除成功。')
+    shutil.copy2(db_path, backup_path)
+    logging.info('数据库备份成功。')
     db_url = f"sqlite:///{db_path}"
     data_last_day = get_data_last_day(db_url)
     start_date = datetime.strptime(data_last_day,'%Y-%m-%d')+timedelta(days=1)
     current_time = datetime.now()
     # 获取当前时间的小时数
     hour = current_time.hour
-    if hour>=16:
+    if hour>=15:
         end_date = datetime.today()
     else:
         end_date = datetime.today()+timedelta(days=-1)
     get_today_data(datetime.strftime(start_date,"%Y%m%d"), datetime.strftime(end_date,"%Y%m%d"),db_url)
+    '''
     recorder=SignalTraderecord(db_path)
     notion=NotionDatabaseManager()
     datelist=recorder.get_trading_data(datetime.strftime(start_date,"%Y-%m-%d"), datetime.strftime(end_date,"%Y-%m-%d"))
@@ -67,3 +74,4 @@ if __name__ == "__main__":
             notion.update_task_database(datetime.strftime(date,'%Y-%m-%d'),advice)
             notion.update_stock_database(notion_update_dic)
     logging.info('The app is end.')
+    '''

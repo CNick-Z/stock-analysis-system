@@ -703,9 +703,9 @@ class BacktestOrchestrator:
 # 使用示例
 if __name__ == "__main__":  
     # 运行回测
-    start_date='2012-01-15'
-    end_date='2016-12-31'
-    orchestrator = BacktestOrchestrator(position_limit=2,live_plot=True)
+    start_date='2025-01-01'
+    end_date='2025-08-01'
+    orchestrator = BacktestOrchestrator(position_limit=5,live_plot=True)
     report = orchestrator.run(start_date, end_date)    
     logging.info("回测结果摘要:")
     logging.info(f"最终净值: {report['summary']['final_value']:,.2f}")
