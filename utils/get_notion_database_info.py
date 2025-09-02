@@ -125,11 +125,22 @@ class NotionDatabaseManager:
         else:
             return
     def update_stock_database(self,data_dict):
-        database_info = self.notion.databases.query(database_id=self.stock_database_id,).get("results")
+        filter_data = {
+                        "filter": {
+                                "property": "持仓总数",
+                                "rollup":{
+                                    "number": {
+                                        "greater_than": 0
+                                        }
+                                    }
+                                }
+                        }
+        database_info = self.notion.databases.query(database_id=self.stock_database_id,**filter_data).get("results")
+
         for page in database_info:
             try:
                 # 获取当前记录的股票代码
-                symbol = page["properties"]["股票代码"]["title"][0]["plain_text"]
+                symbol = page["properties"]["股票代码"]["title"][0]['text']['content']
                 
                 # 如果该股票在价格字典中存在
                 if symbol in data_dict:
@@ -156,7 +167,8 @@ if __name__ == "__main__":
     # 创建 NotionDatabaseManager 实例
     db_manager = NotionDatabaseManager()
     # 获取数据库信息
-    buylist,selllist=db_manager.query_notion_database('2025-07-08')
+    #buylist,selllist=db_manager.query_notion_database('2025-08-29')
+    db_manager.update_stock_database({})
 
 
 
