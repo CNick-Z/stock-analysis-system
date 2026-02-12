@@ -34,7 +34,10 @@ def get_today_data(start_date, end_date,db_url):
 
 def get_data_last_day(db_url):
     db_manager = DatabaseManager(db_url=db_url)
-    last_day = db_manager.load_data(DailyDataBase,distinct_column='date', order_by=[{'column': 'date', 'direction': 'desc'}], limit=1)['date'].iloc[0]
+    try:
+        last_day = db_manager.load_data(DailyDataBase,distinct_column='date', order_by=[{'column': 'date', 'direction': 'desc'}], limit=1)['date'].iloc[0]
+    except:
+        last_day = datetime.strftime(datetime.today()+timedelta(days=-1),"%Y-%m-%d")
     return last_day
 
 if __name__ == "__main__":
