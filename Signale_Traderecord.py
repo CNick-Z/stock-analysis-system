@@ -6,6 +6,7 @@ from datetime import datetime,timedelta,date
 from utils.stock_report import StockReport,StockScorer
 from utils.strategy import EnhancedTDXStrategy
 from utils.get_notion_database_info import NotionDatabaseManager
+import configparser
 
 
 class SignalTraderecord:
@@ -404,7 +405,7 @@ class SignalTraderecord:
         holding_symbols = self.holding_stocks['symbol'].to_list()
         buy_advice = []
         for _, row in scored_signals.iterrows():
-            if available_slots > 0:
+            if available_slots > 0 and cash > 0:
                 if row['symbol'] in holding_symbols:
                     continue
                 total_account_value = self.PositionStatus['total_assets']
@@ -514,10 +515,12 @@ class SignalTraderecord:
 
     def run(self,buy_list,sell_list,date):
         self._get_PositionStatus(date)
+        '''
         if buy_list:
             self.record_trade(buy_list,'buy')
         if sell_list:
             self.record_trade(sell_list)
+        '''
         self._fetch_price_matrix(date)
         notion_update_dic = self._set_PositionStatus(date)
         advice=self.generate_trading_advice(date)
@@ -564,20 +567,29 @@ class SignalTraderecord:
 
 
 if __name__ == '__main__':
-    recorder=SignalTraderecord('c:/db/stock_data.db')
-    date = datetime.today()
-    date = datetime.strftime(date,'%Y-%m-%d')
+    config = configparser.ConfigParser()
+    config.read('./conf/config.cfg')
+    db_path=config['local_db']['path']
+    recorder=SignalTraderecord(db_path)
+    # 获取当前时间的小时数
+    current_time = datetime.now()
+    hour = current_time.hour
+    if hour>=15:
+        end_date = datetime.today()
+    else:
+        end_date = datetime.today()+timedelta(days=-1)
+    enddate = datetime.strftime(end_date,'%Y-%m-%d')
     notion=NotionDatabaseManager()
-    #trading_dates=recorder.get_trading_data(date,date)
+    trading_dates=recorder.get_trading_data(enddate,enddate)
 
-    trading_dates=recorder.get_trading_data('2025-02-06','2025-08-22')
+    #trading_dates=recorder.get_trading_data('2025-09-30','2025-10-09')
     for date in trading_dates:
         print(date)
         buylist_day,selllist_day = notion.query_notion_database(datetime.strftime(date,'%Y-%m-%d'))
         advice,notion_update_dic = recorder.run(buylist_day,selllist_day,datetime.strftime(date,'%Y-%m-%d'))
-        #print(advice)
-        #notion.update_task_database(datetime.strftime(date,'%Y-%m-%d'),advice)
-        #notion.update_stock_database(notion_update_dic)
+        print(advice)
+        notion.update_task_database(datetime.strftime(date,'%Y-%m-%d'),advice)
+        notion.update_stock_database(notion_update_dic)
 
     
 

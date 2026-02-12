@@ -152,7 +152,7 @@ class TdxDayReader:
                     
                     # 转换日期格式 (使用向量化操作)
                     # 将日期整数转换为 datetime 对象
-                    date_objs = pd.to_datetime(dates.astype(str), format='%Y%m%d')
+                    date_objs = pd.to_datetime(dates.astype(str), format='%Y%m%d', errors='coerce')
                     
                     # 创建DataFrame
                     df = pd.DataFrame({
