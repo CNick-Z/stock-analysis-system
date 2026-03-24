@@ -396,14 +396,9 @@ class ScoreStrategy(BaseStrategy):
             if selected_buy is not None:
                 selected_buy = selected_buy.set_index('date')
 
-        # 卖出条件
+        # v4: 移除死叉，趋势不破就一直持有
+        # 卖出条件：只有当价格跌破MA20且资金流向为负才卖出
         sell_condition = (
-            (signals['ma_20'] > signals['ma_5']) &
-            (
-                ((signals['macd'] > signals['macd_signal']) & (signals['macd'].shift(1) < signals['macd_signal'].shift(1))) |
-                ((signals['close'] < signals['ma_10']) & (signals['volume'] < signals['volume'].shift(1) * 0.8))
-            )
-        ) | (
             (signals['close'] < signals['ma_20']) &
             (signals['money_flow_trend'] == False)
         )
