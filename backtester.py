@@ -10,9 +10,11 @@ import matplotlib.dates as mdates
 from tqdm import tqdm
 from datetime import datetime, timedelta
 from utils.stock_report import  *
-from utils.strategy import StockScorer,EnhancedTDXStrategy
 from config.risk_config import RiskManager, TieredTakeProfit, TrailingStop, TimeStop
 import logging
+
+# Phase 2: 策略插件系统
+from strategies import STRATEGY_REGISTRY, BaseStrategy
 
 class DynamicPositionManager:
     """动态仓位管理模块"""
@@ -232,13 +234,30 @@ class TradingSimulator:
 
 class BacktestOrchestrator:
     """回测总控模块"""
-    def __init__(self, db_path='c:/db/stock_data.db', live_plot=False,position_limit=3, commission_rate=0.0003):
-        self.position_limit = position_limit  # 新增参数
-        self.position_limit_base = position_limit  # 基础持仓限制
-        self.db = DatabaseIntegrator(db_path)
-        self.strategy = EnhancedTDXStrategy(db_path)
-        self.Scorer= StockScorer()
+    def __init__(self, db_path='c:/db/stock_data.db', live_plot=False, position_limit=3,
+                 commission_rate=0.0003, strategy_name='score'):
+        """
+        参数:
+            strategy_name: 策略名称 ('score'=评分策略, 'resonance'=8指标共振策略)
+            position_limit: 最大持仓数
+            live_plot: 是否启用实时图表
+        """
+        self.position_limit = position_limit
+        self.position_limit_base = position_limit
+        self.strategy_name = strategy_name  # Phase 2: 策略名称
+
+        # Phase 2: 策略插件系统 - 根据名称加载策略
+        if strategy_name not in STRATEGY_REGISTRY:
+            raise ValueError(f"未知策略: {strategy_name}，可用策略: {list(STRATEGY_REGISTRY.keys())}")
+        self.strategy = STRATEGY_REGISTRY[strategy_name](db_path)
+
+        # Report 需要 Scorer，但策略插件不包含 Scorer，需要单独处理
+        # 对于 resonance 策略，Report 生成逻辑可能需要调整
+        from utils.strategy import StockScorer
+        self.Scorer = StockScorer()
         self.Report = StockReport(self.Scorer)
+
+        self.db = DatabaseIntegrator(db_path)
         self.price_matrix = None
         self.trading_dates = None
         self.live_plot = live_plot
@@ -461,11 +480,10 @@ class BacktestOrchestrator:
                 except:
                     continue
     def _process_buy_signals(self, date,  simulator,signals):
+        """处理买入信号（支持旧评分策略和8指标共振策略切换）"""
         # 首先检查熔断状态（不更新仓位）
         if self.position_manager.is_circuit_breaker_active():
             return
-        """处理买入信号"""
-        current_position = self.position_manager.current_position
 
         available_slots = self.position_limit - len(simulator.portfolio['positions'])
         if available_slots <= 0:
@@ -479,38 +497,172 @@ class BacktestOrchestrator:
             return
         holding_symbols = list(simulator.portfolio['positions'].keys())
 
+        # Phase 2: 根据策略类型选择不同的处理方式
+        if self.strategy_name == 'resonance':
+            # 8指标共振策略
+            self._process_resonance_buy_signals(date, simulator, scored_signals, holding_symbols, available_slots)
+        else:
+            # 旧评分策略
+            self._process_scored_buy_signals(date, simulator, scored_signals, holding_symbols, available_slots)
+
+    def _process_resonance_buy_signals(self, date, simulator, candidates, holding_symbols, available_slots):
+        """
+        Phase 2: 8指标共振买入信号处理
+
+        8指标全部满足才买入：
+        1. MACD > MACD_SIGNAL（金叉）
+        2. KDJ K > D（K在D上方）
+        3. RSI < 70（未超买）
+        4. LWR < -20（未超卖）
+        5. BBI > close（BBI多空线上）
+        6. MTM > MTM_MA（动量多头）
+        7. MA5 > MA20（均线多头）
+        8. 成交量 > vol_ma5（放量）
+
+        仓位分级：
+        - 一级信号（满足4-5个指标）：20%仓位
+        - 二级信号（满足6-7个指标）：40%仓位
+        - 三级信号（满足8个指标）：60%仓位
+        """
+        current_position = self.position_manager.current_position
+        resonance_results = []
+
+        for _, row in candidates.iterrows():
+            if row['symbol'] in holding_symbols:
+                continue
+
+            # 检查8指标共振
+            is_bullish, count, signal_level = self.strategy._is_multi_indicator_bullish(row)
+
+            # 只处理满足4个及以上指标的信号
+            if not is_bullish:
+                continue
+
+            resonance_results.append({
+                'symbol': row['symbol'],
+                'indicator_count': count,
+                'signal_level': signal_level,
+                'row': row
+            })
+
+        # 按指标数量降序排序
+        resonance_results.sort(key=lambda x: x['indicator_count'], reverse=True)
+
+        # 按信号等级分组，每级最多选一只
+        selected = []
+        level_selected = {1: False, 2: False, 3: False}
+
+        for item in resonance_results:
+            level = item['signal_level']
+            if not level_selected.get(level, False) and len(selected) < available_slots:
+                selected.append(item)
+                level_selected[level] = True
+
+        # 执行买入
+        for item in selected:
+            row = item['row']
+            signal_level = item['signal_level']
+            # 仓位配置
+            position_config = self.strategy.config['signal_position_config']
+            position_ratio = position_config.get(signal_level, 0.20)  # 默认20%
+
+            try:
+                next_open_price, next_open_day = self._get_next_open_price(date, row['symbol'])
+                next_open = self._get_next_open_day(date)
+                if next_open != next_open_day:
+                    continue
+
+                # 计算总账户价值
+                total_account_value = self._total_value(date, simulator)
+                # 目标持仓比例
+                target_position_ratio = current_position * position_ratio
+
+                # 检查是否超过目标持仓
+                current_position_ratio = (total_account_value - simulator.portfolio['cash']) / total_account_value
+                if current_position_ratio >= target_position_ratio:
+                    continue
+
+                # 计算可投入金额
+                max_investment = total_account_value * target_position_ratio - (total_account_value - simulator.portfolio['cash'])
+                max_afford = max_investment // (next_open_price * (1 + self.commission_rate))
+                max_afford = (max_afford // 100) * 100
+
+                if max_afford > 0:
+                    # 共振策略不使用 Report.generate_report（它依赖 total_score 等评分字段）
+                    # 直接构建简单的 signal_info
+                    signal_info = {
+                        'type': 'resonance_buy',
+                        'strategy': 'resonance',
+                        '共振信号等级': signal_level,
+                        '满足指标数': item['indicator_count'],
+                        'symbol': row['symbol'],
+                        'close': row['close'],
+                        'industry': row.get('industry', '')
+                    }
+
+                    if next_open_day not in simulator.buy_signals:
+                        simulator.buy_signals[next_open_day] = []
+
+                    extra_data = {
+                        'resonance_level': signal_level,
+                        'indicator_count': item['indicator_count']
+                    }
+                    # 复制 row 的关键字段
+                    for col in ['symbol', 'close', 'industry', 'ma_5', 'ma_20', 'macd', 'macd_signal',
+                                'kdj_k', 'kdj_d', 'rsi_14', 'williams_r', 'bbi', 'mtm', 'mtm_ma',
+                                'volume', 'vol_ma5']:
+                        if col in row.index:
+                            extra_data[col] = row[col]
+
+                    simulator.buy_signals[next_open_day].append([
+                        row['symbol'],
+                        next_open_price,
+                        next_open_day,
+                        max_afford,
+                        signal_info,
+                        extra_data
+                    ])
+
+                    logging.info(f"🔔 共振买入 {row['symbol']}，等级:{signal_level}，指标:{item['indicator_count']}/8，价格:{next_open_price}")
+
+            except Exception as e:
+                logging.warning(f"共振买入处理失败 {row['symbol']}: {e}")
+                continue
+
+    def _process_scored_buy_signals(self, date, simulator, scored_signals, holding_symbols, available_slots):
+        """
+        旧评分策略买入信号处理（保持原有逻辑不变）
+        """
+        current_position = self.position_manager.current_position
+
         for _, row in scored_signals.iterrows():
-            if available_slots>0:
-                if row['symbol'] in holding_symbols:
-                    continue
-                # 计算单支股票最大可投入资金（不超过总仓位10%）
-                try:
-                    next_open_price,next_open_day=self._get_next_open_price(date, row['symbol'])
-                    next_open=self._get_next_open_day(date)
-                    if next_open != next_open_day:
-                        continue
-                    # 计算总账户价值
-                    total_account_value = self._total_value(date, simulator)
-                    if (total_account_value-simulator.portfolio['cash'])/total_account_value>current_position:
-                        continue
-                    max_investment_cash = total_account_value*current_position//self.position_limit
-                    max_investment = simulator.portfolio['cash']//available_slots
-                    max_investment = min(max_investment, max_investment_cash)
-                    max_afford = max_investment // (next_open_price * (1 + self.commission_rate))
-                    max_afford = (max_afford // 100) * 100  # 这里进行按100取整操作
-                    if max_afford > 0:
-                        # 获取信号信息
-                        symbol_data = scored_signals[scored_signals['symbol'] == row['symbol']]
-                        signal_info = self.Report.generate_report(symbol_data)
-                        if next_open_day not in simulator.buy_signals:
-                            simulator.buy_signals[next_open_day] = []
-                        simulator.buy_signals[next_open_day].append([row['symbol'],next_open_price,next_open_day,max_afford,signal_info,symbol_data.to_dict(orient='records')[0]])
-                        #simulator.execute_order('buy', row['symbol'], next_open_price, next_open_day, max_afford)
-                        available_slots-=1
-                except:
-                    continue
-            else:
+            if available_slots <= 0:
                 break
+            if row['symbol'] in holding_symbols:
+                continue
+            try:
+                next_open_price,next_open_day=self._get_next_open_price(date, row['symbol'])
+                next_open=self._get_next_open_day(date)
+                if next_open != next_open_day:
+                    continue
+                # 计算总账户价值
+                total_account_value = self._total_value(date, simulator)
+                if (total_account_value-simulator.portfolio['cash'])/total_account_value>current_position:
+                    continue
+                max_investment_cash = total_account_value*current_position//self.position_limit
+                max_investment = simulator.portfolio['cash']//available_slots
+                max_investment = min(max_investment, max_investment_cash)
+                max_afford = max_investment // (next_open_price * (1 + self.commission_rate))
+                max_afford = (max_afford // 100) * 100
+                if max_afford > 0:
+                    symbol_data = scored_signals[scored_signals['symbol'] == row['symbol']]
+                    signal_info = self.Report.generate_report(symbol_data)
+                    if next_open_day not in simulator.buy_signals:
+                        simulator.buy_signals[next_open_day] = []
+                    simulator.buy_signals[next_open_day].append([row['symbol'],next_open_price,next_open_day,max_afford,signal_info,symbol_data.to_dict(orient='records')[0]])
+                    available_slots-=1
+            except:
+                continue
 
     def _get_next_open_price(self, date, symbol):
         """获取下一个有效开盘价"""

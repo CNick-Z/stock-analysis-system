@@ -9,8 +9,119 @@ from tqdm import tqdm
 import talib as ta
 import logging
 from functools import lru_cache
+from pathlib import Path
 # 配置日志
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+
+class PreloadedDataManager:
+    """
+    预加载数据管理器
+    
+    在回测开始前一次性加载所有技术指标和行情数据到内存，
+    后续直接内存访问，避免重复 IO 和 JOIN
+    """
+    
+    def __init__(self, db_manager, start_date: str, end_date: str, config: Dict):
+        self.db_manager = db_manager
+        self.start_date = start_date
+        self.end_date = end_date
+        self.config = config
+        self._tech_df = None      # 技术指标 DataFrame
+        self._price_df = None     # 行情 DataFrame
+        self._info_df = None      # 股票信息 DataFrame
+        self._merged_df = None     # 合并后数据
+        
+    def preload(self):
+        """一次性加载所有数据"""
+        # 1. 扩展日期范围（技术指标需要前置数据计算角度）
+        extended_start = pd.to_datetime(self.start_date) - pd.Timedelta(days=30)
+        extended_start_str = extended_start.strftime("%Y-%m-%d")
+        
+        logging.info(f"📦 预加载数据: {extended_start_str} ~ {self.end_date}")
+        
+        # 2. 加载技术指标数据
+        tech_columns = {
+            'date': 'date',
+            'symbol': 'symbol',
+            f'sma_{self.config["ma_windows"][0]}': 'ma_5',
+            f'sma_{self.config["ma_windows"][1]}': 'ma_10',
+            f'sma_{self.config["ma_windows"][2]}': 'ma_20',
+            f'sma_{self.config["ma_windows"][3]}': 'ma_55',
+            f'sma_{self.config["ma_windows"][4]}': 'ma_240',
+            'vol_ma5': 'volume_ma5',
+            'macd': 'macd',
+            'macd_signal': 'macd_signal',
+            'macd_histogram': 'macd_histogram',
+            'rsi_14': 'rsi_14',
+            'kdj_k': 'kdj_k',
+            'kdj_d': 'kdj_d',
+            'kdj_j': 'kdj_j',
+            'cci_20': 'cci_20',
+            'williams_r': 'williams_r',
+            'bb_upper': 'bb_upper',
+            'bb_middle': 'bb_middle',
+            'bb_lower': 'bb_lower'
+        }
+        
+        self._tech_df = self.db_manager.load_data(
+            table_class=TechnicalIndicatorsBase,
+            filter_conditions={
+                'date': {'$between': [extended_start_str, self.end_date]}  
+            }
+        ).rename(columns=tech_columns)
+        
+        # 3. 加载行情数据
+        self._price_df = self.db_manager.load_data(
+            table_class=DailyDataBase,
+            filter_conditions={
+                'date': {'$between': [extended_start_str, self.end_date]}  
+            },
+            columns=['date', 'symbol', 'high', 'low', 'volume', 'amount', 'open', 'close'],
+            distinct_column=None,
+            limit=None
+        )
+        
+        # 4. 加载股票信息
+        self._info_df = self.db_manager.load_data(
+            table_class=StockBasicInfo,
+            filter_conditions={
+                'name': {'$not_like': 'ST'},
+            },
+            columns=['symbol', 'name', 'total_shares', 'industry']
+        )
+        
+        # 5. 预先合并所有数据
+        logging.info("🔗 预合并数据集...")
+        self._merged_df = pd.merge(
+            self._tech_df,
+            self._price_df,
+            on=['date', 'symbol'],
+            how='inner'
+        )
+        self._merged_df = pd.merge(
+            self._merged_df,
+            self._info_df,
+            on=['symbol'],
+            how='inner'
+        )
+        self._merged_df['date'] = pd.to_datetime(self._merged_df['date'])
+        self._merged_df = self._merged_df.sort_values(['symbol', 'date']).reset_index(drop=True)
+        
+        logging.info(f"✅ 预加载完成: {len(self._merged_df)} 条记录, "
+                    f"{self._merged_df['date'].nunique()} 个交易日")
+        
+    def get_data(self, start_date: str, end_date: str) -> pd.DataFrame:
+        """获取指定日期范围的数据"""
+        if self._merged_df is None:
+            raise RuntimeError("数据未预加载，请先调用 preload()")
+        
+        start_dt = pd.to_datetime(start_date)
+        end_dt = pd.to_datetime(end_date)
+        mask = (self._merged_df['date'] >= start_dt) & (self._merged_df['date'] <= end_dt)
+        return self._merged_df[mask].copy()
+
+
 class StockScorer:
     def __init__(self, config: Dict = None):
         default_config = {
@@ -220,7 +331,8 @@ class StockScorer:
 class EnhancedTDXStrategy:
     def __init__(self, 
                 db_path='c:/db/stock_data.db',
-                config: Dict = None):
+                config: Dict = None,
+                use_cache: bool = True):
         default_config = {
                     'ma_windows': (5, 10, 20, 55, 240),
                     'angle_window': 5,
@@ -230,6 +342,16 @@ class EnhancedTDXStrategy:
                         'growth_threshold': 1.00,
                         'max_upper_shadow': 1.06,
                         'ma_diff_threshold': 0.02
+                    },
+                    # Phase 2: 8指标共振系统参数
+                    'bbi_ma_periods': (3, 6, 12, 24),  # BBI计算的均线周期
+                    'mtm_period': 12,                   # MTM计算周期（N日）
+                    'mtm_ma_period': 6,                 # MTM均线周期
+                    # 仓位配置：一级(4-5指标)20%，二级(6-7指标)40%，三级(8指标)60%
+                    'signal_position_config': {
+                        1: 0.20,   # 一级信号
+                        2: 0.40,   # 二级信号
+                        3: 0.60,   # 三级信号（全部8个指标满足）
                     }
                 }
         self.config = {**default_config, **(config or {})}
@@ -241,14 +363,37 @@ class EnhancedTDXStrategy:
         - angle_window: 均线角度计算窗口
         - volume_ma_window: 成交量均线窗口
         - macd_params: MACD参数（short, long, signal）
+        - use_cache: 是否使用数据缓存（默认True，回测时启用）
         """
-        self.db_manager = DatabaseManager(f"sqlite:///{db_path}")
-        self.db_manager.ensure_tables_exist()
+        from utils.parquet_db import ParquetDatabaseIntegrator
+        self.db_manager = ParquetDatabaseIntegrator(db_path)
         self.Scorer = StockScorer()
         self._stock_info_cache = None # 缓存股票信息
         
+        # 缓存相关
+        self.use_cache = use_cache
+        self._data_cache = None  # PreloadedDataManager 实例
+        
         # 预校验参数
         self._validate_config()
+    
+    def enable_cache(self, start_date: str, end_date: str):
+        """启用数据缓存（在回测开始前调用）"""
+        if not self.use_cache:
+            logging.info("缓存模式未启用，跳过数据预加载")
+            return
+            
+        logging.info(f"📦 启用数据缓存: {start_date} ~ {end_date}")
+        self._data_cache = PreloadedDataManager(
+            self.db_manager, start_date, end_date, self.config
+        )
+        self._data_cache.preload()
+        logging.info("✅ 数据缓存启用成功")
+        
+    def disable_cache(self):
+        """禁用数据缓存"""
+        self._data_cache = None
+        logging.info("数据缓存已禁用")
 
     def _validate_config(self):
         """参数有效性验证"""
@@ -292,7 +437,14 @@ class EnhancedTDXStrategy:
         包含
         返回包含以下字段的DataFrame：
         [date, symbol, ma_5, ma_10, ma_20, ma_55, ma_240, macd, macd_signal, close, volume]
+        
+        优化：如果启用了缓存，直接从缓存获取，避免重复IO和JOIN
         """
+        # 如果有缓存，直接从缓存获取
+        if self._data_cache is not None:
+            return self._data_cache.get_data(start_date, end_date)
+        
+        # 如果没有缓存，走原来的逻辑（兼容单次调用）
         extended_start_date = pd.to_datetime(start_date) - pd.Timedelta(days=7)
         extended_start_date = extended_start_date.strftime("%Y-%m-%d")
         end_date = end_date
@@ -699,6 +851,100 @@ class EnhancedTDXStrategy:
         df['cci_oversold'] = df['cci_20'] < -100
 
         return df
+
+    # ==================== Phase 2: 8指标共振系统 ====================
+    def _calculate_bbi_mtm(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Phase 2: 计算BBI多空线和MTM动量指标
+        BBI = (MA3 + MA6 + MA12 + MA24) / 4
+        MTM = close - close(N日前)，MTM_MA = MTM的N日均线
+        """
+        cfg = self.config
+        ma3_period, ma6_period, ma12_period, ma24_period = cfg['bbi_ma_periods']
+        mtm_period = cfg['mtm_period']
+        mtm_ma_period = cfg['mtm_ma_period']
+
+        # 按 symbol 分组计算（每只股票独立计算）
+        def calc_per_stock(group):
+            g = group.sort_values('date').copy()
+            # BBI = (MA3 + MA6 + MA12 + MA24) / 4
+            g['ma3'] = g['close'].rolling(ma3_period).mean()
+            g['ma6'] = g['close'].rolling(ma6_period).mean()
+            g['ma12'] = g['close'].rolling(ma12_period).mean()
+            g['ma24'] = g['close'].rolling(ma24_period).mean()
+            g['bbi'] = (g['ma3'] + g['ma6'] + g['ma12'] + g['ma24']) / 4
+
+            # MTM = close - close(N日前)
+            g['mtm'] = g['close'] - g['close'].shift(mtm_period)
+            # MTM_MA = MTM的N日均线
+            g['mtm_ma'] = g['mtm'].rolling(mtm_ma_period).mean()
+            return g
+
+        df = df.groupby('symbol', group_keys=False).apply(calc_per_stock)
+        return df
+
+    def _is_multi_indicator_bullish(self, row: pd.Series) -> Tuple[bool, int]:
+        """
+        Phase 2: 8指标共振多头检查
+
+        8个指标全部满足才买入：
+        1. MACD > MACD_SIGNAL（金叉）
+        2. KDJ K > D（K在D上方）
+        3. RSI < 70（未超买）
+        4. LWR (williams_r) < -20（未超卖，数值越大越超卖）
+        5. BBI > close（BBI多空线上）
+        6. MTM > MTM_MA（动量多头）
+        7. MA5 > MA20（均线多头）
+        8. 成交量 > vol_ma5（放量）
+
+        返回: (是否满足, 满足指标数量)
+        """
+        count = 0
+
+        # 1. MACD金叉
+        if row['macd'] > row['macd_signal']:
+            count += 1
+
+        # 2. KDJ K > D
+        if row['kdj_k'] > row['kdj_d']:
+            count += 1
+
+        # 3. RSI < 70（未超买）
+        if row['rsi_14'] < 70:
+            count += 1
+
+        # 4. LWR < -20（未超卖，>-20就计数，数值越大越强势）
+        if row['williams_r'] > -20:
+            count += 1
+
+        # 5. BBI > close（BBI在价格上方 = 多头）
+        if row['bbi'] > row['close']:
+            count += 1
+
+        # 6. MTM > MTM_MA（动量多头）
+        if row['mtm'] > row['mtm_ma']:
+            count += 1
+
+        # 7. MA5 > MA20（均线多头）
+        if row['ma5'] > row['ma20']:
+            count += 1
+
+        # 8. 成交量 > vol_ma5（放量）
+        if row['volume'] > row['vol_ma5']:
+            count += 1
+
+        # 信号强度分级
+        if count >= 8:
+            signal_level = 3  # 三级：60%仓位
+        elif count >= 6:
+            signal_level = 2  # 二级：40%仓位
+        elif count >= 4:
+            signal_level = 1  # 一级：20%仓位
+        else:
+            signal_level = 0  # 不买入
+
+        return count >= 4, count, signal_level
+
     def _calculate_market_heat(self, data: pd.DataFrame) -> pd.DataFrame:
         required_columns = ['date', 'symbol', 'volume', 'industry']
         if not all(col in data.columns for col in required_columns):
@@ -726,9 +972,13 @@ class EnhancedTDXStrategy:
         logging.info(f"正在生成特征...")
         with_angles = self._calculate_ma_angles(raw_data)
         
+        # Phase 2: 计算BBI和MTM指标（8指标共振系统用）
+        logging.info(f"正在计算BBI/MTM指标...")
+        with_bbi_mtm = self._calculate_bbi_mtm(with_angles)
+
         # 信号生成
         logging.info(f"正在生成信号...")
-        signals = self._generate_core_signals(with_angles)
+        signals = self._generate_core_signals(with_bbi_mtm)
 
         # 计算市场热度
         logging.info(f"正在计算市场热度...")
