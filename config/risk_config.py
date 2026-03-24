@@ -36,11 +36,13 @@ from dataclasses import dataclass
 
 # 分档止盈规则：(涨幅下限, 涨幅上限) -> {mode: 模式, sell_pct: 卖出仓位比例, withdraw_pct: 允许回撤比例}
 TIERED_TAKE_PROFIT_RULES: Dict[Tuple[float, float], Dict[str, Any]] = {
-    # Phase 1 配置：追踪止盈，卖出比例从低到高
+    # 优化版：让利润奔跑，大涨后放宽止盈
     (0.00, 0.05): {'mode': 'breakeven', 'sell_pct': 0.30, 'withdraw_pct': 0.003, 'desc': '保本微盈卖30%'},
     (0.05, 0.10): {'mode': 'trailing', 'sell_pct': 0.50, 'withdraw_pct': 0.50, 'desc': '允许回撤50%卖50%'},
-    (0.10, 0.20): {'mode': 'trailing', 'sell_pct': 0.70, 'withdraw_pct': 0.30, 'desc': '允许回撤30%卖70%'},
-    (0.20, 999.0): {'mode': 'trailing', 'sell_pct': 1.0, 'withdraw_pct': 0.10, 'desc': '允许回撤10%卖全部'},
+    (0.10, 0.20): {'mode': 'trailing', 'sell_pct': 0.50, 'withdraw_pct': 0.35, 'desc': '允许回撤35%卖50%'},
+    (0.20, 0.30): {'mode': 'trailing', 'sell_pct': 0.70, 'withdraw_pct': 0.25, 'desc': '允许回撤25%卖70%'},
+    (0.30, 0.50): {'mode': 'trailing', 'sell_pct': 0.80, 'withdraw_pct': 0.30, 'desc': '允许回撤30%卖80%'},
+    (0.50, 999.0): {'mode': 'trailing', 'sell_pct': 1.0, 'withdraw_pct': 0.40, 'desc': '允许回撤40%卖全部'},
 }
 
 # 默认止损配置
