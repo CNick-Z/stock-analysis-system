@@ -74,7 +74,7 @@ class TieredTakeProfit:
             if low <= gain_pct < high:
                 return config
         # 默认返回最后一档
-        return self.rules[(0.20, 999.0)]
+        return self.rules[(0.50, 999.0)]
     
     def check(self, current_price: float, entry_price: float, peak_price: float, hold_days: int = 0) -> Tuple[bool, str, float]:
         """
