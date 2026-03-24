@@ -371,8 +371,7 @@ class ScoreStrategy(BaseStrategy):
             (signals['jc_condition'] | signals['macd_jc']) &
             (signals['ma_20'] < signals['ma_55']) &
             (signals['ma_55'] > signals['ma_240']) &
-            (signals['market_heat'] <= 0.5) &  # 老板新配置：市场热度 ≤ 0.5
-            (signals['rsi_14'] >= 50) & (signals['rsi_14'] <= 60)  # 老板新配置：RSI 50~60
+            (signals['market_heat'] < 2.5)  # Phase 3: 市场热度过滤
         )
 
         buy_signals = signals[buy_condition].copy()
@@ -383,8 +382,8 @@ class ScoreStrategy(BaseStrategy):
         if buy_signals.empty:
             selected_buy = None
         else:
-            # 老板新配置：score 0.8~1.0
-            buy_signals = buy_signals[(buy_signals['total_score'] >= 0.8) & (buy_signals['total_score'] <= 1.0)]
+            # Phase 3: score <= 1.8 过滤
+            buy_signals = buy_signals[buy_signals['total_score'] <= 1.8]
             if buy_signals.empty:
                 selected_buy = None
             else:
