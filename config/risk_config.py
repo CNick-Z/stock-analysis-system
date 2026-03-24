@@ -36,11 +36,13 @@ from dataclasses import dataclass
 
 # 分档止盈规则：(涨幅下限, 涨幅上限) -> {mode: 模式, sell_pct: 卖出仓位比例, withdraw_pct: 允许回撤比例}
 TIERED_TAKE_PROFIT_RULES: Dict[Tuple[float, float], Dict[str, Any]] = {
-    # Phase 1 原始配置：追踪止盈
+    # 尝试2：保持trailing，但加大盈利后的容许回撤
     (0.00, 0.05): {'mode': 'breakeven', 'withdraw_pct': 0.003, 'desc': '保本微盈'},
     (0.05, 0.10): {'mode': 'trailing', 'withdraw_pct': 0.50, 'desc': '允许回撤50%'},
     (0.10, 0.20): {'mode': 'trailing', 'withdraw_pct': 0.30, 'desc': '允许回撤30%'},
-    (0.20, 999.0): {'mode': 'trailing', 'withdraw_pct': 0.10, 'desc': '允许回撤10%'},
+    (0.20, 0.30): {'mode': 'trailing', 'withdraw_pct': 0.15, 'desc': '允许回撤15%'},
+    (0.30, 0.50): {'mode': 'trailing', 'withdraw_pct': 0.20, 'desc': '允许回撤20%'},
+    (0.50, 999.0): {'mode': 'trailing', 'withdraw_pct': 0.25, 'desc': '允许回撤25%'},
 }
 
 # 默认止损配置
@@ -72,7 +74,7 @@ class TieredTakeProfit:
             if low <= gain_pct < high:
                 return config
         # 默认返回最后一档
-        return self.rules[(0.20, 999.0)]
+        return self.rules[(0.50, 999.0)]
     
     def check(self, current_price: float, entry_price: float, peak_price: float, hold_days: int = 0) -> Tuple[bool, str, float]:
         """
