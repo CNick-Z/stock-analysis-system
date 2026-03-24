@@ -279,7 +279,8 @@ class RiskManager:
         current_price: float,
         entry_price: float,
         peak_price: float,
-        hold_days: int
+        hold_days: int,
+        triggered_tiers: set = None
     ) -> Tuple[bool, str, float]:
         """
         综合风控检查
@@ -300,7 +301,9 @@ class RiskManager:
         
         # 2. 分档止盈（部分卖）
         if self.tiered_tp:
-            should_sell, reason, sell_pct = self.tiered_tp.check(current_price, entry_price, peak_price, hold_days)
+            should_sell, reason, sell_pct = self.tiered_tp.check(
+                current_price, entry_price, peak_price, hold_days, triggered_tiers
+            )
             if should_sell:
                 return True, reason, sell_pct
         
