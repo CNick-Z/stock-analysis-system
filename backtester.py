@@ -268,7 +268,7 @@ class BacktestOrchestrator:
             use_tiered_tp=True,    # 分档止盈
             use_trailing_stop=False,  # 追踪止损（暂时禁用，用原来的）
             use_time_stop=True,    # 时间止损
-            stop_loss_pct=-0.08,  # 8%固定止损（老板最优配置）
+            stop_loss_pct=-0.05,  # 5%固定止损
             max_hold_days=20       # 20天时间止损
         )
         self.position_manager = DynamicPositionManager(initial_position=0.5, position_levels=[0.3,0.5,0.8,1], window_size=3)
