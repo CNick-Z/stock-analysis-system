@@ -363,9 +363,7 @@ class ScoreStrategy(BaseStrategy):
 
         # 买入条件
         # 老板原版配置：RSI 50~60 过滤
-        rsi_filter = (signals['rsi_14'] >= 54) & (signals['rsi_14'] <= 58)
-        # v5新增：股价过滤 0-10元（低价股表现更好）
-        price_filter = (signals['close'] >= 3) & (signals['close'] <= 15)
+        rsi_filter = (signals['rsi_14'] >= 50) & (signals['rsi_14'] <= 60)
 
         buy_condition = (
             signals['growth_condition'] &
@@ -376,8 +374,7 @@ class ScoreStrategy(BaseStrategy):
             (signals['jc_condition'] | signals['macd_jc']) &
             (signals['ma_20'] < signals['ma_55']) &
             (signals['ma_55'] > signals['ma_240']) &
-            rsi_filter &  # RSI 54~58
-            price_filter  # 股价3-15元
+            rsi_filter  # RSI 50~60
         )
 
         buy_signals = signals[buy_condition].copy()
