@@ -387,7 +387,7 @@ class ScoreStrategy(BaseStrategy):
             final_picks = []
             for date in buy_signals['date'].unique():
                 daily = buy_signals[buy_signals['date'] == date]
-                top = daily.nsmallest(self.config['top_n'], 'total_score')  # 原版用 nsmallest（低分优先）
+                top = daily.nlargest(self.config['top_n'], 'total_score')  # 高分优先（原版逻辑）
                 final_picks.append(top)
             selected_buy = pd.concat(final_picks) if final_picks else None
             if selected_buy is not None:
