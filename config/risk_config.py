@@ -36,12 +36,11 @@ from dataclasses import dataclass
 
 # 分档止盈规则：(涨幅下限, 涨幅上限) -> {mode: 模式, sell_pct: 卖出仓位比例, withdraw_pct: 允许回撤比例}
 TIERED_TAKE_PROFIT_RULES: Dict[Tuple[float, float], Dict[str, Any]] = {
-    # 核心发现：0-20天交易全亏（胜率2-11%），20天后开始赚（胜率75%）
-    # Phase 1 配置：全卖止盈
-    (0.00, 0.05): {'mode': 'breakeven', 'withdraw_pct': 0.003, 'sell_pct': 1.0, 'desc': '保本'},
-    (0.05, 0.10): {'mode': 'partial', 'withdraw_pct': 0.05, 'sell_pct': 1.0, 'desc': '5-10%卖全'},
-    (0.10, 0.20): {'mode': 'partial', 'withdraw_pct': 0.10, 'sell_pct': 1.0, 'desc': '10-20%卖全'},
-    (0.20, 999.0): {'mode': 'trailing', 'withdraw_pct': 0.10, 'sell_pct': 1.0, 'desc': '20%+卖全'},
+    # Phase 1 原始配置：追踪止盈
+    (0.00, 0.05): {'mode': 'breakeven', 'withdraw_pct': 0.003, 'desc': '保本微盈'},
+    (0.05, 0.10): {'mode': 'trailing', 'withdraw_pct': 0.50, 'desc': '允许回撤50%'},
+    (0.10, 0.20): {'mode': 'trailing', 'withdraw_pct': 0.30, 'desc': '允许回撤30%'},
+    (0.20, 999.0): {'mode': 'trailing', 'withdraw_pct': 0.10, 'desc': '允许回撤10%'},
 }
 
 # 默认止损配置
@@ -120,7 +119,8 @@ class TieredTakeProfit:
             # 移动止盈模式：跌破最高点 * (1 - 回撤比例) 则卖
             trailing_trigger = peak_price * (1 - tier['withdraw_pct'])
             if current_price < trailing_trigger:
-                return True, f"take_profit:{tier['desc']}(最高{peak_price:.2f}, 现{current_price:.2f})", tier['sell_pct']
+                sell_pct = tier.get('sell_pct', 1.0)  # 默认为全卖
+                return True, f"take_profit:{tier['desc']}(最高{peak_price:.2f}, 现{current_price:.2f})", sell_pct
             return False, "", 0.0
         
         return False, "", 0.0

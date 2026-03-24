@@ -370,7 +370,8 @@ class ScoreStrategy(BaseStrategy):
             signals['macd_condition'] &
             (signals['jc_condition'] | signals['macd_jc']) &
             (signals['ma_20'] < signals['ma_55']) &
-            (signals['ma_55'] > signals['ma_240'])
+            (signals['ma_55'] > signals['ma_240']) &
+            (signals['market_heat'] < 2.5)  # Phase 3: 市场热度过滤
         )
 
         buy_signals = signals[buy_condition].copy()
@@ -381,14 +382,19 @@ class ScoreStrategy(BaseStrategy):
         if buy_signals.empty:
             selected_buy = None
         else:
-            final_picks = []
-            for date in buy_signals['date'].unique():
-                daily = buy_signals[buy_signals['date'] == date]
-                top = daily.nlargest(self.config['top_n'], 'total_score')
-                final_picks.append(top)
-            selected_buy = pd.concat(final_picks) if final_picks else None
-            if selected_buy is not None:
-                selected_buy = selected_buy.set_index('date')
+            # Phase 3: score <= 1.8 过滤（评分 > 1.8 时胜率仅 29.1%）
+            buy_signals = buy_signals[buy_signals['total_score'] <= 1.8]
+            if buy_signals.empty:
+                selected_buy = None
+            else:
+                final_picks = []
+                for date in buy_signals['date'].unique():
+                    daily = buy_signals[buy_signals['date'] == date]
+                    top = daily.nlargest(self.config['top_n'], 'total_score')
+                    final_picks.append(top)
+                selected_buy = pd.concat(final_picks) if final_picks else None
+                if selected_buy is not None:
+                    selected_buy = selected_buy.set_index('date')
 
         # 卖出条件
         sell_condition = (
