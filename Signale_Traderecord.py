@@ -10,7 +10,9 @@ import configparser
 
 
 class SignalTraderecord:
-    def __init__(self, db_url: str):
+    def __init__(self, db_url: str = None):
+        if db_url is None:
+            db_url = "/root/.openclaw/workspace/projects/stock-sync/data/stock_data.db"
         self.db_url = db_url
         self.db_manager = DatabaseManager(f"sqlite:///{db_url}")
         self.db_manager.ensure_tables_exist()

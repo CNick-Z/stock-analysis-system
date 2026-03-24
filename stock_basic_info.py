@@ -20,18 +20,20 @@ def fetch_and_save_stock_basic_info(db_url, symbol):
     try:
         # 获取股票基本信息
         stock_info = ak.stock_individual_info_em(symbol=symbol)
-        stock_info.set_index("item", inplace=True)
-
+        
+        # 转换格式（akshare新版本返回 item/value 格式）
+        info_dict = dict(zip(stock_info['item'], stock_info['value']))
+        
         # 提取关键信息
         basic_info = {
             "symbol": symbol,
-            "name": stock_info.loc["股票简称", "value"],
-            "total_shares": int(stock_info.loc["总股本", "value"]),
-            "circulating_shares": int(stock_info.loc["流通股", "value"]),
-            "market_value": float(stock_info.loc["总市值", "value"]),
-            "circulating_market_value": float(stock_info.loc["流通市值", "value"]),
-            "industry": stock_info.loc["行业", "value"],
-            "listing_date": datetime.strptime(str(stock_info.loc["上市时间", "value"]), "%Y%m%d").date()
+            "name": info_dict.get("股票简称", ""),
+            "total_shares": int(info_dict.get("总股本", 0)),
+            "circulating_shares": int(info_dict.get("流通股", 0)),
+            "market_value": float(info_dict.get("总市值", 0)),
+            "circulating_market_value": float(info_dict.get("流通市值", 0)),
+            "industry": info_dict.get("行业", ""),
+            "listing_date": datetime.strptime(str(info_dict.get("上市时间", "")), "%Y%m%d").date()
         }
 
         # 检查是否已存在该股票的基本信息
