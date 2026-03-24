@@ -183,7 +183,8 @@ class TradingSimulator:
                 'qty': quantity,
                 'cost': total_cost,
                 'entry_date': date,
-                'latest_price': price  # 初始化最新价格为买入价格
+                'latest_price': price,  # 初始化最新价格为买入价格
+                'tp_triggered': set(),   # 阶梯止盈：记录已触发的阶梯
             }
 
         # 更新现金
@@ -795,12 +796,14 @@ class BacktestOrchestrator:
                 peak_price = current_price
                 pos['highest_price'] = peak_price
             
-            # 使用 RiskManager 检查风控
+            # 使用 RiskManager 检查风控（传入已触发的阶梯集合）
+            tp_triggered = pos.get('tp_triggered', set())
             should_sell, reason, sell_pct = self.risk_manager.check(
                 current_price=current_price,
                 entry_price=pos['cost'] / pos['qty'],
                 peak_price=peak_price,
-                hold_days=hold_days
+                hold_days=hold_days,
+                triggered_tiers=tp_triggered
             )
             
             if should_sell:
@@ -810,7 +813,8 @@ class BacktestOrchestrator:
                         signal_info = {
                             'type': 'take_profit',
                             'reason': reason,
-                            'sell_pct': sell_pct  # 卖出比例
+                            'sell_pct': sell_pct,  # 卖出比例
+                            'tp_trigger': True,    # 标记为阶梯止盈触发
                         }
                         if next_open_day not in simulator.sell_signals:
                             simulator.sell_signals[next_open_day] = []
@@ -823,6 +827,10 @@ class BacktestOrchestrator:
                                 sell_qty,
                                 signal_info
                             ])
+                            # 阶梯止盈：记录已触发的阶梯，避免重复触发
+                            if 'laddered' in reason:
+                                tier_key = (round((peak_price - pos['cost']/pos['qty']) / (pos['cost']/pos['qty']), 2), sell_pct)
+                                pos['tp_triggered'].add(tier_key)
                 except:
                     continue
 
