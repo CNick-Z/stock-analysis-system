@@ -796,6 +796,45 @@ class BacktestOrchestrator:
                 peak_price = current_price
                 pos['highest_price'] = peak_price
             
+            # ========== 趋势判断 ==========
+            # 获取 MA20 数据判断趋势是否完整
+            try:
+                ma20 = self.price_matrix.loc[date_obj.strftime('%Y-%m-%d'), ('ma20', symbol)]
+                if ma20 != ma20:  # NaN check
+                    ma20 = None
+            except:
+                ma20 = None
+            
+            cost_basis = pos['cost'] / pos['qty']
+            current_gain_pct = (current_price - cost_basis) / cost_basis
+            
+            # 趋势破坏判断：价格在 MA20 下方
+            trend_broken = ma20 is not None and current_price < ma20
+            
+            # 如果趋势破坏 且 盈利 > 10%，立即强制卖出（不让利润回吐）
+            if trend_broken and current_gain_pct > 0.10:
+                try:
+                    next_open_price, next_open_day = self._get_next_open_price(date_obj.strftime('%Y-%m-%d'), symbol)
+                    if next_open_price:
+                        signal_info = {
+                            'type': 'take_profit',
+                            'reason': f"trend_break:趋势破坏强制卖出(盈利{current_gain_pct*100:.1f}%)",
+                            'sell_pct': 1.0,  # 全卖
+                        }
+                        if next_open_day not in simulator.sell_signals:
+                            simulator.sell_signals[next_open_day] = []
+                        total_qty = simulator.portfolio['positions'][symbol]['qty']
+                        if total_qty > 0:
+                            simulator.sell_signals[next_open_day].append([
+                                symbol, next_open_price, next_open_day,
+                                total_qty,
+                                signal_info
+                            ])
+                except:
+                    pass
+                continue  # 跳过阶梯止盈检查
+            
+            # 趋势完整，使用阶梯止盈
             # 使用 RiskManager 检查风控（传入已触发的阶梯集合）
             tp_triggered = pos.get('tp_triggered', set())
             should_sell, reason, sell_pct = self.risk_manager.check(
