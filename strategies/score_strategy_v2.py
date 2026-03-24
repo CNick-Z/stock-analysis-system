@@ -362,9 +362,6 @@ class ScoreStrategy(BaseStrategy):
         signals = self.generate_features(start_date, end_date)
 
         # 买入条件
-        # 老板原版配置：RSI 50~60 过滤
-        rsi_filter = (signals['rsi_14'] >= 50) & (signals['rsi_14'] <= 60)
-
         buy_condition = (
             signals['growth_condition'] &
             signals['ma_condition'] &
@@ -373,8 +370,8 @@ class ScoreStrategy(BaseStrategy):
             signals['macd_condition'] &
             (signals['jc_condition'] | signals['macd_jc']) &
             (signals['ma_20'] < signals['ma_55']) &
-            (signals['ma_55'] > signals['ma_240']) &
-            rsi_filter  # RSI 50~60
+            (signals['ma_55'] > signals['ma_240'])
+            # 原版逻辑：无 market_heat 硬过滤
         )
 
         buy_signals = signals[buy_condition].copy()
