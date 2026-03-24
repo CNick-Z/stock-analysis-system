@@ -370,31 +370,28 @@ class ScoreStrategy(BaseStrategy):
             signals['macd_condition'] &
             (signals['jc_condition'] | signals['macd_jc']) &
             (signals['ma_20'] < signals['ma_55']) &
-            (signals['ma_55'] > signals['ma_240']) &
-            (signals['market_heat'] < 2.5)  # Phase 3: 市场热度过滤
+            (signals['ma_55'] > signals['ma_240'])
+            # 原版逻辑：无 market_heat 硬过滤
         )
 
         buy_signals = signals[buy_condition].copy()
         buy_signals['signal_type'] = 'buy'
 
-        # 评分选股
+        # 评分选股（原版逻辑：只排序，不做硬过滤）
         buy_signals = self._score_stocks(buy_signals)
         if buy_signals.empty:
             selected_buy = None
         else:
-            # Phase 3: score <= 1.8 过滤
-            buy_signals = buy_signals[buy_signals['total_score'] <= 1.8]
-            if buy_signals.empty:
-                selected_buy = None
-            else:
-                final_picks = []
-                for date in buy_signals['date'].unique():
-                    daily = buy_signals[buy_signals['date'] == date]
-                    top = daily.nlargest(self.config['top_n'], 'total_score')
-                    final_picks.append(top)
-                selected_buy = pd.concat(final_picks) if final_picks else None
-                if selected_buy is not None:
-                    selected_buy = selected_buy.set_index('date')
+            # 原版逻辑：直接按 score 排序选 top_n，不做硬过滤
+            # 评分越低越好（0.8-1.0 是最佳区间）
+            final_picks = []
+            for date in buy_signals['date'].unique():
+                daily = buy_signals[buy_signals['date'] == date]
+                top = daily.nsmallest(self.config['top_n'], 'total_score')  # 原版用 nsmallest（低分优先）
+                final_picks.append(top)
+            selected_buy = pd.concat(final_picks) if final_picks else None
+            if selected_buy is not None:
+                selected_buy = selected_buy.set_index('date')
 
         # 卖出条件
         sell_condition = (
