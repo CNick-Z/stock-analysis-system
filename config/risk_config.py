@@ -36,17 +36,11 @@ from dataclasses import dataclass
 
 # 分档止盈规则：(涨幅下限, 涨幅上限) -> {mode: 模式, sell_pct: 卖出仓位比例, withdraw_pct: 允许回撤比例}
 TIERED_TAKE_PROFIT_RULES: Dict[Tuple[float, float], Dict[str, Any]] = {
-    # 阶梯止盈：涨过门槛主动卖，每个门槛只触发一次
-    # 盈利 > 5%：什么都不卖，让利润奔跑
-    # 盈利 > 10%：卖出30%锁利
-    # 盈利 > 20%：再卖出20%
-    # 盈利 > 30%：再卖出15%
-    # 盈利 > 50%：再卖出20%
-    (0.00, 0.10): {'mode': 'laddered', 'sell_pct': 0.00, 'desc': '0-10%不止盈'},
-    (0.10, 0.20): {'mode': 'laddered', 'sell_pct': 0.30, 'desc': '阶梯1:卖30%'},
-    (0.20, 0.30): {'mode': 'laddered', 'sell_pct': 0.20, 'desc': '阶梯2:卖20%'},
-    (0.30, 0.50): {'mode': 'laddered', 'sell_pct': 0.15, 'desc': '阶梯3:卖15%'},
-    (0.50, 999.0): {'mode': 'laddered', 'sell_pct': 0.20, 'desc': '阶梯4:卖20%'},
+    # Phase 1 原始配置：追踪止盈
+    (0.00, 0.05): {'mode': 'breakeven', 'withdraw_pct': 0.003, 'desc': '保本微盈'},
+    (0.05, 0.10): {'mode': 'trailing', 'withdraw_pct': 0.50, 'desc': '允许回撤50%'},
+    (0.10, 0.20): {'mode': 'trailing', 'withdraw_pct': 0.30, 'desc': '允许回撤30%'},
+    (0.20, 999.0): {'mode': 'trailing', 'withdraw_pct': 0.10, 'desc': '允许回撤10%'},
 }
 
 # 默认止损配置
@@ -78,9 +72,9 @@ class TieredTakeProfit:
             if low <= gain_pct < high:
                 return config
         # 默认返回最后一档
-        return self.rules[(0.50, 999.0)]
+        return self.rules[(0.20, 999.0)]
     
-    def check(self, current_price: float, entry_price: float, peak_price: float, hold_days: int = 0, triggered_tiers: set = None) -> Tuple[bool, str, float]:
+    def check(self, current_price: float, entry_price: float, peak_price: float, hold_days: int = 0) -> Tuple[bool, str, float]:
         """
         检查是否触发止盈
         
@@ -89,14 +83,13 @@ class TieredTakeProfit:
             entry_price: 入场价格
             peak_price: 持仓期间最高价
             hold_days: 已持仓天数
-            triggered_tiers: 已触发的阶梯集合（阶梯止盈模式用）
         
         Returns:
             (should_sell, reason, sell_pct): 是否应该卖出, 原因, 卖出仓位比例(0-1)
         
         核心逻辑：
-        - 阶梯模式：涨过门槛主动卖，每个门槛只触发一次
-        - 追踪止损：跌破最高点回撤比例则卖
+        - 持仓 < 20天：不触发止盈（让利润奔跑，0-20天是主要亏损期）
+        - 20天+：根据涨幅分档止盈，每次只卖一部分
         """
         if entry_price <= 0 or current_price <= 0 or peak_price <= 0:
             return False, "", 0.0
@@ -113,21 +106,6 @@ class TieredTakeProfit:
             if current_price < breakeven_price * (1 - tier['withdraw_pct']):
                 return True, f"take_profit:保本触发(现价{current_price:.2f})", 1.0
             return False, "", 0.0
-        
-        elif tier['mode'] == 'laddered':
-            # 阶梯止盈模式：每个门槛只触发一次
-            # triggered_tiers 记录已触发的门槛key
-            if triggered_tiers is None:
-                triggered_tiers = set()
-            
-            tier_key = (round(peak_gain_pct, 2), tier.get('sell_pct', 0))
-            
-            # 门槛0（0-10%）不触发，或者已经触发过了
-            if tier['sell_pct'] <= 0 or tier_key in triggered_tiers:
-                return False, "", 0.0
-            
-            # 阶梯触发：涨过门槛就卖，然后标记为已触发
-            return True, f"laddered:{tier['desc']}(涨{peak_gain_pct*100:.1f}%)", tier['sell_pct']
         
         elif tier['mode'] == 'partial':
             # 分批卖出模式：涨到目标位就卖指定比例
@@ -279,8 +257,7 @@ class RiskManager:
         current_price: float,
         entry_price: float,
         peak_price: float,
-        hold_days: int,
-        triggered_tiers: set = None
+        hold_days: int
     ) -> Tuple[bool, str, float]:
         """
         综合风控检查
@@ -301,9 +278,7 @@ class RiskManager:
         
         # 2. 分档止盈（部分卖）
         if self.tiered_tp:
-            should_sell, reason, sell_pct = self.tiered_tp.check(
-                current_price, entry_price, peak_price, hold_days, triggered_tiers
-            )
+            should_sell, reason, sell_pct = self.tiered_tp.check(current_price, entry_price, peak_price, hold_days)
             if should_sell:
                 return True, reason, sell_pct
         

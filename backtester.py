@@ -183,8 +183,7 @@ class TradingSimulator:
                 'qty': quantity,
                 'cost': total_cost,
                 'entry_date': date,
-                'latest_price': price,  # 初始化最新价格为买入价格
-                'tp_triggered': set(),   # 阶梯止盈：记录已触发的阶梯
+                'latest_price': price  # 初始化最新价格为买入价格
             }
 
         # 更新现金
@@ -269,7 +268,7 @@ class BacktestOrchestrator:
             use_tiered_tp=True,    # 分档止盈
             use_trailing_stop=False,  # 追踪止损（暂时禁用，用原来的）
             use_time_stop=True,    # 时间止损
-            stop_loss_pct=-0.05,  # 5%固定止损
+            stop_loss_pct=-0.08,  # 8%固定止损（老板最优配置）
             max_hold_days=20       # 20天时间止损
         )
         self.position_manager = DynamicPositionManager(initial_position=0.5, position_levels=[0.3,0.5,0.8,1], window_size=3)
@@ -796,53 +795,12 @@ class BacktestOrchestrator:
                 peak_price = current_price
                 pos['highest_price'] = peak_price
             
-            # ========== 趋势判断 ==========
-            # 获取 MA20 数据判断趋势是否完整
-            try:
-                ma20 = self.price_matrix.loc[date_obj.strftime('%Y-%m-%d'), ('ma20', symbol)]
-                if ma20 != ma20:  # NaN check
-                    ma20 = None
-            except:
-                ma20 = None
-            
-            cost_basis = pos['cost'] / pos['qty']
-            current_gain_pct = (current_price - cost_basis) / cost_basis
-            
-            # 趋势破坏判断：价格在 MA20 下方
-            trend_broken = ma20 is not None and current_price < ma20
-            
-            # 如果趋势破坏 且 盈利 > 10%，立即强制卖出（不让利润回吐）
-            if trend_broken and current_gain_pct > 0.10:
-                try:
-                    next_open_price, next_open_day = self._get_next_open_price(date_obj.strftime('%Y-%m-%d'), symbol)
-                    if next_open_price:
-                        signal_info = {
-                            'type': 'take_profit',
-                            'reason': f"trend_break:趋势破坏强制卖出(盈利{current_gain_pct*100:.1f}%)",
-                            'sell_pct': 1.0,  # 全卖
-                        }
-                        if next_open_day not in simulator.sell_signals:
-                            simulator.sell_signals[next_open_day] = []
-                        total_qty = simulator.portfolio['positions'][symbol]['qty']
-                        if total_qty > 0:
-                            simulator.sell_signals[next_open_day].append([
-                                symbol, next_open_price, next_open_day,
-                                total_qty,
-                                signal_info
-                            ])
-                except:
-                    pass
-                continue  # 跳过阶梯止盈检查
-            
-            # 趋势完整，使用阶梯止盈
-            # 使用 RiskManager 检查风控（传入已触发的阶梯集合）
-            tp_triggered = pos.get('tp_triggered', set())
+            # 使用 RiskManager 检查风控
             should_sell, reason, sell_pct = self.risk_manager.check(
                 current_price=current_price,
                 entry_price=pos['cost'] / pos['qty'],
                 peak_price=peak_price,
-                hold_days=hold_days,
-                triggered_tiers=tp_triggered
+                hold_days=hold_days
             )
             
             if should_sell:
@@ -852,8 +810,7 @@ class BacktestOrchestrator:
                         signal_info = {
                             'type': 'take_profit',
                             'reason': reason,
-                            'sell_pct': sell_pct,  # 卖出比例
-                            'tp_trigger': True,    # 标记为阶梯止盈触发
+                            'sell_pct': sell_pct  # 卖出比例
                         }
                         if next_open_day not in simulator.sell_signals:
                             simulator.sell_signals[next_open_day] = []
@@ -866,10 +823,6 @@ class BacktestOrchestrator:
                                 sell_qty,
                                 signal_info
                             ])
-                            # 阶梯止盈：记录已触发的阶梯，避免重复触发
-                            if 'laddered' in reason:
-                                tier_key = (round((peak_price - pos['cost']/pos['qty']) / (pos['cost']/pos['qty']), 2), sell_pct)
-                                pos['tp_triggered'].add(tier_key)
                 except:
                     continue
 
