@@ -4,13 +4,14 @@ from utils.db_operations import *
 import pandas as pd
 import numpy as np
 import matplotlib
-matplotlib.use('TkAgg')  
+matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from tqdm import tqdm
 from datetime import datetime, timedelta
 from utils.stock_report import  *
 from utils.strategy import StockScorer,EnhancedTDXStrategy
+from config.risk_config import RiskManager, TieredTakeProfit, TrailingStop, TimeStop
 import logging
 
 class DynamicPositionManager:
@@ -37,13 +38,13 @@ class DynamicPositionManager:
         self.previous_values.append(current_value)
         if len(self.previous_values) > self.window_size:
             self.previous_values=[]  # 保持窗口大小
-        
+
         if len(self.previous_values) >= self.window_size:
             # 计算多日收益率
             start_value = self.previous_values[0]
             end_value = current_value  # 使用最新值计算
             self.multi_day_return = (end_value - start_value) / start_value
-            
+
             # 熔断状态管理
             if not self.circuit_breaker:
                 # 判断涨跌情况
@@ -66,7 +67,7 @@ class DynamicPositionManager:
                 elif self.consecutive_down_periods >= 2:
                     # 连续下跌一个窗口期，降低仓位
                     self._decrease_position()
-                
+
                 # 根据多日收益率的大小进一步调整仓位
                 self._adjust_position_by_return()
                 # 检查是否触发熔断
@@ -77,12 +78,12 @@ class DynamicPositionManager:
                 self.circuit_breaker_counter += 1
                 if self.circuit_breaker_counter >= self.max_circuit_breaker_period:
                     self._deactivate_circuit_breaker()
-                
-            
-            
-        
+
+
+
+
         return self.current_position
-    
+
     #def _increase_position(self):
     def _decrease_position(self):
         """增加仓位"""
@@ -90,7 +91,7 @@ class DynamicPositionManager:
             self.position_index += 1
             self.current_position = self.position_levels[self.position_index]
             logging.info(f"仓位提升至: {self.current_position*100}%")
-    
+
     #def _decrease_position(self):
     def _increase_position(self):
         """减少仓位"""
@@ -98,7 +99,7 @@ class DynamicPositionManager:
             self.position_index -= 1
             self.current_position = self.position_levels[self.position_index]
             logging.info(f"仓位降低至: {self.current_position*100}%")
-    
+
     def _adjust_position_by_return(self):
         """根据多日收益率调整仓位"""
         # 如果多日收益率超过某个阈值，增加仓位
@@ -119,7 +120,7 @@ class DynamicPositionManager:
         self.circuit_breaker = False
         self.consecutive_losses = 0  # 重置计数器
         self.cooldown_counter = self.circuit_breaker_cooldown
-        self.current_position = self.position_levels[1] 
+        self.current_position = self.position_levels[1]
         logging.info("! 熔断解除，仓位重置为安全水平，进入冷却期")
 
     def is_circuit_breaker_active(self):
@@ -133,28 +134,14 @@ class DynamicPositionManager:
             if self.cooldown_counter == 0:
                 logging.info("! 冷却期结束，恢复正常交易")
 class DatabaseIntegrator:
-    """数据库集成模块"""
-    def __init__(self, db_path):
-        self.db_manager = DatabaseManager(f"sqlite:///{db_path}")
-        self.db_manager.ensure_tables_exist()
+    """数据库集成模块 - 使用 Parquet 数据仓库"""
+    def __init__(self, db_path=None):
+        from utils.parquet_db import ParquetDatabaseIntegrator
+        self._parquet = ParquetDatabaseIntegrator(db_path)
 
     def fetch_trading_dates_and_price_matrix(self, start_date: str, end_date: str) -> tuple:
         """一次性查询并生成交易日期和价格矩阵"""
-        filter_conditions = {
-            'date': {
-                '$between': [start_date, end_date]
-            }
-        }
-        # 查询数据
-        df = self.db_manager.load_data(DailyDataBase, filter_conditions, columns=['date', 'symbol', 'open','close'])
-
-        # 生成交易日期索引
-        trading_dates = pd.to_datetime(df['date']).sort_values().unique()
-
-        # 生成价格矩阵
-        price_matrix = df.pivot_table(index='date', columns='symbol', values=['open','close'])
-
-        return trading_dates, price_matrix
+        return self._parquet.fetch_trading_dates_and_price_matrix(start_date, end_date)
 
 
 class TradingSimulator:
@@ -169,21 +156,21 @@ class TradingSimulator:
         self.position_limit = position_limit  # 替换原来的硬编码
         self.buy_signals = {}
         self.sell_signals = {}
-        
+
     def execute_order(self, order_type: str, symbol: str, price: float, date: datetime, quantity: int,signal_info,signal=None):
         """执行订单并更新持仓"""
         if order_type == 'buy':
             return self._execute_buy(symbol, price, date, quantity,signal_info,signal)
         elif order_type == 'sell':
             return self._execute_sell(symbol, price, date, quantity,signal_info)
-        
+
     def _execute_buy(self, symbol, price, date, quantity,signal_info,signal):
         # 计算交易成本
         commission = price * quantity * self.commission_rate
         total_cost = price * quantity + commission
         if total_cost > self.portfolio['cash']:
             return False
-            
+
         # 更新持仓
         if symbol in self.portfolio['positions']:
             self.portfolio['positions'][symbol]['qty'] += quantity
@@ -196,10 +183,10 @@ class TradingSimulator:
                 'entry_date': date,
                 'latest_price': price  # 初始化最新价格为买入价格
             }
-            
+
         # 更新现金
         self.portfolio['cash'] -= total_cost
-        
+
         # 记录交易
         self.portfolio['history'].append({
             'date': date,
@@ -217,18 +204,18 @@ class TradingSimulator:
     def _execute_sell(self, symbol, price, date, quantity,signal_info):
         position = self.portfolio['positions'].get(symbol)
         if not position or position['qty'] < quantity:
-            return False   
+            return False
         # 计算交易金额
         proceeds = price * quantity
         commission = proceeds * self.commission_rate
         net_proceeds = proceeds - commission
-        
+
         # 更新现金和持仓
         self.portfolio['cash'] += net_proceeds
         position['qty'] -= quantity
         if position['qty'] == 0:
             del self.portfolio['positions'][symbol]
-            
+
         # 记录交易
         self.portfolio['history'].append({
             'date': date,
@@ -255,8 +242,16 @@ class BacktestOrchestrator:
         self.price_matrix = None
         self.trading_dates = None
         self.live_plot = live_plot
-        self.commission_rate = commission_rate 
+        self.commission_rate = commission_rate
         self.trailing_stop_ratio = 0.05
+        # 止盈止损风险管理器（独立模块）
+        self.risk_manager = RiskManager(
+            use_tiered_tp=True,    # 分档止盈
+            use_trailing_stop=False,  # 追踪止损（暂时禁用，用原来的）
+            use_time_stop=True,    # 时间止损
+            stop_loss_pct=-0.05,  # 5%固定止损
+            max_hold_days=20       # 20天时间止损
+        )
         self.position_manager = DynamicPositionManager(initial_position=0.5, position_levels=[0.3,0.5,0.8,1], window_size=3)
         self.plot_save_path = './backtestresult/'
         if self.live_plot:
@@ -264,7 +259,7 @@ class BacktestOrchestrator:
             # 创建网格布局，左侧显示持仓信息，右侧显示净值曲线
             self.fig = plt.figure(figsize=(12, 6))
             gs = self.fig.add_gridspec(1, 2, width_ratios=[3, 7])  # 左右分布比例 1:3
-            
+
             # 右侧显示净值曲线
             self.ax_value = self.fig.add_subplot(gs[0, 1])
             self.dates = []
@@ -274,13 +269,13 @@ class BacktestOrchestrator:
             self.ax_value.set_xlabel("Date")
             self.ax_value.set_ylabel("Value")
             self.ax_value.grid(True)
-            
+
             # 左侧显示持仓信息
             self.ax_info = self.fig.add_subplot(gs[0, 0])
             self.ax_info.axis('off')  # 关闭坐标轴
             import atexit
             atexit.register(self.save_plot)
-            
+
     def save_plot(self):
         """保存当前图表到指定路径"""
         if hasattr(self, 'fig') and self.fig:
@@ -301,12 +296,12 @@ class BacktestOrchestrator:
         current_date = data['current_date']
         current_value = data['current_value']
         current_cash = data['cash']
-    
-        
+
+
         # 计算文本的垂直位置
         text_y = 0.95  # 初始垂直位置
         line_spacing = 0.05  # 行间距
-        
+
         # 显示当前日期
         self.ax_info.text(
             0.05, text_y,
@@ -316,7 +311,7 @@ class BacktestOrchestrator:
             verticalalignment='top'
         )
         text_y -= line_spacing  # 调整下一行的垂直位置
-        
+
         # 显示组合价值
         self.ax_info.text(
             0.05, text_y,
@@ -326,7 +321,7 @@ class BacktestOrchestrator:
             verticalalignment='top'
         )
         text_y -= line_spacing  # 调整下一行的垂直位置
-        
+
         # 显示现金
         self.ax_info.text(
             0.05, text_y,
@@ -336,7 +331,7 @@ class BacktestOrchestrator:
             verticalalignment='top'
         )
         text_y -= line_spacing  # 调整下一行的垂直位置
-        
+
         # 显示持仓信息
         positions = data['positions']
         if positions:
@@ -354,12 +349,12 @@ class BacktestOrchestrator:
         logging.info("初始化回测环境,获取交易日历和价格矩阵...")
         self.trading_dates, self.price_matrix = self.db.fetch_trading_dates_and_price_matrix(start_date, end_date)
 
-        
+
 
     def date_by_year(self,start_date, end_date):
         # 将字符串日期转换为 datetime 对象
         start_date = pd.to_datetime(start_date)
-        end_date = pd.to_datetime(end_date)        
+        end_date = pd.to_datetime(end_date)
         # 生成按年分段的日期范围
         year_ranges = []
         current_start = start_date
@@ -373,23 +368,31 @@ class BacktestOrchestrator:
 
     def run(self, start_date, end_date):
         """运行完整回测流程"""
+        self.start_date = start_date
+        self.end_date = end_date
         self.initialize(start_date, end_date)
+
+        # 不再全量预加载，改成逐年查询（避免内存爆炸）
+
         simulator = TradingSimulator(
             initial_capital=5e5,
             commission=0.0003,
-            position_limit=self.position_limit 
+            position_limit=self.position_limit
             )
-        
+
         years=self.date_by_year(start_date, end_date)
         for year_start, year_end in years:
+            # 转换日期为字符串格式
+            year_start_str = year_start.strftime('%Y-%m-%d') if hasattr(year_start, 'strftime') else str(year_start)[:10]
+            year_end_str = year_end.strftime('%Y-%m-%d') if hasattr(year_end, 'strftime') else str(year_end)[:10]
             # 获取回测日期范围
             dates = self.trading_dates[
-            (self.trading_dates >= pd.to_datetime(year_start)) & 
+            (self.trading_dates >= pd.to_datetime(year_start)) &
             (self.trading_dates < pd.to_datetime(year_end))]
-            year_buy_signals,year_sell_signals=self.strategy.get_signals(start_date,end_date)
+            year_buy_signals,year_sell_signals=self.strategy.get_signals(year_start_str,year_end_str)
             self._mian_process(dates,simulator,year_buy_signals,year_sell_signals)
         return self._generate_report(simulator)
-        
+
     def _mian_process(self,dates,simulator,year_buy_signals,year_sell_signals):
         current_year=dates[0].year
         for date in tqdm(dates, desc=f"{current_year}回测进度"):
@@ -407,17 +410,19 @@ class BacktestOrchestrator:
                         simulator.execute_order('buy', info[0],info[1],info[2],info[3],info[4],info[5])
                     del simulator.buy_signals[date]
             # 记录每日净值
-            self._record_daily_value(date, simulator)            
+            self._record_daily_value(date, simulator)
             # 更新实时图表
             if self.live_plot:
-                self._update_live_plot(simulator)            
+                self._update_live_plot(simulator)
             # 检查止损
             self._check_stop_loss(date, simulator)
+            # 检查分档止盈（独立风控模块）
+            self._check_take_profit(date, simulator)
             # 处理卖出信号
-            self._process_sell_signals(date,simulator,year_sell_signals)           
+            self._process_sell_signals(date,simulator,year_sell_signals)
             # 处理买入信号
             self._process_buy_signals(date,simulator,year_buy_signals)
-            
+
 
     def _process_sell_signals(self, date, simulator,signals):
         """处理卖出信号"""
@@ -434,9 +439,9 @@ class BacktestOrchestrator:
         profitable_sell_signals = []
         for symbol, pos in list(simulator.portfolio['positions'].items()):
             cost_per_share = pos['cost'] / pos['qty']
-            if pos['latest_price'] > cost_per_share: 
+            if pos['latest_price'] > cost_per_share:
                 profitable_sell_signals.append(symbol)
-        
+
         # 只对盈利的持仓股票处理卖出信号
         for _, row in sell_signals.iterrows():
             if row['symbol'] in profitable_sell_signals:
@@ -451,7 +456,7 @@ class BacktestOrchestrator:
                         if next_open_day not in simulator.sell_signals:
                             simulator.sell_signals[next_open_day] = []
                         simulator.sell_signals[next_open_day].append([row['symbol'],next_open_price,next_open_day,simulator.portfolio['positions'][row['symbol']]['qty'],signal_info])
-                        #simulator.execute_order('sell', row['symbol'], next_open_price, next_open_day, 
+                        #simulator.execute_order('sell', row['symbol'], next_open_price, next_open_day,
                         #                        simulator.portfolio['positions'][row['symbol']]['qty'])
                 except:
                     continue
@@ -463,20 +468,20 @@ class BacktestOrchestrator:
         current_position = self.position_manager.current_position
 
         available_slots = self.position_limit - len(simulator.portfolio['positions'])
-        if available_slots <= 0: 
+        if available_slots <= 0:
             return
-        
+
         # 获取买入信号
-        if signals is None: 
+        if signals is None:
             return
         scored_signals = signals[signals.index == date]
-        if scored_signals.empty or scored_signals is None: 
+        if scored_signals.empty or scored_signals is None:
             return
         holding_symbols = list(simulator.portfolio['positions'].keys())
-        
+
         for _, row in scored_signals.iterrows():
             if available_slots>0:
-                if row['symbol'] in holding_symbols: 
+                if row['symbol'] in holding_symbols:
                     continue
                 # 计算单支股票最大可投入资金（不超过总仓位10%）
                 try:
@@ -484,7 +489,7 @@ class BacktestOrchestrator:
                     next_open=self._get_next_open_day(date)
                     if next_open != next_open_day:
                         continue
-                    # 计算总账户价值                    
+                    # 计算总账户价值
                     total_account_value = self._total_value(date, simulator)
                     if (total_account_value-simulator.portfolio['cash'])/total_account_value>current_position:
                         continue
@@ -563,7 +568,7 @@ class BacktestOrchestrator:
             date_obj = datetime.strptime(date, "%Y-%m-%d").date()
         else:
             date_obj = date
-        for symbol, pos in list(simulator.portfolio['positions'].items()):            
+        for symbol, pos in list(simulator.portfolio['positions'].items()):
             if  pos['entry_date']== date_obj.strftime('%Y-%m-%d'):
                 continue
             current_price = self.price_matrix.loc[date_obj.strftime('%Y-%m-%d'), ('close',symbol)]
@@ -610,7 +615,59 @@ class BacktestOrchestrator:
                         continue
             '''
             
-           
+    def _check_take_profit(self, date, simulator):
+        """执行分档止盈检查（独立风控模块）"""
+        if isinstance(date, str):
+            date_obj = datetime.strptime(date, "%Y-%m-%d").date()
+        else:
+            date_obj = date
+        
+        for symbol, pos in list(simulator.portfolio['positions'].items()):
+            # 跳过今日买入的
+            if pos['entry_date'] == date_obj.strftime('%Y-%m-%d'):
+                continue
+            
+            current_price = self.price_matrix.loc[date_obj.strftime('%Y-%m-%d'), ('close', symbol)]
+            if current_price != current_price:  # NaN check
+                continue
+            
+            pos['latest_price'] = current_price
+            
+            # 计算持仓天数
+            entry_date = datetime.strptime(pos['entry_date'], '%Y-%m-%d').date()
+            hold_days = (date_obj - entry_date).days
+            
+            # 获取持仓期间最高价
+            peak_price = pos.get('highest_price', current_price)
+            if current_price > peak_price:
+                peak_price = current_price
+                pos['highest_price'] = peak_price
+            
+            # 使用 RiskManager 检查风控
+            should_sell, reason = self.risk_manager.check(
+                current_price=current_price,
+                entry_price=pos['cost'] / pos['qty'],
+                peak_price=peak_price,
+                hold_days=hold_days
+            )
+            
+            if should_sell:
+                try:
+                    next_open_price, next_open_day = self._get_next_open_price(date_obj.strftime('%Y-%m-%d'), symbol)
+                    if next_open_price:
+                        signal_info = {
+                            'type': 'take_profit',
+                            'reason': reason
+                        }
+                        if next_open_day not in simulator.sell_signals:
+                            simulator.sell_signals[next_open_day] = []
+                        simulator.sell_signals[next_open_day].append([
+                            symbol, next_open_price, next_open_day,
+                            simulator.portfolio['positions'][symbol]['qty'],
+                            signal_info
+                        ])
+                except:
+                    continue
 
     def _record_daily_value(self, date, simulator):
         total_value = self._total_value(date,simulator)
@@ -627,34 +684,97 @@ class BacktestOrchestrator:
             position_value += pos['latest_price'] * pos['qty']  # 使用最新价格计算市值
         total_value = simulator.portfolio['cash'] + position_value
         return total_value
-    
+
     def _generate_report(self, simulator):
         """生成详细报告"""
-        df = pd.DataFrame(simulator.portfolio['history']).set_index('date')
-        df['returns'] = df['value'].pct_change()
-        trades = pd.DataFrame(simulator.portfolio['history'])
-        
+        import sqlite3
+        # 分离每日净值记录和交易记录
+        all_history = simulator.portfolio['history']
+        daily_records = [r for r in all_history if 'value' in r and 'type' not in r]
+        trade_records_list = [r for r in all_history if 'type' in r]
+
+        df = pd.DataFrame(daily_records).set_index('date')
+        if len(df) > 0:
+            df['returns'] = df['value'].pct_change()
+        trades = pd.DataFrame(trade_records_list)
+
         now=str(time.time()).split('.')[0]
         trade_filename = f'./backtestresult/trades_report_{now}.xlsx'
         with pd.ExcelWriter(trade_filename) as writer:
             # 保存交易记录
             trades.to_excel(writer, sheet_name='Transactions', index=False)
-            
+
             # 保存回测报告摘要
+            turnover = trades.groupby('symbol').size().mean() if 'symbol' in trades.columns and len(trades) > 0 else 0
             summary_df = pd.DataFrame([{
                 'Final Value': df['value'].iloc[-1],
                 'Total Return': df['value'].iloc[-1] / 5e5 - 1,
                 'Max Drawdown': (df['value'] / df['value'].cummax() - 1).min(),
-                'Turnover': trades.groupby('symbol').size().mean()
+                'Turnover': turnover
             }])
             summary_df.to_excel(writer, sheet_name='Summary', index=False)
+
+        # 写入SQLite数据库
+        try:
+            db_path = '/root/.openclaw/workspace/projects/stock-sync/data/stock_data.db'
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+
+            # 只写入有symbol的交易记录
+            trade_records = trades[trades.get('symbol', pd.Series()).notna()]
+            for _, row in trade_records.iterrows():
+                cursor.execute("""
+                    INSERT INTO backtest_trades
+                    (strategy_id, framework, trade_date, symbol, name, trade_type,
+                     price, quantity, commission, cash_after_trade, signal_info)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    getattr(self.strategy, 'strategy_id', 'A'),
+                    'SQLite',
+                    row.get('date', ''),
+                    row.get('symbol', ''),
+                    row.get('name', ''),
+                    row.get('type', ''),
+                    row.get('price', 0),
+                    row.get('quantity', 0),
+                    row.get('commission', 0),
+                    row.get('value', 0),
+                    str(row.get('signal_info', ''))
+                ))
+
+            # 写入汇总
+            final_val = df['value'].iloc[-1] if not df.empty else 5e5
+            total_return = final_val / 5e5 - 1
+            max_dd = (df['value'] / df['value'].cummax() - 1).min() if not df.empty else 0
+            cursor.execute("""
+                INSERT INTO backtest_summary
+                (strategy_id, framework, start_date, end_date, total_return_pct,
+                 max_drawdown_pct, total_trades, final_value, initial_capital)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                getattr(self.strategy, 'strategy_id', 'A'),
+                'SQLite',
+                self.start_date if hasattr(self, 'start_date') else '',
+                self.end_date if hasattr(self, 'end_date') else '',
+                total_return * 100,
+                max_dd * 100,
+                len(trade_records),
+                final_val,
+                500000
+            ))
+
+            conn.commit()
+            conn.close()
+            print(f"✅ 已写入SQLite数据库 ({len(trade_records)}条交易记录)")
+        except Exception as e:
+            print(f"⚠️ 数据库写入失败: {e}")
 
         return {
             'summary': {
                 'final_value': df['value'].iloc[-1],
                 'total_return': df['value'].iloc[-1] / 5e5 - 1,
                 'max_drawdown': (df['value'] / df['value'].cummax() - 1).min(),
-                'turnover': trades.groupby('symbol').size().mean()
+                'turnover': trades.groupby('symbol').size().mean() if 'symbol' in trades.columns and len(trades) > 0 else 0
             },
             'trades': trades
         }
@@ -666,25 +786,25 @@ class BacktestOrchestrator:
         latest_value = simulator.portfolio['history'][-1]['value']
         date_str = simulator.portfolio['history'][-1]['date']
         latest_cash = simulator.portfolio['cash']
-        
+
         # 将日期字符串转换为日期对象
         if isinstance(date_str, str):
             latest_date = datetime.strptime(date_str, "%Y-%m-%d").date()
         else:
             latest_date = date_str
-        
+
         self.dates.append(latest_date)
         self.values.append(latest_value)
-        
+
         # 更新净值曲线数据
         self.value_line.set_data(self.dates, self.values)
         self.ax_value.relim()
         self.ax_value.autoscale_view()
-        
+
         # 自动调整日期格式
         self.ax_value.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
         self.fig.autofmt_xdate()
-        
+
         # 更新持仓信息显示
         self._info_callback(
             msg="Update",
@@ -701,12 +821,12 @@ class BacktestOrchestrator:
         self.fig.canvas.flush_events()
 
 # 使用示例
-if __name__ == "__main__":  
+if __name__ == "__main__":
     # 运行回测
     start_date='2025-01-01'
     end_date='2025-10-30'
     orchestrator = BacktestOrchestrator(position_limit=5,live_plot=True)
-    report = orchestrator.run(start_date, end_date)    
+    report = orchestrator.run(start_date, end_date)
     logging.info("回测结果摘要:")
     logging.info(f"最终净值: {report['summary']['final_value']:,.2f}")
     logging.info(f"总收益率: {report['summary']['total_return']:.2%}")
