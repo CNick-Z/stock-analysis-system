@@ -267,7 +267,7 @@ class BacktestOrchestrator:
         self.risk_manager = RiskManager(
             use_tiered_tp=True,    # 分档止盈
             use_trailing_stop=False,  # 追踪止损（暂时禁用，用原来的）
-            use_time_stop=True,    # 时间止损
+            use_time_stop=False,    # 时间止损（已禁用）
             stop_loss_pct=-0.08,  # 8%固定止损（老板最优配置）
             max_hold_days=20       # 20天时间止损
         )
