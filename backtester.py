@@ -501,6 +501,12 @@ class BacktestOrchestrator:
         if self.strategy_name == 'resonance':
             # 8指标共振策略
             self._process_resonance_buy_signals(date, simulator, scored_signals, holding_symbols, available_slots)
+        elif self.strategy_name == 'wavechan':
+            # 波浪缠论策略
+            self._process_wavechan_buy_signals(date, simulator, scored_signals, holding_symbols, available_slots)
+        elif self.strategy_name == 'qlib':
+            # Qlib增强策略
+            self._process_qlib_buy_signals(date, simulator, scored_signals, holding_symbols, available_slots)
         else:
             # 旧评分策略
             self._process_scored_buy_signals(date, simulator, scored_signals, holding_symbols, available_slots)
@@ -628,6 +634,88 @@ class BacktestOrchestrator:
             except Exception as e:
                 logging.warning(f"共振买入处理失败 {row['symbol']}: {e}")
                 continue
+
+    def _process_wavechan_buy_signals(self, date, simulator, candidates, holding_symbols, available_slots):
+        """
+        波浪缠论策略买入信号处理
+
+        基于双重确认：
+        - 周线允许交易（趋势向上 + 浪1/3）
+        - 日线一买或二买
+        """
+        current_position = self.position_manager.current_position
+
+        for _, row in candidates.iterrows():
+            if available_slots <= 0:
+                break
+            if row['symbol'] in holding_symbols:
+                continue
+
+            try:
+                next_open_price, next_open_day = self._get_next_open_price(date, row['symbol'])
+                next_open = self._get_next_open_day(date)
+                if next_open != next_open_day:
+                    continue
+
+                # 检查仓位
+                total_account_value = self._total_value(date, simulator)
+                if (total_account_value - simulator.portfolio['cash']) / total_account_value > current_position:
+                    continue
+
+                max_investment_cash = total_account_value * current_position // self.position_limit
+                max_investment = simulator.portfolio['cash'] // available_slots
+                max_investment = min(max_investment, max_investment_cash)
+                max_afford = max_investment // (next_open_price * (1 + self.commission_rate))
+                max_afford = (max_afford // 100) * 100
+
+                if max_afford > 0:
+                    signal_info = {
+                        'type': 'wavechan_buy',
+                        'strategy': 'wavechan',
+                        'daily_signal': row.get('daily_signal', 'unknown'),
+                        'wave_stage': row.get('wave_stage', 'unknown'),
+                        'weekly_trend': row.get('weekly_trend', 'unknown'),
+                        'confidence': row.get('daily_confidence', 0),
+                        'symbol': row['symbol'],
+                        'close': row.get('close', 0),
+                        'industry': row.get('industry', '')
+                    }
+
+                    extra_data = {
+                        'wave_stage': row.get('wave_stage', ''),
+                        'daily_signal': row.get('daily_signal', ''),
+                        'weekly_trend': row.get('weekly_trend', ''),
+                        'weekly_can_trade': row.get('weekly_can_trade', False),
+                        'fractal': row.get('fractal', ''),
+                        'divergence': row.get('divergence', False),
+                        'stop_loss': row.get('stop_loss', next_open_price * 0.97),
+                        'target': row.get('target', next_open_price * 1.25),
+                    }
+
+                    if next_open_day not in simulator.buy_signals:
+                        simulator.buy_signals[next_open_day] = []
+
+                    simulator.buy_signals[next_open_day].append([
+                        row['symbol'],
+                        next_open_price,
+                        next_open_day,
+                        max_afford,
+                        signal_info,
+                        extra_data
+                    ])
+
+                    logging.info(f"🌊 波浪缠论买入 {row['symbol']}，信号:{row.get('daily_signal','')}，浪:{row.get('wave_stage','')}，价格:{next_open_price}")
+
+            except Exception as e:
+                logging.warning(f"波浪缠论买入处理失败 {row['symbol']}: {e}")
+                continue
+
+    def _process_qlib_buy_signals(self, date, simulator, scored_signals, holding_symbols, available_slots):
+        """
+        Qlib增强策略买入信号处理
+        复用评分策略的处理逻辑，因为qlib策略也使用total_score字段
+        """
+        self._process_scored_buy_signals(date, simulator, scored_signals, holding_symbols, available_slots)
 
     def _process_scored_buy_signals(self, date, simulator, scored_signals, holding_symbols, available_slots):
         """
@@ -1030,8 +1118,8 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='股票回测系统')
     parser.add_argument('--strategy', type=str, default='score', 
-                        choices=['score', 'resonance'],
-                        help='策略名称: score=评分策略, resonance=共振策略')
+                        choices=['score', 'resonance', 'wavechan', 'qlib'],
+                        help='策略名称: score=评分策略, resonance=共振策略, wavechan=波浪缠论策略, qlib=Qlib增强策略')
     parser.add_argument('--start', type=str, default='2025-01-01', help='开始日期')
     parser.add_argument('--end', type=str, default='2025-10-30', help='结束日期')
     parser.add_argument('--position-limit', type=int, default=5, help='最大持仓数')
