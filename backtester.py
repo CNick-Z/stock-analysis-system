@@ -501,6 +501,9 @@ class BacktestOrchestrator:
         if self.strategy_name == 'resonance':
             # 8指标共振策略
             self._process_resonance_buy_signals(date, simulator, scored_signals, holding_symbols, available_slots)
+        elif self.strategy_name == 'resonance_v2':
+            # 共振策略v2（优化版）
+            self._process_resonance_v2_buy_signals(date, simulator, scored_signals, holding_symbols, available_slots)
         elif self.strategy_name == 'wavechan':
             # 波浪缠论策略
             self._process_wavechan_buy_signals(date, simulator, scored_signals, holding_symbols, available_slots)
@@ -633,6 +636,129 @@ class BacktestOrchestrator:
 
             except Exception as e:
                 logging.warning(f"共振买入处理失败 {row['symbol']}: {e}")
+                continue
+
+    def _process_resonance_v2_buy_signals(self, date, simulator, candidates, holding_symbols, available_slots):
+        """
+        共振策略v2买入信号处理
+
+        相比v1的改进：
+        - 加权评分制（替代简单计数）
+        - 市场广度过滤（breadth < 30% 放弃所有信号）
+        - RSI 50~60 过滤（BBI方向已在策略层过滤）
+
+        信号等级（基于加权分数）：
+        - 一级（≥0.35）：20%仓位
+        - 二级（≥0.50）：40%仓位
+        - 三级（≥0.70）：60%仓位
+        """
+        current_position = self.position_manager.current_position
+
+        # 获取当日市场广度（从信号数据的market_breadth字段取第一个非空值）
+        market_breadth = 0.5
+        if 'market_breadth' in candidates.columns:
+            breadth_vals = candidates['market_breadth'].dropna()
+            if not breadth_vals.empty:
+                market_breadth = breadth_vals.iloc[0]
+
+        resonance_results = []
+
+        for _, row in candidates.iterrows():
+            if row['symbol'] in holding_symbols:
+                continue
+
+            # 检查加权多指标共振（v2新方法）
+            is_bullish, weighted_score, signal_level = self.strategy._is_multi_indicator_bullish(row)
+
+            if not is_bullish:
+                continue
+
+            resonance_results.append({
+                'symbol': row['symbol'],
+                'weighted_score': weighted_score,
+                'indicator_count': self.strategy._count_indicators(row),
+                'signal_level': signal_level,
+                'row': row
+            })
+
+        # 按加权分数降序排序
+        resonance_results.sort(key=lambda x: x['weighted_score'], reverse=True)
+
+        # 按信号等级分组，每级最多选一只
+        selected = []
+        level_selected = {1: False, 2: False, 3: False}
+
+        for item in resonance_results:
+            level = item['signal_level']
+            if not level_selected.get(level, False) and len(selected) < available_slots:
+                selected.append(item)
+                level_selected[level] = True
+
+        # 执行买入
+        for item in selected:
+            row = item['row']
+            signal_level = item['signal_level']
+            position_config = self.strategy.config['signal_position_config']
+            position_ratio = position_config.get(signal_level, 0.20)
+
+            try:
+                next_open_price, next_open_day = self._get_next_open_price(date, row['symbol'])
+                next_open = self._get_next_open_day(date)
+                if next_open != next_open_day:
+                    continue
+
+                total_account_value = self._total_value(date, simulator)
+                target_position_ratio = current_position * position_ratio
+
+                current_position_ratio = (total_account_value - simulator.portfolio['cash']) / total_account_value
+                if current_position_ratio >= target_position_ratio:
+                    continue
+
+                max_investment = total_account_value * target_position_ratio - (total_account_value - simulator.portfolio['cash'])
+                max_afford = max_investment // (next_open_price * (1 + self.commission_rate))
+                max_afford = (max_afford // 100) * 100
+
+                if max_afford > 0:
+                    signal_info = {
+                        'type': 'resonance_v2_buy',
+                        'strategy': 'resonance_v2',
+                        '共振信号等级': signal_level,
+                        '加权分数': round(item['weighted_score'], 3),
+                        '满足指标数': item['indicator_count'],
+                        '市场广度': round(market_breadth, 2),
+                        'symbol': row['symbol'],
+                        'close': row['close'],
+                        'industry': row.get('industry', '')
+                    }
+
+                    if next_open_day not in simulator.buy_signals:
+                        simulator.buy_signals[next_open_day] = []
+
+                    extra_data = {
+                        'resonance_level': signal_level,
+                        'weighted_score': item['weighted_score'],
+                        'indicator_count': item['indicator_count'],
+                        'market_breadth': market_breadth,
+                    }
+                    for col in ['symbol', 'close', 'industry', 'ma_5', 'ma_20', 'macd', 'macd_signal',
+                                'kdj_k', 'kdj_d', 'rsi_14', 'williams_r', 'bbi', 'mtm', 'mtm_ma',
+                                'volume', 'vol_ma5', 'market_breadth']:
+                        if col in row.index:
+                            extra_data[col] = row[col]
+
+                    simulator.buy_signals[next_open_day].append([
+                        row['symbol'],
+                        next_open_price,
+                        next_open_day,
+                        max_afford,
+                        signal_info,
+                        extra_data
+                    ])
+
+                    logging.info(f"🔔 共振v2买入 {row['symbol']}，等级:{signal_level}，加权分:{item['weighted_score']:.2f}，广度:{market_breadth:.2%}，价格:{next_open_price}")
+
+            except Exception as e:
+                logging.warning(f"共振v2买入处理失败 {row['symbol']}: {e}")
                 continue
 
     def _process_wavechan_buy_signals(self, date, simulator, candidates, holding_symbols, available_slots):
