@@ -36,6 +36,8 @@ class QlibStrategy(BaseStrategy):
             'rank_window': 5,  # CS_Rank窗口
             'corr_window': 10,  # 相关性计算窗口
             'tsmean_window': 5,  # 移动平均窗口
+            # 股票池大小限制（解决内存问题）
+            'stock_universe_size': 500,  # 只保留成交额最高的前N只股票
         }
         self.config = {**default_config, **(config or {})}
 
@@ -46,8 +48,11 @@ class QlibStrategy(BaseStrategy):
         self.db_manager = ParquetDatabaseIntegrator(db_path)
         self.stock_info_cache = None
         
-        # Alpha158因子缓存
-        self.alpha_cache = {}
+        # Alpha158因子缓存（滑动窗口优化）
+        # 缓存整个回测周期的因子数据，避免逐年重复计算
+        self._factor_cache = None  # DataFrame: 全量因子数据
+        self._factor_cache_period = None  # (start_date, end_date): 缓存的数据范围
+        self._factor_cache_loaded = False  # 是否已加载全量数据
 
     def _get_stock_basic_info(self):
         """获取股票基础信息"""
@@ -60,14 +65,93 @@ class QlibStrategy(BaseStrategy):
             )
         return self.stock_info_cache
 
+    def precompute_all_factors(self, start_date: str, end_date: str) -> None:
+        """
+        预计算整个回测周期的Alpha158因子（滑动窗口优化核心）
+        
+        只在回测开始前调用一次，计算并缓存所有因子。
+        后续 get_signals() 调用直接从缓存读取，不再重复计算。
+        
+        Args:
+            start_date: 回测开始日期 (e.g., '2015-01-01')
+            end_date: 回测结束日期 (e.g., '2024-12-31')
+        """
+        logger.info(f"🔄 预计算Alpha158因子: {start_date} ~ {end_date}")
+        
+        # 扩展日期范围（需要lookback数据计算因子）
+        extended_start = pd.to_datetime(start_date) - pd.Timedelta(days=120)
+        extended_end = end_date
+        extended_start_str = extended_start.strftime("%Y-%m-%d")
+        
+        # 加载全量数据
+        tech_df = self._load_technical_data(extended_start_str, extended_end)
+        price_df = self._load_price_data(extended_start_str, extended_end)
+        info_df = self._get_stock_basic_info()
+        
+        # ========== 股票池限制：只保留成交额最高的前N只 ==========
+        stock_universe_size = self.config.get('stock_universe_size', 500)
+        if stock_universe_size and 'amount' in price_df.columns:
+            total_before = price_df['symbol'].nunique()
+            top_symbols = (
+                price_df.groupby('symbol')['amount']
+                .sum()
+                .nlargest(stock_universe_size)
+                .index.tolist()
+            )
+            price_df = price_df[price_df['symbol'].isin(top_symbols)]
+            tech_df = tech_df[tech_df['symbol'].isin(top_symbols)]
+            info_df = info_df[info_df['symbol'].isin(top_symbols)]
+            logger.info(f"📦 股票池限制: {total_before} → {len(top_symbols)} 只（按成交额）")
+        # ==========================================================
+        
+        # 合并数据
+        df = pd.merge(tech_df, price_df, on=['date', 'symbol'], how='inner')
+        df = pd.merge(df, info_df, on=['symbol'], how='inner')
+        df['date'] = pd.to_datetime(df['date'])
+        df = df.sort_values(['symbol', 'date']).reset_index(drop=True)  # 重置index，避免alpha计算index不匹配
+        
+        logger.info(f"📊 预计算：加载了 {len(df):,} 行数据 ({df['date'].min().date()} ~ {df['date'].max().date()})")
+        
+        # 计算Alpha158因子（全量一次性计算）
+        if self.config.get('alpha158_enabled', True):
+            df = self._calculate_alpha_factors(df)
+        
+        # 缓存结果
+        self._factor_cache = df
+        self._factor_cache_period = (start_date, end_date)
+        self._factor_cache_loaded = True
+        
+        logger.info(f"✅ Alpha158因子预计算完成，缓存 {len(df):,} 行，共 {df['date'].nunique()} 个交易日")
+        logger.info(f"   缓存有效期: {start_date} ~ {end_date}")
+
     def generate_features(self, start_date: str, end_date: str) -> pd.DataFrame:
         """
         生成特征数据，包含qlib Alpha158因子
         
         Alpha158因子是从qlib的158个预定义因子中精选的实用因子，
         涵盖量价关系、均线排列、资金流向等多个维度。
+        
+        优化：如果已预计算因子缓存，直接从缓存slice，不再重复计算。
         """
-        # 扩展日期范围
+        # 如果已有全量缓存，直接slice返回（滑动窗口优化）
+        if self._factor_cache_loaded and self._factor_cache is not None:
+            cached_start, cached_end = self._factor_cache_period
+            start_dt = pd.to_datetime(start_date)
+            end_dt = pd.to_datetime(end_date)
+            
+            # 扩展范围需要lookback数据（用于计算当日因子），但返回时过滤
+            lookback_start = start_dt - pd.Timedelta(days=60)
+            
+            # 从缓存中slice（扩展lookback范围）
+            df = self._factor_cache[
+                (self._factor_cache['date'] >= lookback_start) &
+                (self._factor_cache['date'] <= end_dt)
+            ].copy()
+            
+            logger.info(f"📦 因子缓存命中: {start_date} ~ {end_date} (获取 {len(df):,} 行)")
+            return df
+        
+        # 没有缓存fallback：扩展日期范围
         extended_start = pd.to_datetime(start_date) - pd.Timedelta(days=60)
         extended_start_str = extended_start.strftime("%Y-%m-%d")
 
@@ -76,11 +160,25 @@ class QlibStrategy(BaseStrategy):
         price_df = self._load_price_data(extended_start_str, end_date)
         info_df = self._get_stock_basic_info()
 
+        # ========== 股票池限制（同precompute_all_factors） ==========
+        stock_universe_size = self.config.get('stock_universe_size', 500)
+        if stock_universe_size and 'amount' in price_df.columns:
+            top_symbols = (
+                price_df.groupby('symbol')['amount']
+                .sum()
+                .nlargest(stock_universe_size)
+                .index.tolist()
+            )
+            price_df = price_df[price_df['symbol'].isin(top_symbols)]
+            tech_df = tech_df[tech_df['symbol'].isin(top_symbols)]
+            info_df = info_df[info_df['symbol'].isin(top_symbols)]
+        # ==========================================================
+
         # 合并数据
         df = pd.merge(tech_df, price_df, on=['date', 'symbol'], how='inner')
         df = pd.merge(df, info_df, on=['symbol'], how='inner')
         df['date'] = pd.to_datetime(df['date'])
-        df = df.sort_values(['symbol', 'date']).reset_index(drop=True)
+        df = df.sort_values(['symbol', 'date']).reset_index(drop=True)  # 重置index，避免alpha计算index不匹配
 
         # 计算qlib风格Alpha因子
         if self.config.get('alpha158_enabled', True):
@@ -124,22 +222,26 @@ class QlibStrategy(BaseStrategy):
         return df
 
     def _add_corr_factors(self, df: pd.DataFrame) -> pd.DataFrame:
-        """量价相关性因子"""
+        """量价相关性因子 - 向量化优化（修复版）"""
         window = self.config.get('corr_window', 10)
         
-        # Alpha001: Rank(Corr(Rank(Open), Rank(Volume), 10))
+        # 先计算截面排名
         df['rank_open'] = df.groupby('date')['open'].rank(pct=True)
         df['rank_volume'] = df.groupby('date')['volume'].rank(pct=True)
-        df['alpha_001'] = df.groupby('symbol')['rank_open'].transform(
-            lambda x: x.rolling(window, min_periods=1).corr(df.loc[x.index, 'rank_volume'])
-        )
-        df['alpha_001'] = df.groupby('date')['alpha_001'].rank(pct=True)
-        
-        # Alpha002: Rank(Corr(Rank(High), Rank(Volume), 10))
         df['rank_high'] = df.groupby('date')['high'].rank(pct=True)
+        
+        # 用 groupby+transform+rolling 计算滚动相关性（避免复杂index问题）
+        def rolling_corr_col(series1, series2, window):
+            """对两个同index的Series计算滚动相关系数"""
+            return series1.rolling(window, min_periods=1).corr(series2)
+        
+        df['alpha_001'] = df.groupby('symbol')['rank_open'].transform(
+            lambda x: rolling_corr_col(x, df.loc[x.index, 'rank_volume'], window))
         df['alpha_002'] = df.groupby('symbol')['rank_high'].transform(
-            lambda x: x.rolling(window, min_periods=1).corr(df.loc[x.index, 'rank_volume'])
-        )
+            lambda x: rolling_corr_col(x, df.loc[x.index, 'rank_volume'], window))
+        
+        # 最后截面排名
+        df['alpha_001'] = df.groupby('date')['alpha_001'].rank(pct=True)
         df['alpha_002'] = df.groupby('date')['alpha_002'].rank(pct=True)
         
         # 清理临时列
@@ -180,9 +282,8 @@ class QlibStrategy(BaseStrategy):
         
         # 收益率标准差 (类似Alpha043)
         for w in windows:
-            ret = df.groupby('symbol')['close'].pct_change()
-            df[f'alpha_volatility_{w}'] = df.groupby('symbol')[ret.name].transform(
-                lambda x: x.rolling(w, min_periods=1).std()
+            df[f'alpha_volatility_{w}'] = df.groupby('symbol')['close'].transform(
+                lambda x: x.pct_change().rolling(w, min_periods=1).std()
             )
         
         # 价格波动率与成交量波动率的比
@@ -191,7 +292,6 @@ class QlibStrategy(BaseStrategy):
                 lambda x: x.rolling(20, min_periods=1).std()
             )
             df['alpha_vol_ratio'] = df['alpha_volatility_20'] / (vol_std / df['volume'] + 1e-10)
-        
         return df
 
     def _add_momentum_factors(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -208,11 +308,12 @@ class QlibStrategy(BaseStrategy):
             if f'alpha_return_{p}d' in df.columns:
                 df[f'alpha_momentum_{p}'] = df.groupby('date')[f'alpha_return_{p}d'].rank(pct=True)
         
-        # RSI动量 (类似Alpha009)
+        # RSI动量 (类似Alpha009) - 向量化优化
         if 'rsi_14' in df.columns:
-            rsi_change = df.groupby('symbol')['rsi_14'].diff()
+            # y.diff().sum() 在窗口内 = y[-1] - y[0]，可以直接用rolling计算
+            rsi_diff = df.groupby('symbol')['rsi_14'].diff()
             df['alpha_rsi_momentum'] = df.groupby('symbol')['rsi_14'].transform(
-                lambda x: x.rolling(10, min_periods=1).apply(lambda y: y.diff().sum(), raw=False)
+                lambda x: x.diff().rolling(10, min_periods=1).sum()
             )
         
         return df
@@ -255,19 +356,31 @@ class QlibStrategy(BaseStrategy):
 
     def _load_technical_data(self, start_date: str, end_date: str) -> pd.DataFrame:
         """加载技术指标数据"""
-        from utils.db_operations import TechnicalIndicators
+        from utils.db_operations import TechnicalIndicatorsBase
         
-        return self.db_manager.load_data(
-            table_class=TechnicalIndicators,
+        df = self.db_manager.load_data(
+            table_class=TechnicalIndicatorsBase,
             filter_conditions={'date': {'$between': [start_date, end_date]}}
         )
+        
+        # 列名映射：Parquet用 ma_5，策略用 sma_5
+        rename_map = {
+            'ma_5': 'sma_5',
+            'ma_10': 'sma_10',
+            'ma_20': 'sma_20',
+            'ma_55': 'sma_55',
+            'ma_240': 'sma_240',
+            'vol_ma5': 'vol_ma5',
+        }
+        df = df.rename(columns=rename_map)
+        return df
 
     def _load_price_data(self, start_date: str, end_date: str) -> pd.DataFrame:
         """加载价格数据"""
-        from utils.db_operations import DailyData
+        from utils.db_operations import DailyDataBase
         
         return self.db_manager.load_data(
-            table_class=DailyData,
+            table_class=DailyDataBase,
             filter_conditions={'date': {'$between': [start_date, end_date]}},
             columns=['date', 'symbol', 'open', 'high', 'low', 'close', 'volume', 'amount']
         )
@@ -288,6 +401,16 @@ class QlibStrategy(BaseStrategy):
         
         # 生成卖出信号 (使用现有策略逻辑)
         sell_signals = self._generate_sell_signals(df)
+        
+        # 设置date为索引（与score策略保持一致）
+        if not buy_signals.empty and 'date' in buy_signals.columns:
+            buy_signals = buy_signals.set_index('date')
+        if not sell_signals.empty and 'date' in sell_signals.columns:
+            sell_signals = sell_signals.set_index('date')
+        
+        # 过滤：只返回start_date到end_date期间的信号（排除lookback期间）
+        buy_signals = buy_signals[(buy_signals.index >= start_date) & (buy_signals.index <= end_date)]
+        sell_signals = sell_signals[(sell_signals.index >= start_date) & (sell_signals.index <= end_date)]
         
         return [buy_signals, sell_signals]
 
@@ -355,7 +478,7 @@ class QlibStrategy(BaseStrategy):
         # 按日期选出top N
         top_n = self.config.get('top_n', 5)
         result = candidates.groupby('date').apply(
-            lambda x: x.nlargest(top_n, 'total_score')
+            lambda x: x.nlargest(top_n, 'total_score'), include_groups=False
         ).reset_index(drop=True)
         
         result['signal_type'] = 'buy'

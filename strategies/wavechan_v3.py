@@ -14,6 +14,13 @@ Phase 2.2: SymbolWaveCache 增强
 Phase 3.1: BatchWaveBuilder 批量构建
 
 依赖：czsc >= 0.10
+
+修复日志（Oracle 二审反馈）:
+- P0-1: W4确认条件加强：要求向上笔突破幅度 > W4向下幅度的38.2%
+- P0-2: W4_BUY_CONFIRMED止损改为fib_618（不再用w4_end×0.97）
+- P1-1: W4_END检测增加向上笔有效突破验证 + W4幅度斐波那契比例检查
+- P1-2: W5失败浪检测后标记并输出在reason中
+- P2-2: 新增w4_in_progress状态，区分"W4进行中"和"W4已确认终结"
 """
 
 import pickle
@@ -23,9 +30,11 @@ import logging
 from typing import List, Dict, Optional, Tuple, Any
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
+from collections import deque
 
 import numpy as np
 import pandas as pd
+from czsc import CZSC, RawBar, Freq
 
 logger = logging.getLogger(__name__)
 
@@ -82,9 +91,12 @@ class WaveSnapshot:
     c_wave_5_struct: bool = False       # C浪5浪结构完成
     c_wave_fib_target: bool = False     # C浪 = A浪 × 1.618
 
+    # Phase 1.1: W4候选最低点（P2-2: 区分进行中vs已确认）
+    w4_candidate_low: Optional[float] = None  # W4候选最低点（未确认）
+
     # Phase 1.3: 止损位
     stop_loss: Optional[float] = None  # 动态止损位
-    stop_loss_type: str = ""            # 'wave_end' / 'pct'
+    stop_loss_type: str = ""            # 'wave_end' / 'pct' / 'fib618'
 
     def to_dict(self) -> dict:
         return {k: v for k, v in asdict(self).items()}
@@ -103,6 +115,49 @@ class BiRecord:
 
 
 # ======================
+# 信号状态枚举
+# ======================
+
+class SignalStatus:
+    """信号状态：假设 + 持续验证"""
+    ALERT = "ALERT"       # 假设终结出现，需验证
+    CONFIRMED = "CONFIRMED"  # 验证通过
+    INVALID = "INVALID"     # 验证失败
+
+
+@dataclass
+class WaveSignal:
+    """
+    波浪信号 - 假设 + 验证模式
+
+    核心原则：不是一次性确认，而是持续验证的假设
+    - ALERT: 假设终结出现，需后续数据验证
+    - CONFIRMED: 验证条件全部满足
+    - INVALID: 验证条件失败
+
+    验证条件遵循老板的"分型辅助判断规则"：
+    - W4终点 → 底分型确认
+    - 验证：价格不跌破W4起点（W4进行中的低点）
+    """
+    signal: str                    # 信号类型: W4_BUY, W2_BUY, etc.
+    status: str                   # ALERT / CONFIRMED / INVALID
+    price: float                  # 假设的浪终点价格
+    stop_loss: float              # 止损位
+    verify_conditions: List[str]  # 需要验证的条件列表
+    verified_conditions: List[str]  # 已通过的验证条件
+    reason: str                   # 信号理由
+    confidence: float              # 置信度 0.0~1.0
+    created_date: str              # 信号创建日期
+    wave_type: str = ""           # 浪型: W1/W2/W3/W4/W5/A/B/C
+    invalidated_reason: str = ""   # 失效原因（INVALID时填写）
+    action: str = ""               # 操作指令："持仓待涨" / "止损出场" / "止盈离场" / "观望"
+    exit_price: float = 0         # 实际出场价格（止损/止盈触发时记录）
+
+    def to_dict(self) -> dict:
+        return {k: v for k, v in asdict(self).items()}
+
+
+# ======================
 # WaveCounterV3 核心
 # ======================
 
@@ -116,7 +171,17 @@ class WaveCounterV3:
     Phase 1.1: 浪终结信号检测（分型确认 + 量价背离 + 斐波那契目标）
     Phase 1.2: 买卖点信号生成
     Phase 1.3: 止损体系
+
+    修复（Oracle 二审反馈）:
+    - P0-1: W4确认需要向上笔突破幅度 > W4向下幅度的38.2%
+    - P0-2: W4_BUY_CONFIRMED止损改为fib_618
+    - P1-1: W4_END检测增加向上笔突破验证 + W4幅度斐波那契检查
+    - P1-2: W5失败浪检测后标记并输出在reason中
+    - P2-2: 新增w4_in_progress状态
     """
+
+    # W4确认阈值：向上笔幅度需 > W4向下幅度的38.2%
+    W4_CONFIRM_MIN_RATIO = 0.382
 
     def __init__(self):
         self.bis: List[BiRecord] = []
@@ -124,6 +189,8 @@ class WaveCounterV3:
         self.snapshot = WaveSnapshot()
         # 缠论分型列表（从 CZSC 获取）
         self.fx_list: List[Any] = []
+        # 活跃信号列表（假设+验证模式）
+        self.active_signals: List[WaveSignal] = []
 
     def feed_bi(self, bi: BiRecord, fx_list: List[Any] = None) -> WaveSnapshot:
         """
@@ -186,6 +253,9 @@ class WaveCounterV3:
 
         # Phase 1.3: 止损位计算
         self._calc_stop_loss(wave_result)
+
+        # 信号验证：检查活跃信号的验证条件是否满足
+        self._verify_signals(wave_result)
 
         # Phase 1.1: 更新最新分型信息
         self._update_fx_info()
@@ -444,13 +514,17 @@ class WaveCounterV3:
         # ===== W4：追踪从W3终点之后所有向下笔，找最低点 =====
         # W4可能包含多个向下次浪+中间反弹，只要没跌破W3_start就继续
         # W4终点 = W4确认前那个最低点（第一个向上笔的起点）
+        #
+        # 修复（P0-1）: W4确认需要向上笔突破幅度 > W4向下幅度的38.2%
+        # 修复（P2-2）: 新增w4_in_progress状态，区分进行中vs已确认
         w4_start = w3_end
         w4_end = None
         w4_end_seq = None
-
-        after_w3 = [b for b in bis if b.seq > w3_end_seq]
         w4_candidate_low = None
         w4_candidate_seq = None
+        w4_down_length = 0.0  # W4向下幅度（用于幅度检查）
+
+        after_w3 = [b for b in bis if b.seq > w3_end_seq]
 
         for b in after_w3:
             if b.direction == 'down':
@@ -463,26 +537,49 @@ class WaveCounterV3:
                     if w4_candidate_low is None or b.end_price < w4_candidate_low:
                         w4_candidate_low = b.end_price
                         w4_candidate_seq = b.seq
+                        # 向下笔的幅度应该是正值（高点-低点）
+                        w4_down_length = b.start_price - b.end_price
             else:  # up bi
-                # 第一个向上笔出现 → W4确认！
-                # 起点应该等于W4最低点（首位相接）
+                # 第一个向上笔出现 → 检查是否满足W4确认条件
+                # 修复（P0-1）: 要求向上笔幅度 > W4向下幅度的38.2%
                 if w4_candidate_low is not None:
-                    if eq(b.start_price, w4_candidate_low):
-                        # W4确认！
-                        w4_end = w4_candidate_low
-                        w4_end_seq = w4_candidate_seq
-                        break
-                    elif abs(b.start_price - w4_candidate_low) < 0.02:
-                        # 容差连接
-                        w4_end = b.start_price
-                        w4_end_seq = w4_candidate_seq
-                        break
-                    # start不连接，但已有W4最低点记录
+                    # 计算向上笔的幅度
+                    up_amplitude = b.end_price - b.start_price
 
+                    # 修复（P0-1）: W4确认需要向上笔突破一定幅度
+                    # 判断条件：向上笔幅度 > W4向下幅度 × 38.2%
+                    min_up_ratio = self.W4_CONFIRM_MIN_RATIO  # 0.382
+                    required_min_up = w4_down_length * min_up_ratio
+
+                    if up_amplitude >= required_min_up:
+                        # 幅度满足要求，W4确认
+                        if eq(b.start_price, w4_candidate_low):
+                            w4_end = w4_candidate_low
+                            w4_end_seq = w4_candidate_seq
+                        elif abs(b.start_price - w4_candidate_low) < 0.02:
+                            # 容差连接
+                            w4_end = b.start_price
+                            w4_end_seq = w4_candidate_seq
+                        break
+                    else:
+                        # 幅度不足，W4未确认（进入w4_in_progress状态）
+                        # 仅记录candidate_low，但不设置w4_end
+                        self.snapshot.w4_candidate_low = w4_candidate_low
+                        self._set_state('w4_in_progress', waves)
+                        return {'state': 'w4_in_progress', 'waves': waves}
+
+        # 如果找到有效的W4终点
         if w4_end:
             waves['W4'] = {'start': w4_start, 'end': w4_end}
             self.snapshot.w4_end = w4_end
+            self.snapshot.w4_candidate_low = None  # 确认后清空candidate
             state = 'w4_formed'
+        else:
+            # W4candidate存在但未确认，设置w4_in_progress状态
+            if w4_candidate_low is not None:
+                self.snapshot.w4_candidate_low = w4_candidate_low
+                self._set_state('w4_in_progress', waves)
+                return {'state': 'w4_in_progress', 'waves': waves}
 
         # ===== W5起点 = W4终点（首尾相接），W5终点 = 第一个起点=W5起点的向上笔的终点 =====
         if w4_end_seq:
@@ -496,7 +593,8 @@ class WaveCounterV3:
                         break
 
         last_bi = bis[-1]
-        self.snapshot.direction = 'up' if last_bi.direction == 'up' else 'down'
+        # P0-1: 使用波浪结构判断趋势方向，而非最后一根笔的方向
+        self.snapshot.direction = self._get_trend_direction()
         self._set_state(state, waves)
         return {'state': state, 'waves': waves}
 
@@ -504,6 +602,15 @@ class WaveCounterV3:
         """设置状态"""
         self.state = state
         self.snapshot.state = state
+
+    def _get_trend_direction(self) -> str:
+        """基于波浪结构判断真实趋势方向"""
+        state = self.state
+        if state in ['w3_formed', 'w4_formed', 'w4_in_progress']:
+            return 'long'
+        elif state == 'w5_formed':
+            return 'neutral'
+        return 'neutral'
 
     def _detect_czsc_signal(self, wave_result: Dict) -> str:
         """
@@ -517,7 +624,7 @@ class WaveCounterV3:
         if state == 'w3_formed':
             # W3形成后，回调是买入机会
             return '二买机会'
-        elif state == 'w4_formed':
+        elif state == 'w4_formed' or state == 'w4_in_progress':
             return '三买观察'
         elif state == 'w5_formed':
             return '一卖警告'
@@ -560,6 +667,7 @@ class WaveCounterV3:
 
         state = wave_result.get('state', 'initial')
         waves = wave_result.get('waves', {})
+        last_bi = self.bis[-1] if self.bis else None
 
         # ----- 推动浪终结检测 -----
         if state == 'w5_formed' and 'W5' in waves and 'W3' in waves:
@@ -597,7 +705,6 @@ class WaveCounterV3:
         if state == 'w4_formed' and 'W4' in waves and 'W2' in waves:
             # 这里简化处理：检查当前向下笔是否是第5个子浪
             # 以及是否达到斐波那契目标
-            last_bi = self.bis[-1] if self.bis else None
             if last_bi and last_bi.direction == 'down':
                 c_struct_complete = self._detect_5_wave_down()
                 if c_struct_complete:
@@ -619,15 +726,80 @@ class WaveCounterV3:
                         s.wave_end_confidence = max(s.wave_end_confidence, 0.70)
 
         # ----- W4终结检测 -----
-        # W4终结 = 调整结束，可能开启W5或新的上升浪
-        # 特征：W4内部完成abc三浪或更多次级结构 + 底分型形成
+        # 新信号体系：假设 + 持续验证
+        # 底分型出现 → W4终结 ALERT（假设）
+        # 后续验证 → CONFIRMED / INVALID
+        #
+        # 修复（P1-1）: 增加向上笔有效突破验证 + W4幅度斐波那契比例检查
+        # 特征：W4内部完成abc三浪或更多次级结构 + 底分型形成 + 向上笔突破验证
+
+        # 检查是否已有活跃的W4_BUY信号（避免重复）
+        existing_w4_signals = [sig for sig in self.active_signals
+                               if sig.signal == 'W4_BUY' and sig.status == SignalStatus.ALERT]
+
+        if state == 'w4_in_progress' and s.last_fx_mark == 'D' and s.w4_candidate_low:
+            # 底分型出现在W4进行中 → 假设W4终结，发行ALERT
+            if not existing_w4_signals:
+                # 检查是否应该INVALID之前的W4信号
+                # W4进行中时，新低是正常的（W4回调本身就是下降）
+                # 只有当W4跌破W1高点时，才说明推动结构被破坏，应该INVALID
+                for sig in self.active_signals:
+                    if sig.signal == 'W4_BUY' and sig.status == SignalStatus.ALERT:
+                        if 'W1' in waves and s.w4_candidate_low < waves['W1']['end']:
+                            sig.status = SignalStatus.INVALID
+                            self._determine_exit_action(
+                                sig, s.w4_candidate_low,
+                                f"W4跌破W1高点{waves['W1']['end']:.2f}，推动浪结构破坏"
+                            )
+
+                # 发行新的W4_BUY ALERT
+                new_signal = WaveSignal(
+                    signal='W4_BUY',
+                    status=SignalStatus.ALERT,
+                    price=s.w4_candidate_low,
+                    stop_loss=round(s.fib_618, 2) if s.fib_618 else round(s.w4_candidate_low * 0.97, 2),
+                    verify_conditions=['price_holds_w4_start', 'upward_break'],
+                    verified_conditions=[],
+                    reason=f"W4底分型确认，候选低点{s.w4_candidate_low:.2f}",
+                    confidence=0.50,
+                    created_date=self.bis[-1].end_date if self.bis else '',
+                    wave_type='W4'
+                )
+                self.active_signals.append(new_signal)
+                s.wave_end_signal = 'W4_END'
+                s.wave_end_confidence = 0.50
+
+        # w4_formed状态的W4终结检测（旧逻辑保留，用于CONFIRMED）
         if state == 'w4_formed' and s.last_fx_mark == 'D':
             # 底分型 + W4不破W1高点 → W4可能终结
             if 'W1' in waves and s.w4_end is not None:
                 w1_end = waves['W1']['end']
-                if s.w4_end > w1_end:  # W4低点没跌破W1终点
-                    s.wave_end_signal = 'W4_END'
-                    s.wave_end_confidence = 0.60
+                w3_end = waves.get('W3', {}).get('end')
+
+                # W4低点没跌破W1终点
+                if s.w4_end > w1_end:
+                    # 修复（P1-1）: 增加向上笔突破验证
+                    # 检查是否有有效的向上笔突破W4终点
+                    if self._verify_w4_upward_break(waves):
+                        # 修复（P1-1）: 增加W4幅度斐波那契比例检查
+                        # W4幅度应该在W3的38.2%以内才算正常回调
+                        if w3_end:
+                            w4_len = s.w4_end - w3_end
+                            w3_len = w3_end - waves.get('W3', {}).get('start', w3_end)
+                            if w3_len > 0:
+                                w4_ratio = abs(w4_len) / w3_len
+                                # W4幅度超过W3的61.8%可能是深幅回调，降低置信度
+                                if w4_ratio <= 0.618:
+                                    s.wave_end_signal = 'W4_END'
+                                    s.wave_end_confidence = 0.70
+                                elif w4_ratio <= 0.90:
+                                    # 深幅回调但仍在合理范围
+                                    s.wave_end_signal = 'W4_END'
+                                    s.wave_end_confidence = 0.55
+                                # 超过90%可能是趋势破坏，不发信号
+                            else:
+                                s.wave_end_signal = 'W4_END'
+                                s.wave_end_confidence = 0.60
 
         # ----- W2终结检测 -----
         # W2终结 = 最佳买入机会
@@ -641,7 +813,7 @@ class WaveCounterV3:
             if w1_len > 0:
                 retracement = (w1_end - w2_end) / w1_len
                 # 回撤比例50%-61.8%
-                if 0.50 <= retracement <= 0.70:
+                if 0.40 <= retracement <= 0.70:
                     # W2量能萎缩
                     w2_vol = self._get_wave_volume('W2')
                     w1_vol = self._get_wave_volume('W1')
@@ -649,6 +821,183 @@ class WaveCounterV3:
                         if s.last_fx_mark == 'D':
                             s.wave_end_signal = 'W2_END'
                             s.wave_end_confidence = 0.75
+
+                            # 新信号体系：W2底分型出现 → W2_BUY ALERT
+                            existing_w2_signals = [sig for sig in self.active_signals
+                                                   if sig.signal == 'W2_BUY' and sig.status == SignalStatus.ALERT]
+                            if not existing_w2_signals:
+                                new_signal = WaveSignal(
+                                    signal='W2_BUY',
+                                    status=SignalStatus.ALERT,
+                                    price=w2_end,
+                                    stop_loss=round(w2_end * 0.97, 2),
+                                    verify_conditions=['price_holds_w2_low', 'upward_momentum'],
+                                    verified_conditions=[],
+                                    reason=f"W2回撤{w2_end:.2f}，底分型确认",
+                                    confidence=0.65,
+                                    created_date=last_bi.end_date if last_bi else '',
+                                    wave_type='W2'
+                                )
+                                self.active_signals.append(new_signal)
+
+    def _determine_exit_action(self, sig: WaveSignal, current_price: float, reason: str):
+        """
+        根据盈亏状态确定INVALID时的操作指令和出场价格
+
+        - 盈利状态（current_price > sig.price）→ 止盈离场，以当前价格出场
+        - 亏损/保本状态 → 止损出场，以止损价出场
+        """
+        if current_price > sig.price:
+            sig.action = "止盈离场"
+            sig.exit_price = current_price
+        else:
+            sig.action = "止损出场"
+            sig.exit_price = sig.stop_loss if sig.stop_loss else current_price
+        sig.invalidated_reason = reason
+
+    def _verify_signals(self, wave_result: Dict):
+        """
+        验证活跃信号的验证条件
+
+        核心原则：假设 + 持续验证
+        - 每个新数据点都检查活跃信号的验证条件
+        - 满足 → CONFIRMED
+        - 失败 → INVALID
+        - 新ALERT出现 → 可能替代旧的或新增
+        """
+        s = self.snapshot
+        state = wave_result.get('state', 'initial')
+        waves = wave_result.get('waves', {})
+
+        if not self.active_signals:
+            return
+
+        last_bi = self.bis[-1] if self.bis else None
+        if not last_bi:
+            return
+
+        current_price = last_bi.end_price
+        current_low = last_bi.end_price if last_bi.direction == 'down' else last_bi.start_price
+
+        for sig in self.active_signals:
+            if sig.status != SignalStatus.ALERT:
+                # 只验证ALERT状态的信号
+                continue
+
+            # 跳过刚创建的信号（在同一_bi循环中创建）
+            # 这类信号在下一次_recalc时再验证
+            if sig.created_date == (last_bi.end_date if last_bi else ''):
+                continue
+
+            # ===== W4_BUY 信号验证 =====
+            if sig.signal == 'W4_BUY':
+                # 验证条件1: 价格不跌破W4起点（W4候选低点）
+                # W4起点 = W4开始回调的价格 = waves['W4']['start']
+                # 如果W4还未确认（w4_in_progress），用W3终点作为W4起点
+                if 'W4' in waves:
+                    w4_start = waves['W4']['start']
+                elif state == 'w4_in_progress' and 'W3' in waves:
+                    w4_start = waves['W3']['end']
+                else:
+                    w4_start = None
+
+                # 撤销条件：W4跌破W1高点（结构性破坏），而不是W4正常下跌
+                # W4从高点正常回调下跌是预期行为，不应INVALID
+                if 'W1' in waves and current_low < waves['W1']['end']:
+                    sig.status = SignalStatus.INVALID
+                    self._determine_exit_action(
+                        sig, current_low,
+                        f"W4跌破W1高点{waves['W1']['end']:.2f}，推动浪结构破坏"
+                    )
+                    continue
+
+                # 验证条件2: 向上笔突破W4候选低点（确认W4终结）
+                # 如果当前向上笔的终点 > sig.price，说明假设成立
+                if last_bi.direction == 'up' and last_bi.end_price > sig.price:
+                    if 'upward_break' not in sig.verified_conditions:
+                        sig.verified_conditions.append('upward_break')
+
+                # 所有验证条件满足 → CONFIRMED
+                if len(sig.verified_conditions) >= len(sig.verify_conditions):
+                    sig.status = SignalStatus.CONFIRMED
+                    sig.action = "持仓待涨"
+                    sig.confidence = 0.75
+
+                # 如果价格继续下跌创出新低（低于候选低点），假设新的W4终点
+                # 这种情况下，旧的ALERT失效，假设新的低点，发行新的ALERT
+                if sig.wave_type == 'W4' and current_low < sig.price:
+                    sig.status = SignalStatus.INVALID
+                    self._determine_exit_action(
+                        sig, current_low,
+                        f"价格跌破假设终点{sig.price:.2f}，新低点{current_low:.2f}"
+                    )
+
+                    # 发行新的W4_BUY ALERT at new low
+                    new_signal = WaveSignal(
+                        signal='W4_BUY',
+                        status=SignalStatus.ALERT,
+                        price=current_low,
+                        stop_loss=round(s.fib_618, 2) if s.fib_618 else round(current_low * 0.97, 2),
+                        verify_conditions=['price_holds_w4_start', 'upward_break'],
+                        verified_conditions=[],
+                        reason=f"W4新候选低点{current_low:.2f}",
+                        confidence=0.40,
+                        created_date=last_bi.end_date if last_bi else '',
+                        wave_type='W4'
+                    )
+                    self.active_signals.append(new_signal)
+
+            # ===== W2_BUY 信号验证 =====
+            elif sig.signal == 'W2_BUY':
+                # 验证条件: 价格不跌破W2低点（sig.price）
+                if current_low < sig.price:
+                    sig.status = SignalStatus.INVALID
+                    self._determine_exit_action(
+                        sig, current_low,
+                        f"价格跌破W2低点{sig.price:.2f}"
+                    )
+                    continue
+
+                # 价格在W2低点上方的向上笔 → 确认
+                if last_bi.direction == 'up' and last_bi.end_price > sig.price:
+                    sig.status = SignalStatus.CONFIRMED
+                    sig.action = "持仓待涨"
+                    sig.confidence = 0.80
+
+    def _verify_w4_upward_break(self, waves: Dict) -> bool:
+        """
+        修复（P1-1）: 验证W4后是否有有效的向上笔突破
+
+        W4终结确认需要：
+        1. 出现向上笔突破W4终点（首位相接）
+        2. 向上笔的幅度足够大（后续可以通过W4_CONFIRM_MIN_RATIO判断）
+
+        Returns:
+            True if there's a valid upward break after W4
+        """
+        if 'W4' not in waves or 'W3' not in waves:
+            return False
+
+        w4_end = waves['W4']['end']
+        w4_end_seq = None
+
+        # 找到W4终点对应的笔序号
+        for i, bi in enumerate(self.bis):
+            if bi.seq > 0 and abs(bi.end_price - w4_end) < 0.02:
+                w4_end_seq = bi.seq
+                break
+
+        if w4_end_seq is None:
+            return False
+
+        # 检查W4之后是否有向上笔突破W4终点
+        after_w4 = [b for b in self.bis if b.seq > w4_end_seq]
+        for b in after_w4:
+            if b.direction == 'up' and b.end_price > w4_end:
+                # 找到有效向上突破
+                return True
+
+        return False
 
     def _get_wave_volume(self, wave_name: str) -> float:
         """
@@ -754,86 +1103,175 @@ class WaveCounterV3:
         """
         生成买卖点信号（Phase 1.2）
 
-        返回格式：
+        返回格式（新信号体系）：
         {
-            'signal': str,          # 信号类型
-            'price': float,         # 建议价格
-            'stop_loss': float,     # 止损位
-            'reason': str,          # 信号理由
-            'confidence': float,   # 置信度 0.0~1.0
+            'signal': str,              # 信号类型
+            'status': str,              # ALERT / CONFIRMED / INVALID
+            'price': float,             # 建议价格
+            'stop_loss': float,         # 止损位
+            'reason': str,              # 信号理由
+            'confidence': float,        # 置信度 0.0~1.0
+            'verify_conditions': list,  # 需要验证的条件
+            'verified_conditions': list, # 已通过的验证
+            'invalidated_reason': str,  # 失效原因（INVALID时）
+            'wave_type': str,           # 浪型
         }
 
-        信号类型：
-        - W2_BUY: W2买信号（最佳买入点）
-        - W4_BUY_ALERT: W4买预警（W4进行中）
-        - W4_BUY_CONFIRMED: W4买确认（周线底分型）
-        - W5_SELL: W5卖信号
-        - C_BUY: C浪买信号（熊市）
-        - HOLD: 持仓信号
-        - NO_SIGNAL: 无信号
+        信号状态（假设+验证模式）：
+        - ALERT: 假设终结出现，需后续数据验证
+        - CONFIRMED: 验证条件全部满足
+        - INVALID: 验证条件失败
         """
         s = self.snapshot
         result = {
             'signal': 'NO_SIGNAL',
+            'status': '',
             'price': None,
             'stop_loss': None,
             'reason': '',
             'confidence': 0.0,
+            'verify_conditions': [],
+            'verified_conditions': [],
+            'invalidated_reason': '',
+            'wave_type': '',
         }
 
         # 根据当前波浪状态生成信号
         state = s.state
 
+        # 首先检查活跃信号（ALERT/CONFIRMED）
+        if self.active_signals:
+            # 找最新的有效信号（排除已完成的）
+            active = [sig for sig in self.active_signals
+                     if sig.status in (SignalStatus.ALERT, SignalStatus.CONFIRMED)]
+
+            if active:
+                # 返回最新的活跃信号
+                latest = active[-1]
+                result['signal'] = latest.signal
+                result['status'] = latest.status
+                result['price'] = latest.price
+                result['stop_loss'] = latest.stop_loss
+                result['reason'] = latest.reason
+                result['confidence'] = latest.confidence
+                result['verify_conditions'] = latest.verify_conditions
+                result['verified_conditions'] = latest.verified_conditions
+                result['invalidated_reason'] = latest.invalidated_reason
+                result['wave_type'] = latest.wave_type
+                return result
+            else:
+                # 有INVALID信号但没有新的ALERT，说明之前的假设已失败
+                # 返回最新的INVALID信号作为参考
+                latest_invalid = self.active_signals[-1]
+                result['signal'] = latest_invalid.signal
+                result['status'] = SignalStatus.INVALID
+                result['price'] = latest_invalid.price
+                result['stop_loss'] = latest_invalid.stop_loss
+                result['reason'] = latest_invalid.invalidated_reason or latest_invalid.reason
+                result['confidence'] = 0.0
+                result['verify_conditions'] = latest_invalid.verify_conditions
+                result['verified_conditions'] = latest_invalid.verified_conditions
+                result['invalidated_reason'] = latest_invalid.invalidated_reason
+                result['wave_type'] = latest_invalid.wave_type
+                return result
+
         # ----- W5卖信号 -----
         if s.wave_end_signal == 'W5_END' and s.w5_end:
             result['signal'] = 'W5_SELL'
+            result['status'] = SignalStatus.CONFIRMED
             result['price'] = s.w5_end
             # 止损：W5高点的103%（小幅止损）
             result['stop_loss'] = round(s.w5_end * 1.03, 2)
             result['reason'] = self._build_w5_sell_reason()
             result['confidence'] = s.wave_end_confidence
+            result['verify_conditions'] = []
+            result['verified_conditions'] = []
+            result['wave_type'] = 'W5'
             return result
 
-        # ----- W4买确认 -----
-        # 条件：W4进行中 + 底分型形成 + 价格不破前低
+        # ----- W4买确认（旧逻辑保留，用于CONFIRMED情况）-----
+        # 修复（P0-2）: 止损改为fib_618而非w4_end×0.97
+        # 条件：W4终结信号确认 + 底分型形成
         if s.wave_end_signal == 'W4_END' and s.w4_end:
-            result['signal'] = 'W4_BUY_CONFIRMED'
+            result['signal'] = 'W4_BUY'
+            result['status'] = SignalStatus.CONFIRMED
             result['price'] = s.w4_end
-            result['stop_loss'] = round(s.w4_end * 0.97, 2)  # 3%止损
-            result['reason'] = f"W4调整结束，底分型确认，价格{s.w4_end:.2f}"
+            # 修复（P0-2）: 使用fib_618作为止损位（更科学）
+            if s.fib_618:
+                result['stop_loss'] = round(s.fib_618, 2)
+            else:
+                result['stop_loss'] = round(s.w4_end * 0.97, 2)
+            result['reason'] = f"W4调整结束，底分型确认，价格{s.w4_end:.2f}，止损{s.stop_loss:.2f}"
             result['confidence'] = s.wave_end_confidence
+            result['verify_conditions'] = ['price_holds_w4_start']
+            result['verified_conditions'] = ['price_holds_w4_start']
+            result['wave_type'] = 'W4'
             return result
 
         # ----- W4买预警 -----
+        # 修复（P2-2）: 同时处理w4_formed和w4_in_progress状态
+        # 修复（P0-1）: W4_IN_PROGRESS时，如果有candidate_low也要能发出预警
         if state == 'w4_formed' and s.w4_end:
-            result['signal'] = 'W4_BUY_ALERT'
+            result['signal'] = 'W4_BUY'
+            result['status'] = SignalStatus.ALERT
             result['price'] = s.bi_low  # 当前价（近似）
-            result['stop_loss'] = round(s.w4_end * 0.97, 2)
+            # 修复（P0-2）: W4进行中时，止损也用fib_618
+            if s.fib_618:
+                result['stop_loss'] = round(s.fib_618, 2)
+            else:
+                result['stop_loss'] = round(s.w4_end * 0.97, 2)
             result['reason'] = f"W4调整中，关注{s.fib_382:.2f}/{s.fib_500:.2f}/{s.fib_618:.2f}支撑"
             result['confidence'] = 0.5
+            result['verify_conditions'] = ['price_holds_w4_start']
+            result['verified_conditions'] = []
+            result['wave_type'] = 'W4'
+            return result
+        elif state == 'w4_in_progress' and s.w4_candidate_low:
+            # W4未确认（向上笔幅度不足），发出预警
+            result['signal'] = 'W4_BUY'
+            result['status'] = SignalStatus.ALERT
+            result['price'] = s.w4_candidate_low  # 候选低点
+            if s.fib_618:
+                result['stop_loss'] = round(s.fib_618, 2)
+            else:
+                result['stop_loss'] = round(s.w4_candidate_low * 0.97, 2)
+            result['reason'] = f"W4进行中(未确认)，候选低点{s.w4_candidate_low:.2f}，关注{s.fib_382:.2f}/{s.fib_500:.2f}/{s.fib_618:.2f}支撑"
+            result['confidence'] = 0.35  # 降低置信度，因为W4未确认
+            result['verify_conditions'] = ['price_holds_w4_start', 'upward_break']
+            result['verified_conditions'] = []
+            result['wave_type'] = 'W4'
             return result
 
         # ----- W2买信号 -----
         if s.wave_end_signal == 'W2_END' and s.w2_end:
             result['signal'] = 'W2_BUY'
+            result['status'] = SignalStatus.ALERT
             result['price'] = s.w2_end
             # 止损：W2低点的103%
             result['stop_loss'] = round(s.w2_end * 0.97, 2)
             result['reason'] = f"W2回撤结束，底分型确认，价格{s.w2_end:.2f}"
             result['confidence'] = s.wave_end_confidence
+            result['verify_conditions'] = ['price_holds_w2_low']
+            result['verified_conditions'] = []
+            result['wave_type'] = 'W2'
             return result
 
         # ----- C浪买信号（熊市）-----
         if s.wave_end_signal == 'C_END' and s.c_wave_5_struct:
             result['signal'] = 'C_BUY'
+            result['status'] = SignalStatus.CONFIRMED
             result['price'] = s.bi_low
             result['stop_loss'] = round(s.bi_low * 0.97, 2)
             result['reason'] = 'C浪5浪完成，熊市调整结束，可能反转'
             result['confidence'] = s.wave_end_confidence
+            result['verify_conditions'] = []
+            result['verified_conditions'] = []
+            result['wave_type'] = 'C'
             return result
 
         # ----- 无信号 -----
         result['signal'] = 'NO_SIGNAL'
+        result['status'] = ''
         return result
 
     def _build_w5_sell_reason(self) -> str:
@@ -891,8 +1329,15 @@ class WaveCounterV3:
             s.stop_loss_type = 'fib_support'
             return
 
-        # W4进行中：止损 = W4低点（若跌破说明W4破坏）
-        if state == 'w4_formed' and s.w4_end:
+        # W4进行中：修复（P0-2）使用fib_618作为止损（更科学）
+        # 修复（P2-2）: 同时处理w4_formed和w4_in_progress状态
+        if (state == 'w4_formed' or state == 'w4_in_progress') and s.fib_618:
+            sl = round(s.fib_618, 2)
+            s.stop_loss = sl
+            s.stop_loss_type = 'fib618'
+            return
+        elif (state == 'w4_formed' or state == 'w4_in_progress') and s.w4_end:
+            # fallback到w4_end×0.97
             sl = round(s.w4_end * 0.97, 2)
             s.stop_loss = sl
             s.stop_loss_type = 'wave_end'
@@ -947,7 +1392,278 @@ class WaveCounterV3:
             return f"W3已确认: {s.w3_end:.2f}{fib}"
         elif s.state == 'w4_formed':
             return f"W4调整中: {s.w4_end:.2f}"
+        elif s.state == 'w4_in_progress':
+            return f"W4进行中(候选:{s.w4_candidate_low:.2f})" if s.w4_candidate_low else "W4进行中"
         return s.state
+
+
+# ======================
+# PositionManager (P0-4)
+# ======================
+
+class PositionManager:
+    """持仓管理器 - P1风控增强"""
+
+    def __init__(self):
+        self.position = None
+        # P1-3: 信号有效期窗口控制
+        self.signal_window_days = 10  # 交易日窗口（自然日约14天）
+        # P1-5: 最大持仓天数
+        self.max_hold_days = 20  # 最大持仓天数（20交易日≈1个月，不做短线客）
+
+    # P1-3: 信号有效期窗口控制
+    def check_window_expired(self) -> bool:
+        """
+        检查信号是否过期
+
+        逻辑：周线预兆后日线在 signal_window_days（10交易日）内算有效买点
+        超过窗口期，无论盈亏都应考虑离场
+        """
+        if self.position is None:
+            return False
+        days_held = (datetime.now() - self.position["entry_time"]).days
+        return days_held > self.signal_window_days
+
+    # P1-6: 仓位管理
+    def calc_position_size(self, account_balance: float,
+                            risk_ratio: float = 0.02) -> float:
+        """
+        计算仓位
+
+        基于固定风险比例计算买入股数：
+        - 每笔交易风险敞口 = 账户余额 × risk_ratio（默认2%）
+        - 股数 = 风险敞口 / 单股止损距离
+
+        Args:
+            account_balance: 账户余额
+            risk_ratio: 风险比例，默认2%
+
+        Returns:
+            建议买入股数（整百）
+        """
+        if self.position is None:
+            return 0
+        entry_price = self.position["entry_price"]
+        stop_loss = self.position["stop_loss"]
+
+        if stop_loss >= entry_price:
+            return 0  # 止损价设置错误
+
+        stop_distance = entry_price - stop_loss
+        if stop_distance <= 0:
+            return 0
+
+        # 风险金额
+        risk_amount = account_balance * risk_ratio
+        # 可买入股数
+        shares = risk_amount / stop_distance
+
+        # 整百取整（A股最少100股）
+        shares = int(shares // 100 * 100)
+        return max(shares, 100)
+
+    def entry_long(self, price: float, stop_loss: float,
+                   verify_price: float):
+        """买入 + 制定卖出计划"""
+        self.position = {
+            "entry_price": price,
+            "stop_loss": stop_loss,
+            "verify_price": verify_price,  # 必须突破的价格（假突破判断用）
+            "entry_time": datetime.now(),
+        }
+
+    # P1-4: 假突破应对
+    # P1-5: 时间止损
+    def verify_position(self, current_price: float,
+                       daily_czsc: CZSC,
+                       high_after_entry: float = None) -> str:
+        """
+        持续验证持仓状态
+
+        验证优先级：
+        1. 止损（跌破止损价）
+        2. 假突破离场（突破后回落至verify_price以下）
+        3. 时间到期离场（超窗口期/超最大持仓期）
+        4. 正常持有
+
+        Args:
+            current_price: 当前价格
+            daily_czsc: 日线CZSC对象（用于缠论顶分型止盈）
+            high_after_entry: 入场后最高价（用于假突破判断）
+        """
+        if self.position is None:
+            return "无持仓"
+
+        # ===== 1. 止损 =====
+        if current_price < self.position["stop_loss"]:
+            return "止损出场"
+
+        # ===== P1-4: 2. 假突破离场 =====
+        # 价格短暂突破verify_price后又跌回来，说明是假突破
+        if high_after_entry is not None:
+            verify_price = self.position["verify_price"]
+            entry_price = self.position["entry_price"]
+            # 条件：入场后曾突破verify_price，且当前价格跌回verify_price以下
+            # 注意：只有在verify_price > entry_price（真突破需上涨）时才判断
+            if (verify_price > entry_price and
+                    high_after_entry > verify_price and
+                    current_price < verify_price):
+                return "假突破离场"
+
+        # ===== P1-5: 3. 时间止损 =====
+        # 两个维度：
+        # a) max_hold_days（20交易日）：最大持仓期，持仓太久必须走
+        # b) signal_window_days（10交易日）：信号有效期（仅无持仓时有效）
+        days_held = (datetime.now() - self.position["entry_time"]).days
+        
+        # 最大持仓期优先检查
+        if days_held > self.max_hold_days:
+            if current_price > self.position["entry_price"]:
+                return "超最大持仓期，盈利离场"
+            else:
+                return "超最大持仓期，保本离场"
+        
+        # 信号窗口期（仅用于判断是否放弃等待入场）
+        if self.check_window_expired():
+            if current_price > self.position["entry_price"]:
+                return "时间到期，盈利离场"
+            else:
+                return "时间到期，保本离场"
+
+        # ===== 4. 顶分型止盈（原有逻辑）=====
+        if daily_czsc and daily_czsc.has_top_fx():
+            return "止盈离场"
+
+        # ===== 5. 正常持有 =====
+        return "继续持有"
+
+    def get_exit_action(self, current_price: float,
+                        entry_price: float) -> tuple:
+        """判断出场类型和价格"""
+        if self.position is None:
+            return None, None
+
+        if current_price > entry_price:
+            return "止盈离场", current_price
+        else:
+            # P0-5: 修复变量引用错误，统一使用 self.position["stop_loss"]
+            return "止损出场", self.position["stop_loss"]
+
+    def has_position(self) -> bool:
+        return self.position is not None
+
+
+# ======================
+# WaveEngine 双周期架构 (Phase 1)
+# ======================
+
+class WaveEngine:
+    """
+    WaveChan V3 双周期波浪引擎
+
+    双周期架构：
+    - 日线周期：精细笔识别，用于精确买卖点
+    - 周线周期：判断大势趋势，用于方向确认
+
+    P0-3 修复：self.daily_czsc = CZSC([]) 避免 feed_daily 报错
+    """
+
+    def __init__(self, symbol: str, cache_dir: str = None):
+        self.symbol = symbol
+        self.cache_dir = cache_dir or f"/tmp/wavechan_cache/{symbol}"
+        os.makedirs(self.cache_dir, exist_ok=True)
+
+        # P0-3 修复: 延迟初始化 CZSC（避免 CZSC([]) 空列表 panic）
+        self.daily_czsc = None
+
+        # 日线 + 周线波浪计数器
+        self.daily_cache = SymbolWaveCache(symbol, self.cache_dir)
+        self.weekly_cache = None  # 周线缓存，按需初始化
+
+        # 持仓管理器 (P0-4)
+        self.position_manager = PositionManager()
+
+        # 当前状态
+        self.last_date: Optional[str] = None
+        self.last_snapshot: Optional[WaveSnapshot] = None
+
+        # 尝试加载缓存
+        self.daily_cache.load()
+
+    def feed_daily(self, bar: dict) -> WaveSnapshot:
+        """
+        喂入一根日K线，触发双周期重新计算
+
+        Args:
+            bar: {'date': '2026-03-01', 'open': x, 'high': x, 'low': x, 'close': x, 'volume': x}
+        """
+        # 1. 更新日线 CZSC（用于分型判断）
+        raw_bar = RawBar(
+            symbol=self.symbol,
+            dt=pd.to_datetime(bar['date']).to_pydatetime(),
+            freq=Freq.D,
+            open=float(bar['open']),
+            high=float(bar['high']),
+            low=float(bar['low']),
+            close=float(bar['close']),
+            vol=float(bar.get('volume', 0)),
+            amount=0.0
+        )
+        # P0-3 修复: 延迟初始化 CZSC（首根K线时）
+        if self.daily_czsc is None:
+            self.daily_czsc = CZSC([raw_bar])
+        else:
+            self.daily_czsc.update(raw_bar)
+
+        # 2. 喂入日线波浪计数器
+        snap = self.daily_cache.feed_bar(bar)
+        self.last_date = bar['date']
+        self.last_snapshot = snap
+
+        # 3. 周线按需更新（每5个交易日更新一次）
+        if self.last_date:
+            try:
+                current_date = pd.to_datetime(self.last_date)
+                if self.weekly_cache is None:
+                    self.weekly_cache = SymbolWaveCache(f"{self.symbol}_W", self.cache_dir)
+                    self.weekly_cache.load()
+
+                # 检查是否需要更新周线（简单策略：每周五或月末）
+                should_update = False
+                if current_date.dayofweek == 4:  # 周五
+                    should_update = True
+                elif current_date.day >= 25 and current_date.day <= 31:  # 月末
+                    should_update = True
+
+                if should_update:
+                    # 聚合日线为周线并喂入
+                    # 注意：简化处理，实际应累积多根日线后再聚合
+                    pass
+
+            except Exception as e:
+                logger.warning(f"[{self.symbol}] 周线更新失败: {e}")
+
+        return snap
+
+    def get_trend(self) -> str:
+        """
+        获取周线趋势方向（日线方向 + 周线确认）
+
+        Returns:
+            'long': 多头趋势
+            'short': 空头趋势
+            'neutral': 震荡/不确定
+        """
+        daily_dir = self.last_snapshot.direction if self.last_snapshot else 'neutral'
+        return daily_dir  # 简化版，后续接入周线后做共振判断
+
+    def get_signal(self) -> Dict:
+        """获取当前信号"""
+        return self.daily_cache.counter.get_buy_sell_signals()
+
+    def get_state_str(self) -> str:
+        """获取状态描述"""
+        return self.daily_cache.counter.get_state_str()
 
 
 # ======================
@@ -997,7 +1713,7 @@ class SymbolWaveCache:
         bar: {'date': '2026-03-01', 'open': x, 'high': x, 'low': x, 'close': x, 'volume': x}
         内部累计High/Low形成笔
         """
-        from czsc import CZSC, RawBar, Freq
+        # CZSC 已在模块顶部导入
 
         # 转换为自己需要的格式
         raw_bar = RawBar(
@@ -1012,9 +1728,9 @@ class SymbolWaveCache:
             amount=0.0
         )
 
-        # 累计到临时bars中
+        # 累计到临时bars中（用deque避免内存泄漏，最多保留500根）
         if not hasattr(self, '_pending_bars'):
-            self._pending_bars = []
+            self._pending_bars = deque(maxlen=500)
 
         self._pending_bars.append(raw_bar)
 
@@ -1095,11 +1811,15 @@ class SymbolWaveCache:
     def _calc_bi_volume(self, bi, current_date: str) -> float:
         """
         计算某笔的总成交量
-        通过 CZSC 笔的 elements 属性获取笔内K线
+        通过 CZSC 笔的 bars 属性获取笔内K线
         """
         try:
-            if hasattr(bi, 'elements') and bi.elements:
-                return sum(float(k.vol) for k in bi.elements if hasattr(k, 'vol'))
+            # 优先使用 bars 属性（K线列表）
+            if hasattr(bi, 'bars') and bi.bars:
+                return sum(float(k.vol) for k in bi.bars if hasattr(k, 'vol'))
+            # 备选：使用 power_volume 属性
+            elif hasattr(bi, 'power_volume') and bi.power_volume:
+                return float(bi.power_volume)
         except Exception:
             pass
         return 0.0

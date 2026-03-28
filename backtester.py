@@ -16,6 +16,9 @@ import logging
 # Phase 2: 策略插件系统
 from strategies import STRATEGY_REGISTRY, BaseStrategy
 
+# Bias 修正模块
+from backtest_bias_corrector import BiasCorrector
+
 class DynamicPositionManager:
     """动态仓位管理模块"""
     def __init__(self, initial_position=0.5, position_levels=[0.3,0.5,0.8,1], window_size=5):
@@ -148,14 +151,21 @@ class DatabaseIntegrator:
 
 class TradingSimulator:
     """交易模拟引擎"""
-    def __init__(self, initial_capital=5e5, commission=0.0003,position_limit=5):
+    # Bias 修正：显式交易成本参数（滑点 + 佣金）
+    # 滑点 0.1%/笔：买入时按 open * (1 + slippage) 成交，卖出时按 open * (1 - slippage) 成交
+    # 佣金 0.03%/笔（印花税 0.1% 仅卖出收取，佣金 0.03% 双向）
+    DEFAULT_SLIPPAGE = 0.001   # 0.1% per trade
+    DEFAULT_COMMISSION = 0.0003  # 0.03% per trade
+
+    def __init__(self, initial_capital=5e5, commission=0.0003, position_limit=5, slippage=0.001):
         self.portfolio = {
             'cash': initial_capital,
             'positions': {},  # {symbol: {'qty': int, 'cost': float, 'latest_price': float}}
             'history': []
         }
         self.commission_rate = commission
-        self.position_limit = position_limit  # 替换原来的硬编码
+        self.slippage_rate = slippage           # Bias 修正：滑点
+        self.position_limit = position_limit     # 替换原来的硬编码
         self.buy_signals = {}
         self.sell_signals = {}
 
@@ -167,9 +177,11 @@ class TradingSimulator:
             return self._execute_sell(symbol, price, date, quantity,signal_info)
 
     def _execute_buy(self, symbol, price, date, quantity,signal_info,signal):
-        # 计算交易成本
-        commission = price * quantity * self.commission_rate
-        total_cost = price * quantity + commission
+        # Bias 修正：滑点 0.1%/笔
+        # 买入成交价 = open * (1 + slippage)，更真实反映盘口滑点损耗
+        execution_price = price * (1 + self.slippage_rate)
+        commission = execution_price * quantity * self.commission_rate
+        total_cost = execution_price * quantity + commission
         if total_cost > self.portfolio['cash']:
             return False
 
@@ -189,13 +201,14 @@ class TradingSimulator:
         # 更新现金
         self.portfolio['cash'] -= total_cost
 
-        # 记录交易
+        # 记录交易（含 Bias 修正后的实际成交价和滑点）
         self.portfolio['history'].append({
             'date': date,
             'symbol': symbol,
             'type': 'buy',
-            'price': price,
-            'quantity': quantity,
+            'price': price,                   # 信号价格（next open）
+            'execution_price': execution_price, # Bias 修正：含滑点的实际成交价
+            'slippage': price * quantity * self.slippage_rate,  # Bias 修正：滑点损耗
             'commission': commission,
             'signal_info': signal_info,  # 新增字段，记录交易信号信息
             'signal':signal
@@ -203,14 +216,23 @@ class TradingSimulator:
         logging.info(f"\n{date} 买入 {symbol}，价格: {price}，数量: {quantity}，佣金: {commission}")
         return True
 
-    def _execute_sell(self, symbol, price, date, quantity,signal_info):
-        position = self.portfolio['positions'].get(symbol)
-        if not position or position['qty'] < quantity:
-            return False
-        # 计算交易金额
-        proceeds = price * quantity
+    def _execute_sell(self, symbol, price, date, quantity, signal_info):
+        # Bias 修正：卖出滑点 0.1%/笔（盘口不利冲击）
+        # 卖出成交价 = open * (1 - slippage)，更真实反映流动性损耗
+        execution_price = price * (1 - self.slippage_rate)
+        proceeds = execution_price * quantity
         commission = proceeds * self.commission_rate
         net_proceeds = proceeds - commission
+
+        # 获取持仓引用（必须在修改前）
+        position = self.portfolio['positions'].get(symbol)
+        if not position:
+            logging.warning(f"{date} 卖出 {symbol} 但无持仓，跳过")
+            return False
+
+        # 计算PNL：卖出收益 - 卖出份额对应的成本
+        cost_of_sold = position['cost'] * quantity / position['qty']
+        pnl = net_proceeds - cost_of_sold
 
         # 更新现金和持仓
         self.portfolio['cash'] += net_proceeds
@@ -218,18 +240,19 @@ class TradingSimulator:
         if position['qty'] == 0:
             del self.portfolio['positions'][symbol]
 
-        # 记录交易
+        # 记录交易（含 Bias 修正后的实际成交价和滑点）
         self.portfolio['history'].append({
             'date': date,
             'symbol': symbol,
             'type': 'sell',
-            'price': price,
-            'quantity': quantity,
+            'price': price,                      # 信号价格（next open）
+            'execution_price': execution_price,   # Bias 修正：含滑点的实际成交价
+            'slippage': price * quantity * self.slippage_rate,  # Bias 修正：滑点损耗
             'commission': commission,
-            'pnl': net_proceeds - (position['cost'] * quantity / (quantity + position['qty'])),
-            'signal_info': signal_info  # 新增字段，记录交易信号信息
+            'pnl': pnl,
+            'signal_info': signal_info
         })
-        logging.info(f"\n{date} 卖出 {symbol}，价格: {price}，数量: {quantity}，佣金: {commission}")
+        logging.info(f"\n{date} 卖出 {symbol}，价格: {price}(执行:{execution_price:.2f})，数量: {quantity}，佣金: {commission:.2f}")
         return True
 
 class BacktestOrchestrator:
@@ -273,6 +296,8 @@ class BacktestOrchestrator:
         )
         self.position_manager = DynamicPositionManager(initial_position=0.5, position_levels=[0.3,0.5,0.8,1], window_size=3)
         self.plot_save_path = './backtestresult/'
+        # Bias 修正器（初始化时 placeholder，initialize 时构建）
+        self.bias_corrector = None
         if self.live_plot:
             plt.ion()  # 启用交互模式
             # 创建网格布局，左侧显示持仓信息，右侧显示净值曲线
@@ -364,10 +389,24 @@ class BacktestOrchestrator:
                 )
                 text_y -= line_spacing  # 调整下一行的垂直位置
     def initialize(self, start_date, end_date):
-        """初始化回测环境"""
-        logging.info("初始化回测环境,获取交易日历和价格矩阵...")
-        self.trading_dates, self.price_matrix = self.db.fetch_trading_dates_and_price_matrix(start_date, end_date)
-
+        """初始化回测环境
+        
+        注意：加载数据时向前延伸1年，用于 BiasCorrector 计算涨跌停所需的前收盘价
+        """
+        # 前推1年获取前收盘所需的历史数据（用于涨跌停判断）
+        start_dt = pd.to_datetime(start_date)
+        lookback_start = (start_dt - pd.DateOffset(years=1)).strftime('%Y-%m-%d')
+        
+        logging.info(f"初始化回测环境,获取交易日历和价格矩阵（lookback: {lookback_start} ~ {end_date}）...")
+        self.trading_dates, self.price_matrix = self.db.fetch_trading_dates_and_price_matrix(lookback_start, end_date)
+        
+        # 仅保留回测期间内的交易日（lookback 数据仅用于计算涨跌停，不参与回测）
+        self.trading_dates = self.trading_dates[self.trading_dates >= pd.to_datetime(start_date)]
+        
+        # 构建 Bias 修正器（涨跌停/停牌/look-ahead 过滤）
+        logging.info("初始化 Bias 修正器（涨跌停/停牌过滤）...")
+        self.bias_corrector = BiasCorrector(self.price_matrix, self.trading_dates)
+        logging.info("✅ Bias 修正器初始化完成")
 
 
     def date_by_year(self,start_date, end_date):
@@ -396,7 +435,8 @@ class BacktestOrchestrator:
         simulator = TradingSimulator(
             initial_capital=5e5,
             commission=0.0003,
-            position_limit=self.position_limit
+            position_limit=self.position_limit,
+            slippage=TradingSimulator.DEFAULT_SLIPPAGE  # Bias 修正：0.1%/笔滑点
             )
 
         years=self.date_by_year(start_date, end_date)
@@ -497,6 +537,12 @@ class BacktestOrchestrator:
             return
         holding_symbols = list(simulator.portfolio['positions'].keys())
 
+        # ===== Bias 修正：涨跌停/停牌过滤 =====
+        # 剔除信号日已涨停/跌停/停牌的股票（实盘无法买入）
+        scored_signals = self.bias_corrector.filter_buy_signals(date, scored_signals)
+        if scored_signals is None or scored_signals.empty:
+            return
+
         # Phase 2: 根据策略类型选择不同的处理方式
         if self.strategy_name == 'resonance':
             # 8指标共振策略
@@ -580,7 +626,11 @@ class BacktestOrchestrator:
                 next_open = self._get_next_open_day(date)
                 if next_open != next_open_day:
                     continue
-
+                # ===== Bias 修正：涨跌停过滤 =====
+                if self.bias_corrector:
+                    can_buy, reason = self.bias_corrector.can_buy(row['symbol'], date, next_open_price)
+                    if not can_buy:
+                        continue
                 # 计算总账户价值
                 total_account_value = self._total_value(date, simulator)
                 # 目标持仓比例
@@ -706,6 +756,11 @@ class BacktestOrchestrator:
                 next_open = self._get_next_open_day(date)
                 if next_open != next_open_day:
                     continue
+                # ===== Bias 修正：涨跌停过滤 =====
+                if self.bias_corrector:
+                    can_buy, reason = self.bias_corrector.can_buy(row['symbol'], date, next_open_price)
+                    if not can_buy:
+                        continue
 
                 total_account_value = self._total_value(date, simulator)
                 target_position_ratio = current_position * position_ratio
@@ -782,6 +837,11 @@ class BacktestOrchestrator:
                 next_open = self._get_next_open_day(date)
                 if next_open != next_open_day:
                     continue
+                # ===== Bias 修正：涨跌停过滤 =====
+                if self.bias_corrector:
+                    can_buy, reason = self.bias_corrector.can_buy(row['symbol'], date, next_open_price)
+                    if not can_buy:
+                        continue
 
                 # 检查仓位
                 total_account_value = self._total_value(date, simulator)
@@ -859,6 +919,11 @@ class BacktestOrchestrator:
                 next_open=self._get_next_open_day(date)
                 if next_open != next_open_day:
                     continue
+                # ===== Bias 修正：涨跌停过滤 =====
+                if self.bias_corrector:
+                    can_buy, reason = self.bias_corrector.can_buy(row['symbol'], date, next_open_price)
+                    if not can_buy:
+                        continue
                 # 计算总账户价值
                 total_account_value = self._total_value(date, simulator)
                 if (total_account_value-simulator.portfolio['cash'])/total_account_value>current_position:
@@ -930,56 +995,46 @@ class BacktestOrchestrator:
     def _check_stop_loss(self, date, simulator):
         """执行止损检查"""
         if isinstance(date, str):
-            # 如果是字符串，尝试转换为日期格式
             date_obj = datetime.strptime(date, "%Y-%m-%d").date()
         else:
             date_obj = date
+        stop_threshold = 1 + self.risk_manager.stop_loss_pct  # e.g. -0.08 → 0.92
         for symbol, pos in list(simulator.portfolio['positions'].items()):
-            if  pos['entry_date']== date_obj.strftime('%Y-%m-%d'):
+            if pos['entry_date'] == date_obj.strftime('%Y-%m-%d'):
                 continue
-            current_price = self.price_matrix.loc[date_obj.strftime('%Y-%m-%d'), ('close',symbol)]
-            # 如果获取到价格，则更新 pos['latest_price']
-            if current_price == current_price:
-                pos['latest_price'] = current_price
-                cost_basis = pos['cost'] / pos['qty']
-                # 成本止损
-                if current_price <= cost_basis * 0.9:
-                    try:
-                        next_open_price,next_open_day = self._get_next_open_price(date_obj.strftime('%Y-%m-%d'), symbol)
-                        if next_open_price:
-                            # 记录止损信息
-                            signal_info = {
-                                'type': 'stop_loss',
-                                'reason': f"价格跌至成本价的90%以下，触发止损。"
-                            }
-                            if next_open_day not in simulator.sell_signals:
-                                simulator.sell_signals[next_open_day] = []
-                            simulator.sell_signals[next_open_day].append([symbol,next_open_price,next_open_day,simulator.portfolio['positions'][symbol]['qty'],signal_info])
-                            #simulator.execute_order('sell', symbol, next_open_price, next_open_day, pos['qty'])
-                    except:
-                        continue
-            '''
-            # 跟踪止损
-            if 'highest_price' not in pos:
-                pos['highest_price'] = current_price
-            else:
-                if current_price > pos['highest_price']:
-                    pos['highest_price'] = current_price
-                elif current_price <= pos['highest_price'] * (1 - self.trailing_stop_ratio):
-                    try:
-                        next_open_price,next_open_day = self._get_next_open_price(date_obj.strftime('%Y-%m-%d'), symbol)
-                        if next_open_price:
-                            # 记录跟踪止损信息
-                            signal_info = {
-                                'type': 'trailing_stop',
-                                'reason': f"价格回撤达到跟踪止损比例，触发止损。"
-                            }
-                            if next_open_day not in simulator.sell_signals:
-                                simulator.sell_signals[next_open_day] = []
-                            simulator.sell_signals[next_open_day].append([symbol, next_open_price, next_open_day,simulator.portfolio['positions'][symbol]['qty'], signal_info])
-                    except:
-                        continue
-            '''
+            current_price = self.price_matrix.loc[date_obj.strftime('%Y-%m-%d'), ('close', symbol)]
+            # NaN检测：用pd.isna替代土办法
+            if pd.isna(current_price):
+                logging.debug(f"{date_obj} {symbol} 当前价NaN，跳过止损检查")
+                continue
+            pos['latest_price'] = current_price
+            cost_basis = pos['cost'] / pos['qty']
+            # 成本止损：使用配置的stop_loss_pct（-0.08=跌至成本92%时止损）
+            if current_price <= cost_basis * stop_threshold:
+                try:
+                    next_open_price, next_open_day = self._get_next_open_price(
+                        date_obj.strftime('%Y-%m-%d'), symbol)
+                    if next_open_price:
+                        # Bias 修正：跌停/停牌时无法止损卖出
+                        if self.bias_corrector:
+                            can_sell, reason = self.bias_corrector.can_sell(symbol, next_open_day)
+                            if not can_sell:
+                                logging.info(f"{date_obj} {symbol} 涨跌停/停牌，暂不执行止损: {reason}")
+                                continue
+                        signal_info = {
+                            'type': 'stop_loss',
+                            'reason': f"价格{current_price:.2f}≤成本价{cost_basis:.2f}×{stop_threshold:.2f}，触发止损"
+                        }
+                        if next_open_day not in simulator.sell_signals:
+                            simulator.sell_signals[next_open_day] = []
+                        simulator.sell_signals[next_open_day].append(
+                            [symbol, next_open_price, next_open_day,
+                             simulator.portfolio['positions'][symbol]['qty'], signal_info])
+                        logging.warning(
+                            f"{date_obj} 触发止损 {symbol}@{current_price:.2f}，成本{cost_basis:.2f}，"
+                            f"执行日{next_open_day}，数量{pos['qty']}")
+                except Exception as e:
+                    logging.error(f"{date_obj} 止损执行异常 {symbol}: {e}", exc_info=True)
             
     def _check_take_profit(self, date, simulator):
         """执行分档止盈检查（独立风控模块）"""
@@ -1021,6 +1076,11 @@ class BacktestOrchestrator:
                 try:
                     next_open_price, next_open_day = self._get_next_open_price(date_obj.strftime('%Y-%m-%d'), symbol)
                     if next_open_price:
+                        # ===== Bias 修正：跌停/停牌时无法止盈卖出 =====
+                        if self.bias_corrector:
+                            can_sell, reason_sell = self.bias_corrector.can_sell(symbol, next_open_day)
+                            if not can_sell:
+                                continue
                         signal_info = {
                             'type': 'take_profit',
                             'reason': reason,

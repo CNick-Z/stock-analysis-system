@@ -116,7 +116,7 @@ class ScoreWaveChanComboA:
     """
 
     # WaveChan 认可的买点信号（状态级别）
-    BUY_SIGNALS = {'W2_BUY', 'W4_BUY'}
+    BUY_SIGNALS = {'C_BUY', 'W2_BUY', 'W4_BUY'}
     BUY_STATUS = {'ALERT', 'CONFIRMED'}
 
     def __init__(self,
@@ -330,7 +330,19 @@ class ScoreWaveChanComboA:
 # ============================================================
 
 class SimpleComboBacktester:
-    """Score + WaveChan 组合回测器（独立版）"""
+    """
+    Score + WaveChan 组合回测器（独立版）
+
+    Bias 修正（v2）：
+    1. 涨跌停/停牌过滤 - BiasCorrector 已集成
+    2. T+1 交易机制 - 信号日 T，次日 T+1 执行
+    3. 卖出执行价修正 - 卖出由"当日收盘价"改为"次交易日开盘价"
+    4. 滑点 & 交易成本 - 滑点 0.1%/笔 + 佣金 0.03%/笔（含买入+卖出）
+    """
+
+    # Bias 修正：显式交易成本参数
+    DEFAULT_COMMISSION = 0.0003   # 0.03% per trade (双向)
+    DEFAULT_SLIPPAGE = 0.001      # 0.1% per trade
 
     def __init__(self,
                  start_date: str = '2025-01-01',
@@ -342,7 +354,9 @@ class SimpleComboBacktester:
                  profit_target_pct: float = 0.20,
                  max_hold_days: int = 20,
                  top_n: int = 5,
-                 wave_cache_dir: str = '/tmp/wavechan_combo_a_bt'):
+                 wave_cache_dir: str = '/tmp/wavechan_combo_a_bt',
+                 commission: float = 0.0003,
+                 slippage: float = 0.001):
         self.start_date = start_date
         self.end_date = end_date
         self.initial_cash = initial_cash
@@ -353,6 +367,8 @@ class SimpleComboBacktester:
         self.max_hold_days = max_hold_days
         self.top_n = top_n
         self.wave_cache_dir = wave_cache_dir
+        self.commission_rate = commission      # Bias 修正：佣金 0.03%/笔
+        self.slippage_rate = slippage          # Bias 修正：滑点 0.1%/笔
 
         self.combo: ScoreWaveChanComboA = None
         self.price_df: pd.DataFrame = None
@@ -430,6 +446,8 @@ class SimpleComboBacktester:
         positions: dict = {}  # {symbol: {buy_date, buy_price, shares, stop_loss, days, buy_reason}}
         # T+1 信号执行：存储上一日产生的Pending信号，{symbol: {wave, stop_loss}}
         pending_signals: dict = {}
+        # Bias 修正：待执行卖出（止损/止盈触发后，次一交易日以开盘价执行）
+        pending_sells: dict = {}   # {symbol: {exit_reason, sell_date, shares, buy_price, buy_date, buy_reason, days}}
         trades: list = []
         equity_curve: list = []
 
@@ -472,7 +490,59 @@ class SimpleComboBacktester:
             for date in year_dates:
                 date_str = date
 
-                # --- X. T+1 执行：使用 date_str 开盘价执行上一日产生的 Pending 信号 ---
+                # --- X. T+1 执行卖出（止损/止盈触发后，次一交易日开盘价执行）---
+                # Bias 修正：卖出不再用当日收盘价，改用次交易日开盘价
+                for sym in list(pending_sells.keys()):
+                    sell_info = pending_sells[sym]
+                    exec_date = sell_info['sell_date']
+                    if exec_date != date_str:
+                        continue
+
+                    shares = sell_info['shares']
+                    buy_price = sell_info['buy_price']
+                    entry_cost = sell_info.get('entry_cost', buy_price)
+
+                    bar_exec = get_bar(sym, date_str, self.price_df)
+                    if bar_exec is None:
+                        del pending_sells[sym]
+                        continue
+
+                    sell_open = bar_exec['open']
+                    if sell_open <= 0:
+                        del pending_sells[sym]
+                        continue
+
+                    # Bias 修正：卖出滑点 + 佣金
+                    execution_price = sell_open * (1 - self.slippage_rate)
+                    commission = execution_price * shares * self.commission_rate
+                    net_proceeds = execution_price * shares - commission
+
+                    pnl = net_proceeds - (entry_cost * shares)
+                    ret = pnl / (entry_cost * shares)
+                    cash += net_proceeds
+
+                    trades.append({
+                        'symbol': sym,
+                        'buy_date': sell_info['buy_date'],
+                        'sell_date': date_str,
+                        'buy_price': buy_price,
+                        'sell_price': sell_open,         # 开盘价（非收盘价）
+                        'execution_price': execution_price,  # 含滑点执行价
+                        'slippage': sell_open * shares * self.slippage_rate,
+                        'commission': commission,
+                        'pnl': pnl,
+                        'return': ret,
+                        'exit_reason': sell_info['exit_reason'],
+                        'buy_reason': sell_info['buy_reason'],
+                        'hold_days': sell_info['days'],
+                    })
+                    logging.info(
+                        f"  📤 T+1卖出 {sym} @ {sell_open:.2f}(执行:{execution_price:.2f}) "
+                        f"({sell_info['exit_reason']}) 收益: {pnl:+,.0f} ({ret:.2%})"
+                    )
+                    del pending_sells[sym]
+
+                # --- X2. T+1 执行买入：使用 date_str 开盘价执行上一日产生的 Pending 信号 ---
                 for sym in list(pending_signals.keys()):
                     sig_info = pending_signals[sym]
                     wave = sig_info['wave']
@@ -508,20 +578,30 @@ class SimpleComboBacktester:
                         del pending_signals[sym]
                         continue
 
+                    # Bias 修正：买入滑点 + 佣金
+                    # 成交价 = open * (1 + slippage)，佣金按成交价计
+                    execution_price = price * (1 + self.slippage_rate)
+                    commission = execution_price * shares * self.commission_rate
+                    total_cost = execution_price * shares + commission
+
                     positions[sym] = {
                         'buy_date': date_str,
-                        'buy_price': price,
+                        'buy_price': price,                # 信号价格（next open，未扣费）
+                        'entry_cost': total_cost / shares,  # 实际含滑点+佣金的成本均价
                         'shares': shares,
                         'stop_loss': stop_loss,
                         'days': 0,
                         'buy_reason': f"T+1:{wave.get('signal', '?')}:{wave.get('reason', '')}",
                         '_wave_state': wave.get('state', ''),
                     }
-                    cash -= shares * price
+                    # 默认止损：若 WaveChan 未提供止损位，则用买入价 * 0.92（-8%）
+                    if positions[sym]['stop_loss'] is None:
+                        positions[sym]['stop_loss'] = execution_price * 0.92
+                    cash -= total_cost
                     total_buy_executed += 1
                     del pending_signals[sym]
                     logging.info(
-                        f"  ✅ T+1买入 {sym} @ {price:.2f} "
+                        f"  ✅ T+1买入 {sym} @ {price:.2f}(执行:{execution_price:.2f})"
                         f"[{wave.get('signal', '?')}][{wave.get('state', '?')}]"
                         f" {wave.get('reason', '')[:50]}"
                     )
@@ -579,7 +659,7 @@ class SimpleComboBacktester:
                     # WaveChan 确认买点 → 存入 Pending（下一交易日执行）
                     total_wavechan_filtered += 1
 
-                    stop_loss = float(wave.get('stop_loss')) if wave.get('stop_loss') else 0.0
+                    stop_loss = float(wave.get('stop_loss')) if wave.get('stop_loss') else None
 
                     pending_signals[sym] = {
                         'wave': wave,
@@ -592,6 +672,7 @@ class SimpleComboBacktester:
                     )
 
                 # --- D. 处理持仓（止损/止盈/时间止损）---
+                # Bias 修正：不在当日收盘价立即卖出，而是等次一交易日以开盘价执行
                 for sym in list(positions.keys()):
                     pos = positions[sym]
                     pos['days'] += 1
@@ -601,7 +682,9 @@ class SimpleComboBacktester:
                         continue
 
                     close = bar['close']
-                    ret = (close - pos['buy_price']) / pos['buy_price']
+                    # 用含滑点佣金的 entry_cost 计算收益（更准确反映真实回报）
+                    entry_cost = pos.get('entry_cost', pos['buy_price'])
+                    ret = (close - entry_cost) / entry_cost
                     exit_reason = ''
 
                     # 止损
@@ -615,34 +698,41 @@ class SimpleComboBacktester:
                         exit_reason = 'TIME_EXIT'
 
                     if exit_reason:
-                        # ===== Bias 修正：卖出流动性检查 =====
-                        # 跌停日无法以合理价卖出，延迟卖出信号到下一日
-                        if self.bias_corrector:
-                            can_sell, sell_reason = self.bias_corrector.can_sell(sym, date_str)
-                            if not can_sell:
-                                # 跳过本次检查，不卖出（下一日继续检查）
-                                total_sell_delay += 1
-                                logging.debug(f"  ⏳ {sym} 卖出延迟：{sell_reason}")
-                                continue
+                        # ===== Bias 修正：卖出流动性检查 + T+1 次日开盘价执行 =====
+                        # 查找次一可执行交易日（跳过停牌/跌停日）
+                        dates = self.trading_dates
+                        try:
+                            exec_idx = dates.index(date_str)
+                        except ValueError:
+                            exec_idx = -1
 
-                        pnl = (close - pos['buy_price']) * pos['shares']
-                        cash += pos['shares'] * close
-                        trades.append({
-                            'symbol': sym,
-                            'buy_date': pos['buy_date'],
-                            'sell_date': date_str,
-                            'buy_price': pos['buy_price'],
-                            'sell_price': close,
-                            'shares': pos['shares'],
-                            'pnl': pnl,
-                            'return': ret,
+                        exec_date = None
+                        for d in dates[exec_idx + 1:]:
+                            if self.bias_corrector:
+                                can_s, reason = self.bias_corrector.can_sell(sym, d)
+                                if not can_s:
+                                    total_sell_delay += 1
+                                    continue
+                            exec_date = d
+                            break
+
+                        if exec_date is None:
+                            logging.warning(f"  ⚠️ {sym} 卖出无法找到可执行日，跳过")
+                            continue
+
+                        # 记录到 pending_sells，次一交易日执行（等T+1开盘）
+                        pending_sells[sym] = {
                             'exit_reason': exit_reason,
+                            'sell_date': exec_date,
+                            'shares': pos['shares'],
+                            'buy_price': pos['buy_price'],
+                            'entry_cost': entry_cost,
+                            'buy_date': pos['buy_date'],
                             'buy_reason': pos['buy_reason'],
-                            'hold_days': pos['days'],
-                        })
+                            'days': pos['days'],
+                        }
                         logging.info(
-                            f"  📤 卖出 {sym} @ {close:.2f} ({exit_reason}) "
-                            f"收益: {pnl:+,.0f} ({ret:.2%})"
+                            f"  ⏳ {sym} {exit_reason}触发 → 等待 {exec_date} 开盘执行"
                         )
                         del positions[sym]
 
@@ -667,17 +757,25 @@ class SimpleComboBacktester:
                     pos = positions[sym]
                     bar = get_bar(sym, year_end, self.price_df)
                     close = bar['close'] if bar else pos['buy_price']
-                    pnl = (close - pos['buy_price']) * pos['shares']
-                    cash += pos['shares'] * close
+                    entry_cost = pos.get('entry_cost', pos['buy_price'])
+                    shares = pos['shares']
+                    # Bias 修正：卖出含滑点+佣金
+                    execution_price = close * (1 - self.slippage_rate)
+                    commission = execution_price * shares * self.commission_rate
+                    net_proceeds = execution_price * shares - commission
+                    pnl = net_proceeds - (entry_cost * shares)
+                    cash += net_proceeds
                     trades.append({
                         'symbol': sym,
                         'buy_date': pos['buy_date'],
                         'sell_date': year_end,
                         'buy_price': pos['buy_price'],
                         'sell_price': close,
-                        'shares': pos['shares'],
+                        'execution_price': execution_price,
+                        'slippage': close * shares * self.slippage_rate,
+                        'commission': commission,
                         'pnl': pnl,
-                        'return': (close - pos['buy_price']) / pos['buy_price'],
+                        'return': pnl / (entry_cost * shares),
                         'exit_reason': 'FINAL_EXIT',
                         'buy_reason': pos['buy_reason'],
                         'hold_days': pos['days'],

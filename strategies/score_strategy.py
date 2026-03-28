@@ -205,7 +205,9 @@ class ScoreStrategy(BaseStrategy):
 
     def _calculate_money_flow_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """计算资金流向指标"""
-        df['金'] = df['amount'] / df['volume']
+        # 注意：合并后 amount 列会变成 amount_x（指标）和 amount_y（价格）
+        amount_col = 'amount_y' if 'amount_y' in df.columns else 'amount'
+        df['金'] = df[amount_col] / df['volume']
         df['PJJ'] = (df['high'] + df['low'] + df['close'] * 2) / 4
         df['PJJ'] = df['PJJ'].ewm(alpha=0.9, adjust=False).mean()
         df['JJ'] = df['PJJ'].ewm(span=3, adjust=False).mean().shift(1)
@@ -269,32 +271,34 @@ class ScoreStrategy(BaseStrategy):
         return df
 
     def _score_stocks(self, signals: pd.DataFrame) -> pd.DataFrame:
-        """综合评分"""
-        weights = {
+        """综合评分（支持通过config传入自定义权重）"""
+        # 从config读取权重，没有则用默认值
+        _cfg = self.config or {}
+        weights = _cfg.get('weights', {
             "technical": 0.4483,
             "capital_flow": 0.2947,
             "market_heat": 0.257,
             "fundamental": 0.0
-        }
-        tech_weights = {
+        })
+        tech_weights = _cfg.get('tech_weights', {
             "ma_condition": 0.1622, "angle_condition": 0.0854,
             "macd_condition": 0.1366, "volume_score": 0.1704,
             "rsi_oversold": 0.0597, "kdj_oversold": 0.0597,
             "cci_oversold": 0.0597, "bollinger_condition": 0.1191,
             "macd_jc": 0.0873, "price_growth": 0.06
-        }
-        thresholds = {
+        })
+        thresholds = _cfg.get('thresholds', {
             'volume_gain_threshold': 1.3, 'volume_loss_threshold': -0.65,
             'growth_min': 0.5, 'growth_max': 6.0, 'angle_min': 30,
-        }
-        cap_weights = {
+        })
+        cap_weights = _cfg.get('cap_weights', {
             'positive_flow': -0.0072, 'flow_increasing': 0.0108,
             'trend_strength': 0.0147, 'weekly_flow': 0.0072,
             'weekly_increasing': 0.0036, 'volume_gain_ratio': 0.1524,
             'volume_baseline': 0.0437, 'primary_volume': 0.0159,
             'weekly_growth': 0.2438, 'volume_gain_multiplier': 0.3434,
             'volume_loss_multiplier': 0.1717
-        }
+        })
 
         for _, row in signals.iterrows():
             tech_score = 0

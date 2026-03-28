@@ -89,10 +89,11 @@ class ParquetDatabaseIntegrator:
         
         # 生成价格矩阵 (date x symbol x field)
         # pivot 后 columns 是 MultiIndex: (field, symbol)
+        # v2: 增加 amount, volume 字段支持资金流计算
         price_matrix = data.pivot_table(
             index='date', 
             columns='symbol', 
-            values=['open', 'close']
+            values=['open', 'close', 'amount', 'volume']
         )
         
         # 不需要重新组织，保持原格式 (field, symbol)
