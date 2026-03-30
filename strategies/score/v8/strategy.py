@@ -17,7 +17,7 @@ v6核心 + IC增强过滤
 【IC增强过滤 - 剔除】
   - RSI>70 或 <25
   - 换手率>2.79%
-  - vol_ratio>1.25
+  # - vol_ratio>1.25  # 已移除，与 volume_condition 冲突
   - WR<-95
   - CCI<-200
 
@@ -113,10 +113,10 @@ def _apply_ic_filter(df: pd.DataFrame) -> pd.DataFrame:
         df['turnover_rate'] = df['turnover_rate_x']
     
     # ===== IC 增强过滤 — 剔除条件 =====
+    # 注意：vol_ratio > 1.25 已移除（原排除157/198候选，过严，与 volume_condition 冲突）
     exclude_mask = (
         (df['rsi_14'] > 70) | (df['rsi_14'] < 25) |
         (df['turnover_rate'] > 2.79) |
-        (df['vol_ratio'] > 1.25) |
         (df['williams_r'] < -95) |
         (df['cci_20'] < -200)
     )
@@ -270,7 +270,6 @@ class ScoreV8Strategy:
     【IC增强过滤 - 剔除】
       - RSI > 70 或 < 25
       - 换手率 > 2.79%
-      - vol_ratio > 1.25
       - WR < -95
       - CCI < -200
     
@@ -417,7 +416,7 @@ class ScoreV8Strategy:
             # IC 剔除
             "ic_exclude_rsi": "RSI > 70 或 < 25",
             "ic_exclude_turnover": "换手率 > 2.79%",
-            "ic_exclude_vol_ratio": "vol_ratio > 1.25",
+            # ic_exclude_vol_ratio 已移除（与 volume_condition 冲突）
             "ic_exclude_wr": "WR < -95",
             "ic_exclude_cci": "CCI < -200",
             # IC 加分
