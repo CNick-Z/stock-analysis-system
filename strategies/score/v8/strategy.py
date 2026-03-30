@@ -29,7 +29,7 @@ v6核心 + IC增强过滤
 【出场规则】
   - 止损: 5%
   - 止盈: 15%
-  - MA死叉: SMA20从下穿上时入场，死叉触发（sma20>sma55 且 入场时sma20<sma55）
+  - 方案A出场(跌破MA20+均线死叉): 收盘价跌破SMA20 且 SMA5<SMA10
 
 【持仓管理】
   - 最多5只
@@ -283,7 +283,7 @@ class ScoreV8Strategy:
     【出场规则】
       - 止损: 5%
       - 止盈: 15%
-      - MA死叉: 入场时 sma20 < sma55，出场时 sma20 > sma55
+      - 方案A出场(跌破MA20+均线死叉): 收盘价跌破SMA20 且 SMA5<SMA10
     
     【持仓管理】
       - 最多持仓: 5只（config: max_positions）
@@ -354,16 +354,15 @@ class ScoreV8Strategy:
         """
         判断是否应该出场
         
-        出场条件（优先级：止损 > 止盈 > MA死叉）：
+        出场条件（优先级：止损 > 止盈 > 方案A出场）：
           1. 止损: next_open < 入场价 * (1 - stop_loss)
           2. 止盈: next_open > 入场价 * (1 + take_profit)
-          3. MA死叉: 入场时 sma20 < sma55 且当前 sma20 > sma55
+          3. 方案A出场(跌破MA20+均线死叉): 收盘价跌破SMA20 且 SMA5<SMA10
         
         Args:
-            row: 当日行情数据（需含 next_open, sma_20, sma_55 等）
+            row: 当日行情数据（需含 next_open, sma_20, sma_5, sma_10 等）
             pos: 持仓信息字典，必须包含:
                     - avg_cost: 入场成本价
-                    - entry_sma20_le_sma55: bool，入场时 sma20 <= sma55 为 True
             market: 市场上下文（可选，当前未使用，保留接口兼容性）
             
         Returns:
@@ -391,11 +390,9 @@ class ScoreV8Strategy:
         if next_open > profit_price:
             return True, f"TAKE_PROFIT @{next_open:.2f}"
         
-        # 3. MA死叉（入场时 sma20 < sma55，当前 sma20 > sma55 = 死叉已发生）
-        #    pos['entry_sma20_le_sma55'] 在建仓时由调用方写入持仓记录
-        if pos.get('entry_sma20_le_sma55', False):
-            if row.get('sma_20', 0) > row.get('sma_55', 0):
-                return True, "MA_DEATH_CROSS"
+        # 3. 方案A出场（双重确认）：收盘价跌破SMA20 且 SMA5<SMA10
+        if row.get('close', 0) < row.get('sma_20', 0) and row.get('sma_5', 0) < row.get('sma_10', 0):
+            return True, "跌破MA20+均线死叉"
         
         return False, ""
     
