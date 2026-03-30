@@ -474,7 +474,6 @@ def score_row_v8(row: pd.Series) -> float:
 def should_sell(row: pd.Series, pos: dict, market: Optional[dict] = None) -> Tuple[bool, str]:
     """
     兼容层：全局 should_sell 函数
-    注意：调用方需要自行保证 pos 中包含 entry_sma20_le_sma55 字段
     建议使用 ScoreV8Strategy.should_sell() 方法
     """
     strategy = ScoreV8Strategy()
