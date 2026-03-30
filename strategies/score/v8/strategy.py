@@ -29,7 +29,7 @@ v6核心 + IC增强过滤
 【出场规则】
   - 止损: 5%
   - 止盈: 15%
-  - 方案A出场(跌破MA20+缩量): 收盘价跌破SMA20 且 vol_ratio<0.8（缩量=资金流出代理）
+  - 方案A出场(跌破MA20+资金流出): 收盘价跌破SMA20 且 money_flow_trend == False（V4原版逻辑）
 
 【持仓管理】
   - 最多5只
@@ -283,7 +283,7 @@ class ScoreV8Strategy:
     【出场规则】
       - 止损: 5%
       - 止盈: 15%
-      - 方案A出场(跌破MA20+缩量): 收盘价跌破SMA20 且 vol_ratio<0.8（缩量=资金流出代理）
+      - 方案A出场(跌破MA20+资金流出): 收盘价跌破SMA20 且 money_flow_trend == False（V4原版逻辑）
     
     【持仓管理】
       - 最多持仓: 5只（config: max_positions）
@@ -357,7 +357,7 @@ class ScoreV8Strategy:
         出场条件（优先级：止损 > 止盈 > 方案A出场）：
           1. 止损: next_open < 入场价 * (1 - stop_loss)
           2. 止盈: next_open > 入场价 * (1 + take_profit)
-          3. 方案A出场(跌破MA20+缩量确认): 收盘价跌破SMA20 且 vol_ratio < 0.8
+          3. 方案A出场(跌破MA20+资金流出): 收盘价跌破SMA20 且 money_flow_trend == False
         
         Args:
             row: 当日行情数据（需含 next_open, sma_20, sma_5, sma_10 等）
@@ -391,8 +391,8 @@ class ScoreV8Strategy:
             return True, f"TAKE_PROFIT @{next_open:.2f}"
         
         # 3. 方案A出场（双重确认）：收盘价跌破SMA20 且 SMA5<SMA10
-        if row.get('close', 0) < row.get('sma_20', 0) and row.get('vol_ratio', 999) < 0.8:
-            return True, "跌破MA20+缩量确认"
+        if row.get('close', 0) < row.get('sma_20', 0) and row.get('money_flow_trend', True) is False:
+            return True, "跌破MA20+资金流出"
         
         return False, ""
     
