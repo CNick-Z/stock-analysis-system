@@ -1,221 +1,169 @@
 #!/usr/bin/env python3
 """
-Score 策略 v8 回测 — v6 核心 + IC 增强过滤
+Score 策略 v8 回测 — v6核心 + IC 增强过滤
+============================================
 
-【策略核心: v8_strategy.py (与模拟盘共用同一策略)】
+与 paper_trading_sim.py 共用同一 ScoreV8Strategy 类。
+
+策略逻辑完全由 strategies.score.v8.strategy.ScoreV8Strategy 提供：
+  - 选股条件、IC增强过滤、评分、出场判断
+  - 出场规则：止损5% / 止盈15% / MA死叉
+  - 持仓上限：5只，单只仓位上限20%
+
+数据加载每年独立（与 paper_trading_sim.py 保持一致），
+回测循环通过 MultiSimulator 调度，与模拟盘共用同一引擎。
+
+用法:
+    python3 backtest_score_v8.py
 """
 
-import os, sys, gc, psutil
+import os, sys, gc, argparse, psutil
 import pandas as pd
 import numpy as np
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from v8_strategy import compute_conditions, apply_ic_filter, compute_v6_score, should_sell
+
+from simulator import MultiSimulator
+from strategies.score.v8.strategy import ScoreV8Strategy
 
 DATA_DIR = '/root/.openclaw/workspace/data/warehouse'
 OUT_DIR = '/root/.openclaw/workspace/projects/stock-analysis-system/backtest_results'
 os.makedirs(OUT_DIR, exist_ok=True)
 
-INITIAL_CASH = 100_0000
-COMMISSION = 0.0003
-STAMP_TAX = 0.001
-SLIPPAGE = 0.001
-YEARS = range(2018, 2026)
-TOP_N = 5
+INITIAL_CASH = 1_000_000   # 与模拟盘一致
+DEFAULT_YEARS = range(2018, 2026)
 
 
-def check_mem(label=""):
-    mem = psutil.Process(os.getpid()).memory_info().rss / 1024**3
-    print(f"  [{datetime.now().strftime('%H:%M:%S')}] MEM={mem:.2f}GB | {label}")
-
-
-def load_year(year):
+def load_year_data(year: int) -> pd.DataFrame:
+    """
+    加载某年的技术指标+日线数据，并完成所有指标预处理。
+    返回的 DataFrame 包含完整选股条件列，可直接供 ScoreV8Strategy 使用。
+    """
     tech = pd.read_parquet(f'{DATA_DIR}/technical_indicators_year={year}/data.parquet')
     daily = pd.read_parquet(f'{DATA_DIR}/daily_data_year={year}/data.parquet')
     df = pd.merge(tech, daily, on=['date', 'symbol'], how='inner')
     del tech, daily
     gc.collect()
+
+    # === 基础指标（MultiSimulator 内部也需要这些列） ===
     df['vol_ratio'] = df['volume'] / (df['vol_ma5'] + 1e-10)
     df['boll_pos'] = (df['sma_5'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'] + 1e-10)
     df['boll_pos'] = df['boll_pos'].clip(0, 1)
-    for n in [5, 10, 20]:
-        df[f'return_{n}d'] = df.groupby('symbol')['close'].pct_change(n).shift(-n)
+
+    # next_open 用于模拟次日开盘买入/卖出
     df['next_open'] = df.groupby('symbol')['open'].shift(-1)
-    
+
+    # 处理合并后的重名字段（pandas 默认用 _x/_y 后缀）
     if 'turnover_rate_y' in df.columns:
         df['turnover_rate'] = df['turnover_rate_y']
     elif 'turnover_rate_x' in df.columns:
         df['turnover_rate'] = df['turnover_rate_x']
-    
-    # 使用v8_strategy统一计算选股条件
-    df = compute_conditions(df)
+
+    df = df.sort_values('date').reset_index(drop=True)
     return df
 
 
-# [apply_ic_filter 已迁移到 v8_strategy.py]
+def run_backtest_year(year: int) -> dict:
+    """
+    使用 MultiSimulator + ScoreV8Strategy 回测单一年份。
 
-
-def run_backtest_year(year):
+    返回与原 run_backtest_year() 相同的统计字典结构：
+      year, annual_return, n_buys, n_sells, n_winners, win_rate,
+      total_value, trades
+    """
     print(f"\n{'='*60}")
-    print(f"📅 {year} 年回测 (v8)")
-    check_mem(f"{year}开始")
-    
-    df = load_year(year)
+    print(f"📅 {year} 年回测 (V8 + MultiSimulator)")
+    mem = psutil.Process(os.getpid()).memory_info().rss / 1024**3
+    print(f"  [{datetime.now().strftime('%H:%M:%S')}] MEM={mem:.2f}GB | {year}开始")
+
+    df = load_year_data(year)
     print(f"  总记录: {len(df):,}")
-    
-    portfolio = {
-        'cash': INITIAL_CASH,
-        'positions': {},
-        'trades': []
-    }
-    
+
     dates = sorted(df['date'].unique())
-    n_dates = len(dates)
-    
-    for i, date in enumerate(dates):
-        daily = df[df['date'] == date].copy()
-        next_day = dates[i+1] if i+1 < n_dates else None
-        
-        # ===== 持仓止损/止盈 =====
-        for sym, pos in list(portfolio['positions'].items()):
-            if not next_day:
-                continue
-            today = daily[daily['symbol'] == sym]
-            if today.empty:
-                continue
-            row = today.iloc[0]
-            next_open = row['next_open']
-            if pd.isna(next_open) or next_open <= 0:
-                continue
-            
-            should_sell = False
-            reason = ""
-            
-            # 止损 5%
-            if next_open < pos['avg_cost'] * 0.95:
-                should_sell = True
-                reason = "stop_loss_5%"
-            # 止盈 15%
-            elif next_open > pos['avg_cost'] * 1.15:
-                should_sell = True
-                reason = "take_profit_15%"
-            # MA20 死叉 + 资金流负
-            elif row['sma_20'] > row['sma_55'] and row.get('money_flow_positive', True) == False:
-                should_sell = True
-                reason = "ma_death"
-            
-            if should_sell:
-                proceeds = pos['qty'] * next_open * (1 - COMMISSION - STAMP_TAX - SLIPPAGE)
-                pnl = proceeds - pos['qty'] * pos['avg_cost']
-                portfolio['cash'] += proceeds
-                portfolio['trades'].append({
-                    'date': date, 'symbol': sym, 'action': 'sell',
-                    'price': next_open, 'qty': pos['qty'], 'pnl': pnl, 'reason': reason
-                })
-                del portfolio['positions'][sym]
-        
-        # ===== 选股买入 =====
-        if next_day and len(portfolio['positions']) < TOP_N:
-            candidates = apply_ic_filter(daily)
-            
-            # 计算V6评分 + V8总分（使用v8_strategy统一逻辑）
-            if not candidates.empty:
-                candidates = compute_v6_score(candidates)
-                candidates['v8_score'] = candidates['v6_score'] + candidates['ic_bonus']
-                candidates = candidates.sort_values('v8_score', ascending=False)
-            
-            slots = TOP_N - len(portfolio['positions'])
-            for _, row in candidates.head(slots).iterrows():
-                sym = row['symbol']
-                if sym in portfolio['positions']:
-                    continue
-                next_open = row['next_open']
-                if pd.isna(next_open) or next_open <= 0:
-                    continue
-                
-                max_per = portfolio['cash'] * 0.20
-                buy_qty = int(max_per / next_open / 100) * 100
-                if buy_qty < 100:
-                    continue
-                
-                cost = buy_qty * next_open * (1 + COMMISSION + SLIPPAGE)
-                if cost > portfolio['cash']:
-                    continue
-                
-                portfolio['cash'] -= cost
-                portfolio['positions'][sym] = {
-                    'qty': buy_qty, 'avg_cost': next_open,
-                    'buy_date': date, 'buy_price': next_open
-                }
-                portfolio['trades'].append({
-                    'date': date, 'symbol': sym, 'action': 'buy',
-                    'price': next_open, 'qty': buy_qty,
-                    'v8_score': row['v8_score'], 'v6_score': row['v6_score'],
-                    'cci': row['cci_20'], 'wr': row['williams_r']
-                })
-        
-        # ===== 进度 =====
-        if i % 20 == 0 or i == n_dates - 1:
-            pv = sum(
-                daily[daily['symbol']==sym].iloc[0]['close'] * pos['qty']
-                if not daily[daily['symbol']==sym].empty else pos['qty'] * pos['avg_cost']
-                for sym, pos in portfolio['positions'].items()
-            )
-            total = portfolio['cash'] + pv
-            print(f"  {date}: 持仓{len(portfolio['positions'])}只 现金{portfolio['cash']:.0f} 总{total:.0f}")
-    
-    # 年终清仓
-    last = df[df['date'] == dates[-1]]
-    for sym, pos in list(portfolio['positions'].items()):
-        t = last[last['symbol'] == sym]
-        if not t.empty:
-            sp = t.iloc[0]['close']
-            proceeds = pos['qty'] * sp * (1 - COMMISSION - STAMP_TAX - SLIPPAGE)
-            portfolio['trades'].append({
-                'date': dates[-1], 'symbol': sym, 'action': 'year_end_sell',
-                'price': sp, 'qty': pos['qty'], 'pnl': proceeds - pos['qty'] * pos['avg_cost']
-            })
-            portfolio['cash'] += proceeds
-        del portfolio['positions'][sym]
-    
-    total_val = portfolio['cash']
-    ann_ret = (total_val - INITIAL_CASH) / INITIAL_CASH
-    
-    buys = [t for t in portfolio['trades'] if t['action'] == 'buy']
-    sells = [t for t in portfolio['trades'] if t['action'] in ('sell', 'year_end_sell')]
-    winners = [t for t in sells if t['pnl'] > 0]
-    
-    print(f"\n  📊 {year} 结果: 收益={ann_ret:.2%} 买入={len(buys)} 胜率={len(winners)/max(1,len(sells)):.0%}")
-    del df; gc.collect()
-    
+    if not dates:
+        return {'year': year, 'annual_return': 0, 'n_buys': 0, 'n_sells': 0,
+                'n_winners': 0, 'win_rate': 0, 'total_value': INITIAL_CASH, 'trades': []}
+
+    # === 构建 MultiSimulator ===
+    sim = MultiSimulator(initial_cash_per_strategy=INITIAL_CASH)
+    sim.add_strategy(
+        "V8",
+        ScoreV8Strategy(),
+        config={
+            'stop_loss': 0.05,
+            'take_profit': 0.15,
+            'max_positions': 5,
+            'position_size': 0.20,
+        },
+    )
+
+    # === 运行 ===
+    sim.run(
+        start_date=str(dates[0]),
+        end_date=str(dates[-1]),
+        daily_data=df,
+    )
+
+    # === 提取结果 ===
+    results = sim.get_results()
+    v8_res = results.get("V8", {})
+
+    trades = v8_res.get('trades', [])
+    closed_trades = [t for t in trades if t['action'] == 'sell']
+    winners = [t for t in closed_trades if t.get('pnl', 0) > 0]
+
+    initial = v8_res.get('initial_cash', INITIAL_CASH)
+    final = v8_res.get('final_value', initial)
+    annual_return = (final - initial) / initial if initial > 0 else 0
+
+    n_buys = sum(1 for t in trades if t['action'] == 'buy')
+    n_sells = len(closed_trades)
+
+    print(f"\n  📊 {year} 结果: 收益={annual_return:.2%} 买入={n_buys} 胜率={len(winners)/max(1,n_sells):.0%}")
+
+    del df
+    gc.collect()
+
     return {
-        'year': year, 'annual_return': ann_ret,
-        'n_buys': len(buys), 'n_sells': len(sells),
-        'n_winners': len(winners), 'win_rate': len(winners)/max(1,len(sells)),
-        'total_value': total_val, 'trades': portfolio['trades']
+        'year': year,
+        'annual_return': annual_return,
+        'n_buys': n_buys,
+        'n_sells': n_sells,
+        'n_winners': len(winners),
+        'win_rate': len(winners) / max(1, n_sells),
+        'total_value': final,
+        'trades': trades,
     }
 
 
-def run():
+def run(years=DEFAULT_YEARS):
+    """运行多年回测并打印汇总表"""
     print(f"{'='*60}")
-    print(f"🏃 Score v8 回测 — v6核心 + IC增强")
+    print(f"🏃 Score v8 回测 — v6核心 + IC增强 (MultiSimulator驱动)")
     print(f"{'='*60}")
-    check_mem("启动")
-    
+
     results = []
-    for year in YEARS:
-        r = run_backtest_year(year)
-        results.append(r)
-        check_mem(f"{year}完成")
-    
+    for year in years:
+        try:
+            r = run_backtest_year(year)
+            results.append(r)
+        except FileNotFoundError as e:
+            print(f"\n⚠️ {year}年数据不存在，跳过: {e}")
+            continue
+
+    if not results:
+        print("没有可用的回测结果")
+        return results
+
+    # 汇总
     total_ret = 1.0
     for r in results:
         total_ret *= (1 + r['annual_return'])
-    
+
     total_wins = sum(r['n_winners'] for r in results)
     total_sells = sum(r['n_sells'] for r in results)
-    
+
     print(f"\n{'='*60}")
     print(f"🏆 v8 汇总 (2018-2025)")
     print(f"{'='*60}")
@@ -226,9 +174,20 @@ def run():
     print("-"*45)
     print(f"{'合计':<8}{(total_ret-1):>10.2%}")
     print(f"最终: {results[-1]['total_value']/10000:.2f}万 vs 100万")
-    
+
     return results
 
 
 if __name__ == '__main__':
-    run()
+    parser = argparse.ArgumentParser(description='Score v8 回测')
+    parser.add_argument('--years', type=str, default='2018-2025',
+                        help='年份范围，如 2018-2025')
+    args = parser.parse_args()
+
+    if '-' in args.years:
+        start, end = args.years.split('-')
+        years = range(int(start), int(end) + 1)
+    else:
+        years = DEFAULT_YEARS
+
+    run(years=years)
