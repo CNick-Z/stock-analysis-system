@@ -134,7 +134,7 @@ def filter_v8(daily):
     mask = (
         (df['rsi_14'] > 70) | (df['rsi_14'] < 25) |
         (df['turnover_rate'] > 2.79) |
-        (df['vol_ratio'] > 1.25) |
+        (df['vol_ratio'] > 0.8) |
         (df['williams_r'] < -95) |
         (df['cci_20'] < -200)
     )
