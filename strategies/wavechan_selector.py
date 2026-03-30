@@ -8,11 +8,11 @@ WaveChan 选股评分体系
 V3 引擎使用 CZSC 识别笔，WaveCounterV3 做波浪计数，
 解决了简化版编号连续消失的问题。
 
-评分维度：
+评分维度（V3 Refactored - 2026-03-28）：
   一、信号评分（40%）：C_BUY / W2_BUY / W4_BUY 及确认状态
-  二、波浪结构评分（30%）：斐波那契回撤区间
-  三、动能评分（20%）：RSI / MACD 背离 / 量价配合
-  四、缠论确认（10%）：底分型 / 笔破坏
+  二、结构评分（20%）：斐波那契回撤区间
+  三、基本面评分（30%）：PE/PB/ROE/营收增长/净利润增长/股息率/流通市值
+  四、市场环境评分（10%）：RSI多头区间 + 均线多头 + 量价配合
 
 策略接口（适配 backtester.py）：
   generate_features() → DataFrame[date, symbol, ...features, scores]
@@ -22,8 +22,9 @@ V3 引擎使用 CZSC 识别笔，WaveCounterV3 做波浪计数，
 import pandas as pd
 import numpy as np
 import logging
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
@@ -42,16 +43,15 @@ class WaveChanScore:
     signal_status: str = "none"      # confirmed / warning / none
     signal_score: float = 0.0
 
-    # 结构评分（30%）
+    # 结构评分（20%）
     wave_retracement: float = 0.0   # 回撤比例
     structure_score: float = 0.0
 
-    # 动能评分（20%）
-    rsi: float = 50.0
-    momentum_score: float = 0.0
+    # 基本面评分（30%）
+    financial_score: float = 0.0
 
-    # 缠论评分（10%）
-    chanlun_score: float = 0.0
+    # 市场环境评分（10%）
+    market_score: float = 0.0
 
     # 综合
     total_score: float = 0.0
@@ -61,7 +61,7 @@ class WaveChanScore:
     wave_trend: str = "neutral"
     stop_loss: float = 0.0
     fractal: str = "none"
-    divergence: bool = False
+    rsi: float = 50.0
     macd_hist: float = 0.0
 
 
@@ -71,19 +71,17 @@ class WaveChanScore:
 
 class WaveChanSelector:
     """
-    WaveChan 选股评分器 - V3 引擎版
-
-    完全基于 WaveChan V3 引擎的评分系统，不依赖简化波浪。
+    WaveChan 选股评分器 - V3 引擎版（重构版）
 
     评分体系：
       信号评分（40%）：C_BUY / W2_BUY / W4_BUY 及其确认状态
-      结构评分（30%）：斐波那契回撤区间
-      动能评分（20%）：RSI / MACD 背离 / 量价配合
-      缠论评分（10%）：底分型 / 笔破坏
+      结构评分（20%）：斐波那契回撤区间
+      基本面评分（30%）：PE/PB/ROE/营收增长/净利润增长/股息率/流通市值
+      市场环境评分（10%）：RSI多头 + 均线多头 + 量价配合
     """
 
     # ---------- 评分权重常数 ----------
-    THRESHOLD_SCORE = 50          # 买入阈值
+    THRESHOLD_SCORE = 50          # 买入阈值（默认值，会被config覆盖）
 
     # 信号评分表（满分40）
     SIGNAL_SCORES = {
@@ -94,7 +92,7 @@ class WaveChanSelector:
         "W4_BUY_alert": 15,       # W4预警（ALERT状态）
     }
 
-    # 结构评分表（满分30）
+    # 结构评分表（满分20）
     STRUCTURE_SCORES = {
         "W2_optimal": 20,          # W2回撤 38-61.8%
         "W2_shallow": 15,          # W2回撤 23.6-38%
@@ -103,18 +101,11 @@ class WaveChanSelector:
         "W3_exhausted": -20,       # W3创新高（动能耗尽）
     }
 
-    # 动能评分表（满分20）
-    MOMENTUM_SCORES = {
-        "rsi_oversold": 15,        # RSI < 30
-        "rsi_weak": 10,            # RSI 30-50
-        "macd_divergence": 10,     # MACD底背离
-        "volume_price": 5,         # 量价配合
-    }
-
-    # 缠论评分表（满分10）
-    CHANLUN_SCORES = {
-        "bottom_fractal": 5,       # 底分型形成
-        "pen_break": 5,            # 笔破坏（向上）
+    # 市场环境评分表（满分10）
+    MARKET_SCORES = {
+        "rsi_bullish": 5,          # RSI 50-70（多头区间）
+        "ma_bullish": 3,           # 近5日均线多头排列
+        "volume_surge": 2,         # 成交量放量 >1.5倍
     }
 
     def __init__(self, db_path: str = None, config: dict = None):
@@ -142,14 +133,225 @@ class WaveChanSelector:
             'w2_deep_max': 0.786,
             'w4_normal_min': 0.236,
             'w4_normal_max': 0.382,
+            # 财务数据路径
+            'financial_data_path': '/root/.openclaw/workspace/data/warehouse',
         }
         self.config = {**default_config, **(config or {})}
 
         from utils.parquet_db import ParquetDatabaseIntegrator
         self.db_manager = ParquetDatabaseIntegrator(db_path)
 
+        # ---------- 加载财务数据（最新一期，按 symbol 匹配）----------
+        self._financial_data: pd.DataFrame = self._load_financial_data()
+
         logger.info("[WaveChanSelector] WaveChan V3 选股器初始化完成")
-        logger.info(f"[WaveChanSelector] 配置: top_n={self.config['top_n']}, threshold={self.THRESHOLD_SCORE}")
+        threshold_from_config = self.config.get('threshold', self.THRESHOLD_SCORE)
+        logger.info(f"[WaveChanSelector] 配置: top_n={self.config['top_n']}, threshold={threshold_from_config}")
+
+    # --------------------------------------------------------
+    # 财务数据加载
+    # --------------------------------------------------------
+
+    def _load_financial_data(self) -> pd.DataFrame:
+        """
+        加载财务数据（最新一期，按 symbol 匹配）
+        数据来源：stock_financial_year=*/data.parquet
+
+        Returns:
+            DataFrame：symbol -> 最新一期财务数据 dict
+            空 dict 表示没有可用数据
+        """
+        warehouse_path = Path(self.config.get('financial_data_path', '/root/.openclaw/workspace/data/warehouse'))
+        financial_dir = warehouse_path / "stock_financial_year=2025"
+
+        if not financial_dir.exists():
+            logger.warning("[WaveChanSelector] 财务数据目录不存在，使用空财务数据")
+            return pd.DataFrame()
+
+        try:
+            df = pd.read_parquet(financial_dir / "data.parquet")
+            if df.empty:
+                logger.warning("[WaveChanSelector] 财务数据为空")
+                return pd.DataFrame()
+
+            # 按 symbol 取最新一期财报（按 date 降序，取每个 symbol 第一条）
+            df = df.sort_values('date', ascending=False).drop_duplicates(subset=['symbol'], keep='first')
+            df = df.set_index('symbol')
+
+            logger.info(f"[WaveChanSelector] 加载 {len(df)} 只股票的财务数据，最新财报日期: {df['date'].max()}")
+            return df
+        except Exception as e:
+            logger.warning(f"[WaveChanSelector] 财务数据加载失败: {e}")
+            return pd.DataFrame()
+
+    # --------------------------------------------------------
+    # 基本面评分
+    # --------------------------------------------------------
+
+    def _compute_financial_score(self, symbol: str) -> float:
+        """
+        计算单只股票的基本面评分（满分30）
+
+        评分维度：
+          - PE 市盈率（满分15）：合理区间10-30给满分，亏损或极高扣分
+          - PB 市净率（满分8）：<3给分
+          - ROE 净资产收益率（满分15）：>15%满分，<5%扣分
+          - 营收增长率（满分5）：>20%加分，<0扣分
+          - 净利润增长率（满分5）：>20%加分，<0扣分
+          - 股息率（满分3）：>3%加分
+          - 流通市值（满分8）：20-500亿加分
+
+        注：revenue_growth / net_profit_growth / roe 为百分比（如 15.2 表示 15.2%）
+            dividend_yield 也为百分比
+            float_market_cap 单位为万元（如 30620368 = 306.2亿元）
+
+        Returns:
+            基本面评分（0-30）
+        """
+        if self._financial_data.empty or symbol not in self._financial_data.index:
+            # 无财务数据时返回中间值，不给满分也不给0
+            return 15.0
+
+        row = self._financial_data.loc[symbol]
+        score = 0.0
+
+        # ---- PE 市盈率（满分15）----
+        pe = row.get('pe_ratio', np.nan)
+        if pd.notna(pe) and pe > 0:
+            if 10 <= pe <= 30:
+                score += 15.0
+            elif 5 <= pe < 10:
+                score += 10.0
+            elif 30 < pe <= 50:
+                score += 8.0
+            elif pe < 5:
+                score += 5.0
+            else:  # pe > 50，极高
+                score += 0.0
+        # 亏损（pe <= 0）不加分
+
+        # ---- PB 市净率（满分8）----
+        pb = row.get('pb_ratio', np.nan)
+        if pd.notna(pb) and 0 < pb < 3:
+            score += 8.0
+        elif pd.notna(pb) and 3 <= pb < 5:
+            score += 4.0
+        # pb <= 0 不加分
+
+        # ---- ROE 净资产收益率（满分15，映射到 0-15）----
+        roe = row.get('roe', np.nan)
+        if pd.notna(roe):
+            if roe >= 20:
+                score += 15.0
+            elif roe >= 15:
+                score += 12.0
+            elif roe >= 10:
+                score += 8.0
+            elif roe >= 5:
+                score += 4.0
+            else:  # roe < 5
+                score += 0.0
+
+        # ---- 营收增长率（满分5）----
+        rev_growth = row.get('revenue_growth', np.nan)
+        if pd.notna(rev_growth):
+            if rev_growth >= 20:
+                score += 5.0
+            elif rev_growth >= 10:
+                score += 3.0
+            elif rev_growth >= 0:
+                score += 1.0
+            else:  # 负增长
+                score += 0.0
+
+        # ---- 净利润增长率（满分5）----
+        np_growth = row.get('net_profit_growth', np.nan)
+        if pd.notna(np_growth):
+            if np_growth >= 20:
+                score += 5.0
+            elif np_growth >= 10:
+                score += 3.0
+            elif np_growth >= 0:
+                score += 1.0
+            else:  # 负增长
+                score += 0.0
+
+        # ---- 股息率（满分3）----
+        div_yield = row.get('dividend_yield', np.nan)
+        if pd.notna(div_yield) and div_yield > 0:
+            if div_yield >= 3.0:
+                score += 3.0
+            elif div_yield >= 1.5:
+                score += 2.0
+            elif div_yield >= 0.5:
+                score += 1.0
+
+        # ---- 流通市值（满分8）----
+        # float_market_cap 单位：万元，20-500亿 = 200000-5000000 万元
+        float_cap = row.get('float_market_cap', np.nan)
+        if pd.notna(float_cap) and float_cap > 0:
+            if 200000 <= float_cap <= 5000000:
+                score += 8.0
+            elif 100000 <= float_cap < 200000:  # 10-20亿
+                score += 5.0
+            elif 5000000 < float_cap <= 10000000:  # 500-1000亿
+                score += 5.0
+            else:  # 太小或太大
+                score += 0.0
+
+        return max(0.0, min(30.0, score))
+
+    # --------------------------------------------------------
+    # 市场环境评分
+    # --------------------------------------------------------
+
+    def _compute_market_score(
+        self,
+        rsi: float,
+        close: np.ndarray,
+        volume: np.ndarray,
+        i: int
+    ) -> float:
+        """
+        计算单只股票单日的市场环境评分（满分10）
+
+        替代原有的 momentum_score（移除 RSI<30 加分、MACD底背离加分）
+
+        评分条件：
+          - RSI 50-70（多头区间）: +5
+          - 近5日均线多头排列: +3
+          - 成交量放量（>5日均量1.5倍）: +2
+
+        Args:
+            rsi: 当日 RSI 值
+            close: 收盘价数组
+            volume: 成交量数组
+            i: 当日索引
+
+        Returns:
+            市场环境评分（0-10）
+        """
+        score = 0.0
+
+        # RSI 50-70 多头区间（+5）
+        if 50 <= rsi <= 70:
+            score += self.MARKET_SCORES["rsi_bullish"]
+
+        # 近5日均线多头排列（+3）
+        # 条件：MA5 > MA10 > MA20（简化版，使用日线 close）
+        if i >= 20:
+            ma5 = np.mean(close[i - 4:i + 1])   # 近5日
+            ma10 = np.mean(close[i - 9:i + 1])  # 近10日
+            if ma5 > ma10:
+                score += self.MARKET_SCORES["ma_bullish"]
+
+        # 成交量放量（>5日均量1.5倍）（+2）
+        if i >= 5:
+            vol_ma5 = np.mean(volume[i - 4:i + 1])
+            if vol_ma5 > 0 and volume[i] >= vol_ma5 * 1.5:
+                score += self.MARKET_SCORES["volume_surge"]
+
+        return score
 
     # --------------------------------------------------------
     # 核心：批量计算所有股票单日评分
@@ -190,7 +392,7 @@ class WaveChanSelector:
             self.config['macd_signal']
         )
 
-        # 缠论分型
+        # 缠论分型（用于止损辅助判断，不再用于独立评分）
         fractal = np.full(n, 'none', dtype=object)
         bottom_div = np.full(n, False, dtype=bool)
         for i in range(2, n - 1):
@@ -200,13 +402,14 @@ class WaveChanSelector:
             elif (high[i-1] > high[i-2] and high[i-1] > high[i] and high[i-1] > high[i+1]):
                 fractal[i] = '顶分型'
 
-        # MACD 底背离检测
-        divergence = self._compute_macd_divergence(close, low, macd_hist)
-
-        # 量价配合（缩量见底）
-        vol_ma5 = pd.Series(volume).rolling(5).mean().values
-        vol_ratio = np.where(vol_ma5 > 0, volume / vol_ma5, 1.0)
-        volume_price_bottom = (vol_ratio < 0.7) & bottom_div
+        # ---------- 涨跌停标记（提前计算）----------
+        limit_up = np.zeros(n, dtype=bool)
+        limit_down = np.zeros(n, dtype=bool)
+        for i in range(1, n):
+            prev_c = close[i - 1]
+            chg = (close[i] - prev_c) / prev_c if prev_c > 0 else 0
+            limit_up[i] = (chg >= 0.099) and (volume[i] > 0)
+            limit_down[i] = (chg <= -0.099) and (volume[i] > 0)
 
         # ---------- WaveChan V3 引擎初始化 ----------
         from strategies.wavechan_v3 import WaveEngine
@@ -269,27 +472,31 @@ class WaveChanSelector:
         g['bottom_div'] = bottom_div
         g['rsi'] = rsi
         g['macd_hist'] = macd_hist
-        g['divergence'] = divergence
-        g['volume_ratio'] = vol_ratio
-        g['volume_price_bottom'] = volume_price_bottom
+        g['volume_ratio'] = np.where(
+            pd.Series(volume).rolling(5).mean().values > 0,
+            volume / pd.Series(volume).rolling(5).mean().values,
+            1.0
+        )
         g['v3_stop_loss'] = v3_stop_loss
+        g['limit_up'] = limit_up
+        g['limit_down'] = limit_down
+
+        # ---------- 预计算基本面评分（所有日期相同，按 symbol）----------
+        fin_score = self._compute_financial_score(symbol)
 
         # ---------- 评分计算 ----------
         signal_type = np.full(n, 'none', dtype=object)
         signal_status = np.full(n, 'none', dtype=object)
         signal_score = np.zeros(n)
         structure_score = np.zeros(n)
-        momentum_score = np.zeros(n)
-        chanlun_score = np.zeros(n)
+        market_score_arr = np.zeros(n)
+        financial_score_arr = np.full(n, fin_score)
         total_score = np.zeros(n)
         stop_loss = np.zeros(n)
 
         for i in range(WAVE_WINDOW, n):
             cur_rsi = rsi[i]
             cur_fractal = fractal[i]
-            bot_div = bottom_div[i]
-            div_flag = divergence[i]
-            vol_bottom = volume_price_bottom[i]
             cur_close = close[i]
             cur_low = low[i]
             trend = wave_trend[i]
@@ -304,19 +511,24 @@ class WaveChanSelector:
             v3_st = v3_signal_status[i]
 
             if v3_type in ('C_BUY', 'W2_BUY', 'W4_BUY'):
-                sig_type = v3_type
-                sig_status = v3_st if v3_st != 'none' else 'alert'
-                key = f"{sig_type}_{sig_status}"
-                if key in self.SIGNAL_SCORES:
-                    sig_sc = self.SIGNAL_SCORES[key]
-                elif sig_status == 'confirmed':
-                    key_confirmed = f"{sig_type}_confirmed"
-                    sig_sc = self.SIGNAL_SCORES.get(key_confirmed, 20)
-                elif sig_status == 'alert':
-                    key_alert = f"{sig_type}_alert"
-                    sig_sc = self.SIGNAL_SCORES.get(key_alert, 15)
+                # 【改进】W2/W4 BUY 只在周线上升浪（W1/W3/W5）中发信号
+                # 周线下降趋势中的 W2/W4 BUY = 逆势抄底，确定性低
+                if v3_type in ('W2_BUY', 'W4_BUY') and trend != 'up':
+                    pass  # 周线不在上升浪，跳过
                 else:
-                    sig_sc = 10
+                    sig_type = v3_type
+                    sig_status = v3_st if v3_st != 'none' else 'alert'
+                    key = f"{sig_type}_{sig_status}"
+                    if key in self.SIGNAL_SCORES:
+                        sig_sc = self.SIGNAL_SCORES[key]
+                    elif sig_status == 'confirmed':
+                        key_confirmed = f"{sig_type}_confirmed"
+                        sig_sc = self.SIGNAL_SCORES.get(key_confirmed, 20)
+                    elif sig_status == 'alert':
+                        key_alert = f"{sig_type}_alert"
+                        sig_sc = self.SIGNAL_SCORES.get(key_alert, 15)
+                    else:
+                        sig_sc = 10
 
             # C_BUY：底分型 + 20日跌幅够大 + 波浪向上（V3没有发出C_BUY时补充）
             if sig_type == 'none' and cur_fractal == '底分型':
@@ -332,7 +544,7 @@ class WaveChanSelector:
             signal_status[i] = sig_status
             signal_score[i] = sig_sc
 
-            # ---- 结构评分（30%）----
+            # ---- 结构评分（20%）----
             struct_sc = 0.0
             retr = wave_retracement[i]
 
@@ -361,35 +573,18 @@ class WaveChanSelector:
 
             structure_score[i] = struct_sc
 
-            # ---- 动能评分（20%）----
-            mom_sc = 0.0
-            if cur_rsi < 30:
-                mom_sc += self.MOMENTUM_SCORES["rsi_oversold"]
-            elif cur_rsi < 50:
-                mom_sc += self.MOMENTUM_SCORES["rsi_weak"]
+            # ---- 市场环境评分（10%）----
+            # 【临时禁用】market_score 与 BiasFilter 矛盾（选强 = 容易涨停）
+            # 移除后：signal(40) + structure(20) + financial(30) = 90
+            mkt_sc = 0.0
+            market_score_arr[i] = mkt_sc
 
-            if div_flag:
-                mom_sc += self.MOMENTUM_SCORES["macd_divergence"]
-
-            if vol_bottom:
-                mom_sc += self.MOMENTUM_SCORES["volume_price"]
-
-            momentum_score[i] = mom_sc
-
-            # ---- 缠论评分（10%）----
-            chan_sc = 0.0
-            if cur_fractal == '底分型':
-                chan_sc += self.CHANLUN_SCORES["bottom_fractal"]
-
-            # 笔破坏（向上）：连续3根K线，低点依次抬高（简化版）
-            if i >= 2:
-                if low[i] > low[i-1] > low[i-2]:
-                    chan_sc += self.CHANLUN_SCORES["pen_break"]
-
-            chanlun_score[i] = chan_sc
+            # ---- 基本面评分（30%）----
+            # 已在循环前预计算，此处直接使用
+            fin_sc = fin_score
 
             # ---- 综合评分 ----
-            total = sig_sc + struct_sc + mom_sc + chan_sc
+            total = sig_sc + struct_sc + fin_sc  # 90分满分
             total_score[i] = total
 
             # ---- 止损价 ----
@@ -404,13 +599,15 @@ class WaveChanSelector:
         g['signal_status'] = signal_status
         g['signal_score'] = signal_score
         g['structure_score'] = structure_score
-        g['momentum_score'] = momentum_score
-        g['chanlun_score'] = chanlun_score
+        g['financial_score'] = financial_score_arr
+        g['market_score'] = market_score_arr
+        # backward compat: keep momentum_score alias for get_buy_signals()
+        g['momentum_score'] = market_score_arr
         g['total_score'] = total_score
         g['stop_loss'] = stop_loss
 
-        # 只保留有评分结果的行
-        result = g[g['total_score'] > 0].copy()
+        # 只保留有评分结果的行，且排除涨跌停股
+        result = g[(g['total_score'] > 0) & (~g['limit_up']) & (~g['limit_down'])].copy()
         return result
 
     # --------------------------------------------------------
@@ -450,28 +647,6 @@ class WaveChanSelector:
         signal_line = pd.Series(macd_line).ewm(span=signal, adjust=False).mean().values
         hist = macd_line - signal_line
         return hist
-
-    @staticmethod
-    def _compute_macd_divergence(prices: np.ndarray, lows: np.ndarray, macd_hist: np.ndarray, window: int = 20) -> np.ndarray:
-        """检测 MACD 底背离"""
-        n = len(prices)
-        divergence = np.full(n, False, dtype=bool)
-
-        for i in range(window, n):
-            # 前一周期低点
-            prev_low_idx = i - window + np.argmin(lows[i - window:i])
-            prev_low_price = lows[prev_low_idx]
-            prev_low_macd = macd_hist[prev_low_idx]
-
-            # 当前低点
-            curr_low_price = lows[i]
-            curr_low_macd = macd_hist[i]
-
-            # 背离：价格创新低，但 MACD 未创新低（或底背离）
-            if curr_low_price < prev_low_price and curr_low_macd > prev_low_macd:
-                divergence[i] = True
-
-        return divergence
 
     # --------------------------------------------------------
     # 策略接口：生成特征
@@ -585,9 +760,10 @@ class WaveChanSelector:
 
         # ---------- 买入信号 ----------
         # 必须有实际信号类型（signal_type != 'none'）才能作为买入信号
+        threshold = self.config.get('threshold', self.THRESHOLD_SCORE)
         buy_df = features_df[
             (features_df['signal_type'] != 'none') &
-            (features_df['total_score'] >= self.THRESHOLD_SCORE)
+            (features_df['total_score'] >= threshold)
         ].copy()
         buy_df = buy_df.sort_values('total_score', ascending=False)
 
@@ -609,7 +785,7 @@ class WaveChanSelector:
             buy_signals = None
 
         # ---------- 卖出信号 ----------
-        # 卖出条件：波浪向下 + 顶分型
+        #        # 卖出条件：波浪向下 + 顶分型
         sell_mask = (
             (features_df['wave_trend'] == 'down') &
             (features_df['fractal'] == '顶分型')
@@ -646,8 +822,13 @@ class WaveChanSelector:
         if candidates.empty:
             return []
 
-        # 过滤 >= 阈值
-        qualified = candidates[candidates['total_score'] >= self.THRESHOLD_SCORE].copy()
+        # 过滤 >= 阈值，且排除涨停股
+        threshold = self.config.get('threshold', self.THRESHOLD_SCORE)
+        qualified = candidates[
+            (candidates['total_score'] >= threshold) &
+            (~candidates.get('limit_up', False)) &
+            (~candidates.get('limit_down', False))
+        ].copy()
         qualified = qualified.sort_values('total_score', ascending=False)
         qualified = qualified.head(self.config['top_n'])
 
@@ -660,8 +841,10 @@ class WaveChanSelector:
                 'signal_status': row['signal_status'],
                 'signal_score': row['signal_score'],
                 'structure_score': row['structure_score'],
-                'momentum_score': row['momentum_score'],
-                'chanlun_score': row['chanlun_score'],
+                'financial_score': row['financial_score'],
+                'market_score': row['market_score'],
+                # backward compat
+                'momentum_score': row.get('market_score', row.get('momentum_score', 0)),
                 'wave_stage': row.get('wave_stage', 'unknown'),
                 'wave_trend': row.get('wave_trend', 'neutral'),
                 'rsi': row.get('rsi', 50),
