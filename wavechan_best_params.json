@@ -1,0 +1,21 @@
+{
+  "best_params": {
+    "w_signal": 0.9867833918128961,
+    "w_struct": 0.22015712296522272,
+    "w_momentum": 0.3353604750761872,
+    "w_chan": 0.6417700083471009,
+    "threshold": 69.85055267565707,
+    "top_n": 5
+  },
+  "metrics": {
+    "sharpe": 2.3294784869795016,
+    "total_return": 13.221881508293041,
+    "annual_return": 4.953702663857606,
+    "max_drawdown": -0.6065742099538125,
+    "win_rate": 0.37866666666666665,
+    "n_trades": 341,
+    "n_days": 375
+  },
+  "algo_version": "v3.0",
+  "l3_cached": false
+}

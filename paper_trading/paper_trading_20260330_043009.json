@@ -1,0 +1,740 @@
+{
+  "v4": {
+    "initial": 1000000,
+    "final": 1000000,
+    "return": 0.0,
+    "n_buys": 0,
+    "n_sells": 0,
+    "win_rate": 0.0,
+    "trades": [],
+    "history": [
+      {
+        "date": "2026-01-05",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-06",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-07",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-08",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-09",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-12",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-13",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-14",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-15",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-16",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-19",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-20",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-21",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-22",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-23",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-26",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-27",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-28",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-29",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-30",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-02",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-03",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-04",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-05",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-06",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-09",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-10",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-11",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-12",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-13",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-24",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-25",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-26",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-27",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-02",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-03",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-04",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-05",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-06",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-09",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-10",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-11",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-12",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-13",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-16",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-17",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-18",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-24",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-25",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-26",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-27",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      }
+    ],
+    "positions": {}
+  },
+  "v8": {
+    "initial": 1000000,
+    "final": 1000000,
+    "return": 0.0,
+    "n_buys": 0,
+    "n_sells": 0,
+    "win_rate": 0.0,
+    "trades": [],
+    "history": [
+      {
+        "date": "2026-01-05",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-06",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-07",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-08",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-09",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-12",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-13",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-14",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-15",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-16",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-19",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-20",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-21",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-22",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-23",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-26",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-27",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-28",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-29",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-01-30",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-02",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-03",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-04",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-05",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-06",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-09",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-10",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-11",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-12",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-13",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-24",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-25",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-26",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-02-27",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-02",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-03",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-04",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-05",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-06",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-09",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-10",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-11",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-12",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-13",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-16",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-17",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-18",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-24",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-25",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-26",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-27",
+        "cash": 1000000,
+        "positions_value": 0,
+        "total_value": 1000000,
+        "n_positions": 0
+      }
+    ],
+    "positions": {}
+  }
+}

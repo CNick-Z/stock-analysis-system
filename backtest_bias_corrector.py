@@ -118,34 +118,36 @@ class BiasCorrector:
         
         dates = self.price_matrix.index.tolist()
         
-        # ===== 向量化计算前收盘（前复权价格） =====
+        # ===== 向量化计算涨跌幅 =====
         close_df = self.price_matrix['close'].copy()      # date x symbol
         volume_df = self.price_matrix['volume'].copy()
         
-        # 前收盘：转置后按 symbol 分组 shift，再转置回来
-        prev_close_df = close_df.T.shift(1).T
-        
-        # ===== 涨跌停判断（向量化，使用前复权收盘价） =====
-        # change_pct = (close - prev_close) / prev_close
-        change_pct_df = (close_df - prev_close_df) / prev_close_df
+        # 【修复Bug】原代码 close_df.T.shift(1).T 错位：shift沿着股票维度移动，而非日期维度
+        # 正确做法：先ffill填充停牌日的NaN（用最后有效收盘价），再pct_change
+        # - 正常交易日：ffill不改变，pct_change正常
+        # - 停牌日：ffill用前一日有效价格，复牌日也能正确计算
+        close_df_filled = close_df.ffill()
+        change_pct_df = close_df_filled.pct_change()
         
         # 停牌：成交量为0或NaN，或价格全为NaN
         is_suspended_df = (volume_df == 0) | volume_df.isna() | close_df.isna()
         
-        # --- 简化方案：使用统一阈值（待补充真实板块数据）---
-        # 未来可通过 stock_basic_info 表注入真实板块信息，启用以下逻辑：
-        # if self.use_board_threshold:
-        #     for sym in close_df.columns:
-        #         board = _get_board_type(sym)
-        #         threshold = LIMIT_UP_BY_BOARD.get(board, 0.099)
-        #         ...
+        # --- 按板块区分涨跌停阈值 ---
+        # 根据代码前缀判断板块类型，对非停牌股票应用正确的阈值
+        symbols = close_df.columns.tolist()
         
-        # 涨停/跌停（统一阈值，对非停牌股票判断）
-        unified_limit_up   = self.LIMITUp_THRESHOLD   # 0.099
-        unified_limit_down = self.LimitDown_THRESHOLD  # -0.099
+        # 初始化涨跌停 DataFrame（全 False）
+        limit_up_df = pd.DataFrame(False, index=change_pct_df.index, columns=change_pct_df.columns)
+        limit_down_df = pd.DataFrame(False, index=change_pct_df.index, columns=change_pct_df.columns)
         
-        limit_up_df   = (~is_suspended_df) & (change_pct_df >= unified_limit_up)
-        limit_down_df = (~is_suspended_df) & (change_pct_df <= unified_limit_down)
+        for sym in symbols:
+            board = _get_board_type(sym)
+            lu_th = LIMIT_UP_BY_BOARD.get(board, LIMIT_UP_BY_BOARD['default'])
+            ld_th = LIMIT_DOWN_BY_BOARD.get(board, LIMIT_DOWN_BY_BOARD['default'])
+            # 非停牌 且 涨跌幅达标
+            not_sus = ~is_suspended_df[sym]
+            limit_up_df[sym] = not_sus & (change_pct_df[sym] >= lu_th)
+            limit_down_df[sym] = not_sus & (change_pct_df[sym] <= ld_th)
         
         # 转换为一维 dict: {date: {symbol: flag}}
         self.limit_up = {}

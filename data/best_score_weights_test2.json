@@ -1,0 +1,28 @@
+{
+  "weights": {
+    "technical": 0.5070678947528345,
+    "capital_flow": 0.30591569676492847,
+    "market_heat": 0.18701640848223694,
+    "fundamental": 0.0
+  },
+  "tech_weights": {
+    "ma_condition": 0.12606056073988442,
+    "angle_condition": 0.11445615769380282,
+    "macd_condition": 0.13638900372842316,
+    "volume_score": 0.12280728504951048,
+    "rsi_oversold": 0.09565940526113312,
+    "kdj_oversold": 0.029529140491285855,
+    "cci_oversold": 0.05090025079493054,
+    "bollinger_condition": 0.11059960552461218,
+    "macd_jc": 0.10209259715906648,
+    "price_growth": 0.11992463459502188
+  },
+  "metrics": {
+    "annual_return": 0.22374837205818543,
+    "max_drawdown": -0.07310345856528233,
+    "n_trades": 43,
+    "sharpe": 1.1526899442459053,
+    "total_return": 0.10470274340000008,
+    "win_rate": 0.47368421052631576
+  }
+}

@@ -258,21 +258,32 @@ class TradingSimulator:
 class BacktestOrchestrator:
     """回测总控模块"""
     def __init__(self, db_path='c:/db/stock_data.db', live_plot=False, position_limit=3,
-                 commission_rate=0.0003, strategy_name='score'):
+                 commission_rate=0.0003, strategy_name='score', strategy_config=None,
+                 save_state_path=None, load_state_path=None):
         """
         参数:
             strategy_name: 策略名称 ('score'=评分策略, 'resonance'=8指标共振策略)
             position_limit: 最大持仓数
             live_plot: 是否启用实时图表
+            strategy_config: 策略特定配置字典（如 threshold, top_n）
+            save_state_path: 每日收盘保存状态到该文件（用于模拟盘继续跑）
+            load_state_path: 从该文件恢复状态继续跑（与 save_state_path 配合使用）
         """
         self.position_limit = position_limit
         self.position_limit_base = position_limit
         self.strategy_name = strategy_name  # Phase 2: 策略名称
+        self.save_state_path = save_state_path
+        self.load_state_path = load_state_path
 
         # Phase 2: 策略插件系统 - 根据名称加载策略
         if strategy_name not in STRATEGY_REGISTRY:
             raise ValueError(f"未知策略: {strategy_name}，可用策略: {list(STRATEGY_REGISTRY.keys())}")
-        self.strategy = STRATEGY_REGISTRY[strategy_name](db_path)
+        
+        # 传入策略特定配置（如 wavechan_selector 需要 threshold/top_n）
+        if strategy_config:
+            self.strategy = STRATEGY_REGISTRY[strategy_name](db_path, config=strategy_config)
+        else:
+            self.strategy = STRATEGY_REGISTRY[strategy_name](db_path)
 
         # Report 需要 Scorer，但策略插件不包含 Scorer，需要单独处理
         # 对于 resonance 策略，Report 生成逻辑可能需要调整
@@ -439,6 +450,9 @@ class BacktestOrchestrator:
             slippage=TradingSimulator.DEFAULT_SLIPPAGE  # Bias 修正：0.1%/笔滑点
             )
 
+        # 恢复状态（从续跑文件加载）
+        self._load_state(simulator, self.load_state_path)
+
         years=self.date_by_year(start_date, end_date)
         for year_start, year_end in years:
             # 转换日期为字符串格式
@@ -481,6 +495,8 @@ class BacktestOrchestrator:
             self._process_sell_signals(date,simulator,year_sell_signals)
             # 处理买入信号
             self._process_buy_signals(date,simulator,year_buy_signals)
+            # 每日收盘保存状态（用于模拟盘继续跑）
+            self._save_state(simulator, date)
 
 
     def _process_sell_signals(self, date, simulator,signals):
@@ -490,6 +506,8 @@ class BacktestOrchestrator:
         if not holding_symbols:
             return
         # 获取当前持仓股票的卖出信号
+        if signals is None:
+            return
         sell_signals = signals[signals.index == date]
         if sell_signals.empty:
             return
@@ -539,9 +557,16 @@ class BacktestOrchestrator:
 
         # ===== Bias 修正：涨跌停/停牌过滤 =====
         # 剔除信号日已涨停/跌停/停牌的股票（实盘无法买入）
-        scored_signals = self.bias_corrector.filter_buy_signals(date, scored_signals)
-        if scored_signals is None or scored_signals.empty:
-            return
+        # 注意：对于 wavechan_selector，不在此过滤（信号日本身涨停的股票，
+        #       可能在 T+1 执行时反而有机会——改为在循环中逐个检查 T+1，
+        #       如果信号日涨停则直接跳过但不放弃该候选位置）
+        if self.strategy_name == 'wavechan_selector':
+            # wavechan_selector：保留更多候选 + 信号日涨停在循环中处理
+            scored_signals = scored_signals.sort_values('total_score', ascending=False).head(30)
+        else:
+            scored_signals = self.bias_corrector.filter_buy_signals(date, scored_signals)
+            if scored_signals is None or scored_signals.empty:
+                return
 
         # Phase 2: 根据策略类型选择不同的处理方式
         if self.strategy_name == 'resonance':
@@ -552,6 +577,9 @@ class BacktestOrchestrator:
             self._process_resonance_v2_buy_signals(date, simulator, scored_signals, holding_symbols, available_slots)
         elif self.strategy_name == 'wavechan':
             # 波浪缠论策略
+            self._process_wavechan_buy_signals(date, simulator, scored_signals, holding_symbols, available_slots)
+        elif self.strategy_name == 'wavechan_selector':
+            # WaveChan V3 选股器
             self._process_wavechan_buy_signals(date, simulator, scored_signals, holding_symbols, available_slots)
         elif self.strategy_name == 'qlib':
             # Qlib增强策略
@@ -841,6 +869,7 @@ class BacktestOrchestrator:
                 if self.bias_corrector:
                     can_buy, reason = self.bias_corrector.can_buy(row['symbol'], date, next_open_price)
                     if not can_buy:
+                        logging.info(f"[WaveChanSelector] 跳过 {row['symbol']}@{date}：{reason}")
                         continue
 
                 # 检查仓位
@@ -1100,6 +1129,39 @@ class BacktestOrchestrator:
                 except:
                     continue
 
+    def _save_state(self, simulator, date):
+        """每日收盘保存持仓状态到文件（用于模拟盘继续跑）"""
+        if not self.save_state_path:
+            return
+        state = {
+            'last_date': date,
+            'cash': simulator.portfolio['cash'],
+            'positions': simulator.portfolio['positions'],
+            'history': simulator.portfolio['history'],
+            'strategy_name': self.strategy_name,
+            'position_limit': self.position_limit,
+        }
+        import json
+        with open(self.save_state_path, 'w') as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+
+    def _load_state(self, simulator, load_path):
+        """从状态文件恢复持仓（用于模拟盘继续跑）"""
+        if not load_path:
+            return
+        import json
+        import os
+        if not os.path.exists(load_path):
+            logging.info(f"[状态] 续跑文件不存在: {load_path}，从头开始")
+            return
+        with open(load_path, 'r') as f:
+            state = json.load(f)
+        simulator.portfolio['cash'] = state['cash']
+        simulator.portfolio['positions'] = state['positions']
+        simulator.portfolio['history'] = state['history']
+        last_date = state['last_date']
+        logging.info(f"[状态] 从 {last_date} 恢复：现金 {simulator.portfolio['cash']:,.2f}，持仓 {list(simulator.portfolio['positions'].keys())}")
+
     def _record_daily_value(self, date, simulator):
         total_value = self._total_value(date,simulator)
         simulator.portfolio['history'].append({'date': date, 'value': total_value})
@@ -1304,18 +1366,25 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='股票回测系统')
     parser.add_argument('--strategy', type=str, default='score', 
-                        choices=['score', 'resonance', 'wavechan', 'qlib'],
-                        help='策略名称: score=评分策略, resonance=共振策略, wavechan=波浪缠论策略, qlib=Qlib增强策略')
+                        choices=['score', 'resonance', 'wavechan', 'qlib', 'wavechan_selector'],
+                        help='策略名称: score=评分策略, resonance=共振策略, wavechan=波浪缠论策略, qlib=Qlib增强策略, wavechan_selector=WaveChan V3选股器')
     parser.add_argument('--start', type=str, default='2025-01-01', help='开始日期')
     parser.add_argument('--end', type=str, default='2025-10-30', help='结束日期')
     parser.add_argument('--position-limit', type=int, default=5, help='最大持仓数')
+    parser.add_argument('--threshold', type=float, default=None, help='V3选股阈值（仅wavechan_selector生效）')
+    parser.add_argument('--top-n', type=int, default=None, help='V3每日选股数量（仅wavechan_selector生效）')
+    parser.add_argument('--save-state', type=str, default=None, help='每日收盘保存状态到文件（模拟盘继续跑用）')
+    parser.add_argument('--load-state', type=str, default=None, help='从状态文件恢复持仓继续跑')
     args = parser.parse_args()
     
     # 运行回测
     orchestrator = BacktestOrchestrator(
         position_limit=args.position_limit,
         live_plot=True,
-        strategy_name=args.strategy
+        strategy_name=args.strategy,
+        strategy_config={'threshold': args.threshold, 'top_n': args.top_n} if args.threshold or args.top_n else None,
+        save_state_path=args.save_state,
+        load_state_path=args.load_state
     )
     report = orchestrator.run(args.start, args.end)
     logging.info("回测结果摘要:")

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-V8 策略核心模块
-====================
+V8 策略核心模块 — ScoreV8Strategy
+====================================
 v6核心 + IC增强过滤
 
 【选股条件】
@@ -29,7 +29,7 @@ v6核心 + IC增强过滤
 【出场规则】
   - 止损: 5%
   - 止盈: 15%
-  - MA死叉: SMA20下穿SMA55
+  - MA死叉: SMA20从下穿上时入场，死叉触发（sma20>sma55 且 入场时sma20<sma55）
 
 【持仓管理】
   - 最多5只
@@ -42,11 +42,21 @@ v6核心 + IC增强过滤
 
 import pandas as pd
 import numpy as np
+from typing import Tuple, Dict, Optional
 
-# ============ 条件计算 ============
 
-def compute_conditions(df):
-    """计算所有选股条件（DataFrame批量）"""
+# ============ 条件计算（内部函数）============
+
+def _compute_conditions(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    计算所有选股条件（DataFrame批量）
+    
+    Args:
+        df: 包含技术指标的日线数据
+        
+    Returns:
+        添加了各类条件列的 DataFrame
+    """
     df = df.copy()
     
     # 涨幅
@@ -84,14 +94,19 @@ def compute_conditions(df):
     return df
 
 
-def apply_ic_filter(df):
+def _apply_ic_filter(df: pd.DataFrame) -> pd.DataFrame:
     """
     IC增强过滤 - 剔除 + 加分
-    返回过滤后的DataFrame和每只股票的IC加分
+    
+    Args:
+        df: 经过条件计算的 DataFrame
+        
+    Returns:
+        过滤后的 DataFrame，带 ic_bonus 列
     """
     df = df.copy()
     
-    # 处理换手率重名字段
+    # 处理换手率重名字段（merge 后可能产生 _x/_y 后缀）
     if 'turnover_rate_y' in df.columns:
         df['turnover_rate'] = df['turnover_rate_y']
     elif 'turnover_rate_x' in df.columns:
@@ -129,10 +144,15 @@ def apply_ic_filter(df):
     return df
 
 
-def compute_v6_score(df):
+def _compute_v6_score(df: pd.DataFrame) -> pd.DataFrame:
     """
     计算V6原始评分（DataFrame批量）
-    与backtest_score_v8.py完全一致
+    
+    Args:
+        df: 经过 IC 过滤的 DataFrame
+        
+    Returns:
+        添加了 v6_score 列的 DataFrame
     """
     df = df.copy()
     
@@ -155,22 +175,33 @@ def compute_v6_score(df):
     return df
 
 
-def compute_v8_score(df):
+def _compute_v8_score(df: pd.DataFrame) -> pd.DataFrame:
     """
     计算V8总评分 = V6评分 + IC加分
+    
+    Args:
+        df: 原始日线数据
+        
+    Returns:
+        添加了 score（含 ic_bonus 的 v8 总分）列的 DataFrame
     """
-    df = compute_v8_score.__self__ if hasattr(compute_v8_score, '__self__') else df
-    df = compute_conditions(df)
-    df = apply_ic_filter(df)
-    df = compute_v6_score(df)
-    df['v8_score'] = df['v6_score'] + df['ic_bonus']
+    df = _compute_conditions(df)
+    df = _apply_ic_filter(df)
+    df = _compute_v6_score(df)
+    df['score'] = df['v6_score'] + df['ic_bonus']
     return df
 
 
-def score_row_v8(row):
+def _score_row_v8(row: pd.Series) -> float:
     """
     对单行计算V8评分（用于模拟盘逐行评分）
-    与DataFrame批量计算结果完全一致
+    与 DataFrame 批量计算结果完全一致
+    
+    Args:
+        row: 单行数据（需已包含条件列）
+        
+    Returns:
+        V8 评分浮点数
     """
     score = 0.0
     
@@ -218,27 +249,235 @@ def score_row_v8(row):
     return score
 
 
-# ============ 出场判断 ============
+# ============ 策略类 ============
 
-def should_sell(row, pos):
+class ScoreV8Strategy:
     """
-    判断是否应该出场
-    返回 (should_sell, reason)
+    V8 IC增强版策略类
+    
+    v6核心 + IC过滤增强，实现标准策略接口。
+    
+    【入场条件】
+      - growth_condition: 收涨且涨幅 <= 6%
+      - ma_condition: SMA5 > SMA10 且 SMA10 < SMA20
+      - volume_condition: 放量1.5倍或超过5日均量1.2倍
+      - macd_condition: MACD < 0 且 > signal
+      - jc_condition: SMA5连续2日上升 AND SMA20当日上升 AND |SMA5-SMA20|/SMA20 < 2%
+      - trend_condition: SMA20 < SMA55 且 SMA55 > SMA240
+      - rsi_filter: RSI 在 50-60 之间
+      - price_filter: 价格 3-15 元
+    
+    【IC增强过滤 - 剔除】
+      - RSI > 70 或 < 25
+      - 换手率 > 2.79%
+      - vol_ratio > 1.25
+      - WR < -95
+      - CCI < -200
+    
+    【IC增强过滤 - 加分】
+      - CCI < -100: +0.10
+      - WR < -80: +0.05
+      - 换手率 < 0.42%: +0.05
+    
+    【出场规则】
+      - 止损: 5%
+      - 止盈: 15%
+      - MA死叉: 入场时 sma20 < sma55，出场时 sma20 > sma55
+    
+    【持仓管理】
+      - 最多持仓: 5只（config: max_positions）
+      - 单只仓位上限: 20%（config: position_size）
     """
-    next_open = row.get('next_open')
-    if pd.isna(next_open) or next_open <= 0:
+    
+    def __init__(self, config: Optional[dict] = None):
+        """
+        初始化 V8 策略
+        
+        Args:
+            config: 配置字典，支持以下键:
+                - stop_loss: 止损比例（默认 0.05）
+                - take_profit: 止盈比例（默认 0.15）
+                - max_positions: 最大持仓数（默认 5）
+                - position_size: 单只仓位比例（默认 0.20）
+        """
+        self.config = config or {}
+        self.stop_loss = self.config.get('stop_loss', 0.05)
+        self.take_profit = self.config.get('take_profit', 0.15)
+        self.max_positions = self.config.get('max_positions', 5)
+        self.position_size = self.config.get('position_size', 0.20)
+    
+    # ------------------------------------------------------------------
+    # 公开接口
+    # ------------------------------------------------------------------
+    
+    def filter_buy(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        过滤候选股票（满足全部入场条件）
+        
+        调用 _compute_conditions() + _apply_ic_filter()，
+        返回满足全部 IC 过滤条件的候选股票。
+        
+        Args:
+            df: 原始日线数据（需包含技术指标列）
+            
+        Returns:
+            过滤后的 DataFrame（已通过全部条件，含 ic_bonus 列）
+        """
+        df = _compute_conditions(df)
+        df = _apply_ic_filter(df)
+        return df
+    
+    def score(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        评分排序（在 filter_buy 基础上评分）
+        
+        调用 _compute_v8_score()，返回添加了 score 列的 DataFrame。
+        score = v6_score + ic_bonus
+        
+        Args:
+            df: 经过 filter_buy() 过滤后的 DataFrame
+            
+        Returns:
+            添加了 'score'（和 'v6_score'）列的 DataFrame，按 score 降序排列
+        """
+        df = _compute_v8_score(df)
+        df = df.sort_values('score', ascending=False)
+        return df
+    
+    def should_sell(
+        self,
+        row: pd.Series,
+        pos: dict,
+        market: Optional[dict] = None
+    ) -> Tuple[bool, str]:
+        """
+        判断是否应该出场
+        
+        出场条件（优先级：止损 > 止盈 > MA死叉）：
+          1. 止损: next_open < 入场价 * (1 - stop_loss)
+          2. 止盈: next_open > 入场价 * (1 + take_profit)
+          3. MA死叉: 入场时 sma20 < sma55 且当前 sma20 > sma55
+        
+        Args:
+            row: 当日行情数据（需含 next_open, sma_20, sma_55 等）
+            pos: 持仓信息字典，必须包含:
+                    - avg_cost: 入场成本价
+                    - entry_sma20_le_sma55: bool，入场时 sma20 <= sma55 为 True
+            market: 市场上下文（可选，当前未使用，保留接口兼容性）
+            
+        Returns:
+            (should_sell: bool, reason: str)
+        """
+        # 处理 next_open 缺失：优先用 close，保留日志
+        next_open = row.get('next_open')
+        if pd.isna(next_open) or next_open <= 0:
+            next_open = row.get('close')
+            # next_open 缺失时应打印警告，但此处不破坏流程，静默降级
+            if pd.isna(next_open) or next_open <= 0:
+                next_open = pos.get('avg_cost', 0)
+        
+        entry_price = pos.get('avg_cost', 0)
+        if entry_price <= 0:
+            return False, "INVALID_POSITION avg_cost <= 0"
+        
+        # 1. 止损
+        stop_price = entry_price * (1 - self.stop_loss)
+        if next_open < stop_price:
+            return True, f"STOP_LOSS @{next_open:.2f}"
+        
+        # 2. 止盈
+        profit_price = entry_price * (1 + self.take_profit)
+        if next_open > profit_price:
+            return True, f"TAKE_PROFIT @{next_open:.2f}"
+        
+        # 3. MA死叉（入场时 sma20 < sma55，当前 sma20 > sma55 = 死叉已发生）
+        #    pos['entry_sma20_le_sma55'] 在建仓时由调用方写入持仓记录
+        if pos.get('entry_sma20_le_sma55', False):
+            if row.get('sma_20', 0) > row.get('sma_55', 0):
+                return True, "MA_DEATH_CROSS"
+        
         return False, ""
     
-    # 止损5%
-    if next_open < pos['avg_cost'] * 0.95:
-        return True, "止损5%"
+    def get_entry_conditions(self) -> dict:
+        """
+        返回当前生效的入场条件（用于日志/报告）
+        
+        Returns:
+            选股条件字典，键为条件名，值为阈值或描述
+        """
+        return {
+            "growth_condition": "收涨且涨幅 <= 6%",
+            "ma_condition": "SMA5 > SMA10 且 SMA10 < SMA20",
+            "volume_condition": "放量1.5倍或超过5日均量1.2倍",
+            "macd_condition": "MACD < 0 且 > signal",
+            "jc_condition": "SMA5连续2日上升 AND SMA20当日上升 AND |SMA5-SMA20|/SMA20 < 2%",
+            "trend_condition": "SMA20 < SMA55 且 SMA55 > SMA240",
+            "rsi_filter": "RSI 在 50-60 之间",
+            "price_filter": "价格 3-15 元",
+            # IC 剔除
+            "ic_exclude_rsi": "RSI > 70 或 < 25",
+            "ic_exclude_turnover": "换手率 > 2.79%",
+            "ic_exclude_vol_ratio": "vol_ratio > 1.25",
+            "ic_exclude_wr": "WR < -95",
+            "ic_exclude_cci": "CCI < -200",
+            # IC 加分
+            "ic_bonus_cci": "CCI < -100 → +0.10",
+            "ic_bonus_wr": "WR < -80 → +0.05",
+            "ic_bonus_turnover": "换手率 < 0.42% → +0.05",
+            # 风控
+            "stop_loss": f"{self.stop_loss:.0%}",
+            "take_profit": f"{self.take_profit:.0%}",
+            "max_positions": self.max_positions,
+            "position_size": f"{self.position_size:.0%}",
+        }
     
-    # 止盈15%
-    if next_open > pos['avg_cost'] * 1.15:
-        return True, "止盈15%"
-    
-    # MA死叉
-    if row.get('sma_20', 0) > row.get('sma_55', 0):
-        return True, "MA死叉"
-    
-    return False, ""
+    def __repr__(self) -> str:
+        return (
+            f"<ScoreV8Strategy "
+            f"stop_loss={self.stop_loss:.0%} "
+            f"take_profit={self.take_profit:.0%} "
+            f"max_positions={self.max_positions}>"
+        )
+
+
+# =============================================================================
+# 兼容层：保留原有的模块级全局函数，供旧脚本使用
+# 新代码应使用 ScoreV8Strategy 类
+# =============================================================================
+
+def compute_conditions(df: pd.DataFrame) -> pd.DataFrame:
+    """兼容层：调用 _compute_conditions"""
+    return _compute_conditions(df)
+
+
+def apply_ic_filter(df: pd.DataFrame) -> pd.DataFrame:
+    """兼容层：调用 _apply_ic_filter"""
+    return _apply_ic_filter(df)
+
+
+def compute_v6_score(df: pd.DataFrame) -> pd.DataFrame:
+    """兼容层：调用 _compute_v6_score"""
+    return _compute_v6_score(df)
+
+
+def compute_v8_score(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    兼容层：调用 _compute_v8_score
+    注意：已移除 __self__ 调试残留（T0.2）
+    """
+    return _compute_v8_score(df)
+
+
+def score_row_v8(row: pd.Series) -> float:
+    """兼容层：调用 _score_row_v8"""
+    return _score_row_v8(row)
+
+
+def should_sell(row: pd.Series, pos: dict, market: Optional[dict] = None) -> Tuple[bool, str]:
+    """
+    兼容层：全局 should_sell 函数
+    注意：调用方需要自行保证 pos 中包含 entry_sma20_le_sma55 字段
+    建议使用 ScoreV8Strategy.should_sell() 方法
+    """
+    strategy = ScoreV8Strategy()
+    return strategy.should_sell(row, pos, market)

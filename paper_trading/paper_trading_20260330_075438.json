@@ -1,0 +1,1741 @@
+{
+  "v4": {
+    "initial": 1000000,
+    "final": 1036386.6434000004,
+    "return": 0.03638664340000042,
+    "n_buys": 27,
+    "n_sells": 25,
+    "win_rate": 0.36,
+    "trades": [
+      {
+        "date": "2026-01-05",
+        "symbol": "600797",
+        "action": "buy",
+        "price": 10.31,
+        "qty": 19300,
+        "score": 1.0743480762547362,
+        "cci": 54.674705,
+        "wr": -3.296703,
+        "rsi": 55.363764,
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-01-05",
+        "symbol": "000670",
+        "action": "buy",
+        "price": 8.5,
+        "qty": 18800,
+        "score": 1.0643921579814262,
+        "cci": 120.741818,
+        "wr": -2.985075,
+        "rsi": 56.289777,
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-01-05",
+        "symbol": "603727",
+        "action": "buy",
+        "price": 14.39,
+        "qty": 8900,
+        "score": 1.0609219965059444,
+        "cci": 20.385349,
+        "wr": -16.101695,
+        "rsi": 53.327472,
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-01-05",
+        "symbol": "002279",
+        "action": "buy",
+        "price": 8.22,
+        "qty": 12400,
+        "score": 1.0272733699258896,
+        "cci": 63.000661,
+        "wr": -3.488372,
+        "rsi": 54.949692,
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-01-05",
+        "symbol": "603633",
+        "action": "buy",
+        "price": 10.5,
+        "qty": 7800,
+        "score": 1.0256571560892642,
+        "cci": 29.303292,
+        "wr": -23.076923,
+        "rsi": 51.78925,
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-01-12",
+        "symbol": "002279",
+        "action": "sell",
+        "price": 9.950000000000001,
+        "qty": 12400,
+        "pnl": 21168.22600000001,
+        "reason": "take_profit",
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-01-12",
+        "symbol": "002238",
+        "action": "buy",
+        "price": 8.94,
+        "qty": 10100,
+        "score": 1.0154311358439654,
+        "cci": 39.627039,
+        "wr": -50.769231,
+        "rsi": 58.474983,
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-01-13",
+        "symbol": "603633",
+        "action": "sell",
+        "price": 9.93,
+        "qty": 7800,
+        "pnl": -4624.144199999995,
+        "reason": "stop_loss",
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-01-13",
+        "symbol": "300194",
+        "action": "buy",
+        "price": 4.58,
+        "qty": 19100,
+        "score": 1.0808978965012566,
+        "cci": 25.182238,
+        "wr": -25.0,
+        "rsi": 54.145609,
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-01-16",
+        "symbol": "002238",
+        "action": "sell",
+        "price": 8.4,
+        "qty": 10100,
+        "pnl": -5649.131999999998,
+        "reason": "stop_loss",
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-01-16",
+        "symbol": "600238",
+        "action": "buy",
+        "price": 6.66,
+        "qty": 13000,
+        "score": 0.9978842451247045,
+        "cci": 78.402362,
+        "wr": -4.444444,
+        "rsi": 57.434948,
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-01-21",
+        "symbol": "000670",
+        "action": "sell",
+        "price": 10.290000000000001,
+        "qty": 18800,
+        "pnl": 33207.060400000046,
+        "reason": "take_profit",
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-01-21",
+        "symbol": "603727",
+        "action": "sell",
+        "price": 15.77,
+        "qty": 8900,
+        "pnl": 11959.1881,
+        "reason": "ma_death",
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-01-22",
+        "symbol": "600797",
+        "action": "sell",
+        "price": 10.950000000000001,
+        "qty": 19300,
+        "pnl": 11865.929500000027,
+        "reason": "ma_death",
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-01-22",
+        "symbol": "300512",
+        "action": "buy",
+        "price": 9.96,
+        "qty": 17900,
+        "score": 1.0649009327458108,
+        "cci": 14.542523,
+        "wr": -4.6875,
+        "rsi": 54.249572,
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-01-22",
+        "symbol": "001217",
+        "action": "buy",
+        "price": 13.57,
+        "qty": 10500,
+        "score": 0.9956075200837795,
+        "cci": 4.238697,
+        "wr": -37.588652,
+        "rsi": 53.244785,
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-01-22",
+        "symbol": "600463",
+        "action": "buy",
+        "price": 11.44,
+        "qty": 9900,
+        "score": 0.9615007653909137,
+        "cci": 46.259779,
+        "wr": -12.5,
+        "rsi": 54.859119,
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-01-26",
+        "symbol": "600238",
+        "action": "sell",
+        "price": 6.32,
+        "qty": 13000,
+        "pnl": -4608.9679999999935,
+        "reason": "stop_loss",
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-01-26",
+        "symbol": "600019",
+        "action": "buy",
+        "price": 7.3100000000000005,
+        "qty": 14700,
+        "score": 0.9340492552278934,
+        "cci": 27.125277,
+        "wr": -28.571429,
+        "rsi": 53.029302,
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-01-27",
+        "symbol": "001217",
+        "action": "sell",
+        "price": 12.88,
+        "qty": 10500,
+        "pnl": -7556.051999999996,
+        "reason": "stop_loss",
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-01-27",
+        "symbol": "300931",
+        "action": "buy",
+        "price": 11.26,
+        "qty": 10000,
+        "score": 1.0181478877443346,
+        "cci": 48.72047,
+        "wr": -28.440367,
+        "rsi": 56.407928,
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-01-28",
+        "symbol": "600463",
+        "action": "sell",
+        "price": 10.84,
+        "qty": 9900,
+        "pnl": -6186.826799999995,
+        "reason": "stop_loss",
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-01-28",
+        "symbol": "002100",
+        "action": "buy",
+        "price": 7.23,
+        "qty": 15500,
+        "score": 0.9539597157653015,
+        "cci": -12.265512,
+        "wr": -36.585366,
+        "rsi": 52.084983,
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-02-06",
+        "symbol": "300194",
+        "action": "sell",
+        "price": 4.47,
+        "qty": 19100,
+        "pnl": -2297.367100000003,
+        "reason": "ma_death",
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-02-06",
+        "symbol": "300512",
+        "action": "sell",
+        "price": 10.36,
+        "qty": 17900,
+        "pnl": 6733.478799999983,
+        "reason": "ma_death",
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-02-06",
+        "symbol": "603518",
+        "action": "buy",
+        "price": 10.290000000000001,
+        "qty": 13900,
+        "score": 0.8599437621560757,
+        "cci": 118.412693,
+        "wr": -18.666667,
+        "rsi": 59.093336,
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-02-09",
+        "symbol": "300268",
+        "action": "buy",
+        "price": 13.290000000000001,
+        "qty": 8600,
+        "score": 1.0869475317007964,
+        "cci": 42.728491,
+        "wr": -26.190476,
+        "rsi": 54.946436,
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-02-10",
+        "symbol": "300931",
+        "action": "sell",
+        "price": 13.52,
+        "qty": 10000,
+        "pnl": 22289.040000000008,
+        "reason": "take_profit",
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-02-10",
+        "symbol": "300981",
+        "action": "buy",
+        "price": 13.47,
+        "qty": 8800,
+        "score": 1.1316146119866777,
+        "cci": 68.605043,
+        "wr": -22.137405,
+        "rsi": 57.4668,
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-02-27",
+        "symbol": "603518",
+        "action": "sell",
+        "price": 9.76,
+        "qty": 13900,
+        "pnl": -7679.027199999982,
+        "reason": "stop_loss",
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-02-27",
+        "symbol": "000905",
+        "action": "buy",
+        "price": 12.7,
+        "qty": 9600,
+        "score": 0.9809952278303149,
+        "cci": -6.276377,
+        "wr": -54.814815,
+        "rsi": 50.401911,
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-03-02",
+        "symbol": "300981",
+        "action": "sell",
+        "price": 12.7,
+        "qty": 8800,
+        "pnl": -7033.047999999995,
+        "reason": "stop_loss",
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-03-02",
+        "symbol": "601718",
+        "action": "buy",
+        "price": 3.41,
+        "qty": 35300,
+        "score": 1.0632043058322178,
+        "cci": 106.770812,
+        "wr": -14.285714,
+        "rsi": 55.048823,
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-03-03",
+        "symbol": "300268",
+        "action": "sell",
+        "price": 13.75,
+        "qty": 8600,
+        "pnl": 3684.024999999994,
+        "reason": "ma_death",
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-03-04",
+        "symbol": "000505",
+        "action": "buy",
+        "price": 7.41,
+        "qty": 16200,
+        "score": 0.957483266263943,
+        "cci": 127.688719,
+        "wr": -1.265823,
+        "rsi": 59.268354,
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-03-12",
+        "symbol": "000905",
+        "action": "sell",
+        "price": 11.82,
+        "qty": 9600,
+        "pnl": -8708.9856,
+        "reason": "stop_loss",
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-03-12",
+        "symbol": "600820",
+        "action": "buy",
+        "price": 6.66,
+        "qty": 17800,
+        "score": 0.9908448423235721,
+        "cci": 59.999995,
+        "wr": -18.918919,
+        "rsi": 56.63882,
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-03-13",
+        "symbol": "002100",
+        "action": "sell",
+        "price": 7.7,
+        "qty": 15500,
+        "pnl": 7010.49500000001,
+        "reason": "ma_death",
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-03-13",
+        "symbol": "002242",
+        "action": "buy",
+        "price": 10.4,
+        "qty": 11400,
+        "score": 1.1155245171761614,
+        "cci": 15.151515,
+        "wr": -23.684211,
+        "rsi": 54.271596,
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-03-16",
+        "symbol": "600019",
+        "action": "sell",
+        "price": 6.89,
+        "qty": 14700,
+        "pnl": -6406.950900000011,
+        "reason": "stop_loss",
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-03-16",
+        "symbol": "300586",
+        "action": "buy",
+        "price": 10.38,
+        "qty": 11100,
+        "score": 1.008847360739362,
+        "cci": -17.836644,
+        "wr": -57.142857,
+        "rsi": 50.235124,
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-03-18",
+        "symbol": "601718",
+        "action": "sell",
+        "price": 3.22,
+        "qty": 35300,
+        "pnl": -6968.431799999991,
+        "reason": "stop_loss",
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-03-19",
+        "symbol": "300586",
+        "action": "sell",
+        "price": 9.77,
+        "qty": 11100,
+        "pnl": -7020.428100000005,
+        "reason": "stop_loss",
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-03-19",
+        "symbol": "002052",
+        "action": "buy",
+        "price": 12.09,
+        "qty": 11200,
+        "score": 0.8887727017315098,
+        "cci": 40.922851,
+        "wr": -34.108527,
+        "rsi": 52.284498,
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-03-20",
+        "symbol": "000505",
+        "action": "sell",
+        "price": 6.6,
+        "qty": 16200,
+        "pnl": -13367.915999999997,
+        "reason": "stop_loss",
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-03-20",
+        "symbol": "600820",
+        "action": "sell",
+        "price": 6.24,
+        "qty": 17800,
+        "pnl": -7731.465599999996,
+        "reason": "stop_loss",
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-03-23",
+        "symbol": "002242",
+        "action": "sell",
+        "price": 9.66,
+        "qty": 11400,
+        "pnl": -8689.285199999998,
+        "reason": "stop_loss",
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-03-23",
+        "symbol": "000908",
+        "action": "buy",
+        "price": 6.62,
+        "qty": 26400,
+        "score": 1.1082,
+        "cci": 88.757523,
+        "wr": -0.0,
+        "rsi": 57.573419,
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-03-24",
+        "symbol": "600538",
+        "action": "buy",
+        "price": 6.53,
+        "qty": 21400,
+        "score": 1.0022571152457325,
+        "cci": 26.78913,
+        "wr": -1.428571,
+        "rsi": 53.566553,
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-03-24",
+        "symbol": "600167",
+        "action": "buy",
+        "price": 6.9,
+        "qty": 16200,
+        "score": 0.9679612210666175,
+        "cci": -23.522661,
+        "wr": -18.0,
+        "rsi": 51.413031,
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-03-26",
+        "symbol": "002052",
+        "action": "sell",
+        "price": 11.21,
+        "qty": 11200,
+        "pnl": -10144.769599999985,
+        "reason": "stop_loss",
+        "strategy": "v4"
+      },
+      {
+        "date": "2026-03-26",
+        "symbol": "000908",
+        "action": "sell",
+        "price": 7.75,
+        "qty": 26400,
+        "pnl": 29361.420000000013,
+        "reason": "take_profit",
+        "strategy": "v4"
+      }
+    ],
+    "history": [
+      {
+        "date": "2026-01-05",
+        "cash": 328446.11340000003,
+        "positions_value": 656404.0,
+        "total_value": 984850.1134,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-06",
+        "cash": 328446.11340000003,
+        "positions_value": 672473.0,
+        "total_value": 1000919.1134,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-07",
+        "cash": 328446.11340000003,
+        "positions_value": 671275.0,
+        "total_value": 999721.1134,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-08",
+        "cash": 328446.11340000003,
+        "positions_value": 684530.0,
+        "total_value": 1012976.1134,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-09",
+        "cash": 328446.11340000003,
+        "positions_value": 694881.0,
+        "total_value": 1023327.1134,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-12",
+        "cash": 361130.95720000006,
+        "positions_value": 679609.0,
+        "total_value": 1040739.9572000001,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-13",
+        "cash": 350815.0916000001,
+        "positions_value": 686607.0,
+        "total_value": 1037422.0916000002,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-14",
+        "cash": 350815.0916000001,
+        "positions_value": 698508.0,
+        "total_value": 1049323.0916000002,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-15",
+        "cash": 350815.0916000001,
+        "positions_value": 697835.0,
+        "total_value": 1048650.0916000002,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-16",
+        "cash": 348767.4056000001,
+        "positions_value": 677445.0,
+        "total_value": 1026212.4056000002,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-19",
+        "cash": 348767.4056000001,
+        "positions_value": 677113.0,
+        "total_value": 1025880.4056000002,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-20",
+        "cash": 348767.4056000001,
+        "positions_value": 674583.0,
+        "total_value": 1023350.4056000002,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-21",
+        "cash": 681804.6541000002,
+        "positions_value": 378183.0,
+        "total_value": 1059987.6541000002,
+        "n_positions": 3
+      },
+      {
+        "date": "2026-01-22",
+        "cash": 458064.3511000003,
+        "positions_value": 610186.0,
+        "total_value": 1068250.3511000003,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-23",
+        "cash": 458064.3511000003,
+        "positions_value": 608570.0,
+        "total_value": 1066634.3511000003,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-26",
+        "cash": 432438.68900000036,
+        "positions_value": 623471.0,
+        "total_value": 1055909.6890000002,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-27",
+        "cash": 454621.25700000033,
+        "positions_value": 600838.0,
+        "total_value": 1055459.2570000002,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-28",
+        "cash": 449479.7457000003,
+        "positions_value": 604002.0,
+        "total_value": 1053481.7457000003,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-29",
+        "cash": 449479.7457000003,
+        "positions_value": 594090.0,
+        "total_value": 1043569.7457000003,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-30",
+        "cash": 449479.7457000003,
+        "positions_value": 598353.0,
+        "total_value": 1047832.7457000003,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-02-02",
+        "cash": 449479.7457000003,
+        "positions_value": 587111.0,
+        "total_value": 1036590.7457000003,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-02-03",
+        "cash": 449479.7457000003,
+        "positions_value": 593926.0,
+        "total_value": 1043405.7457000003,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-02-04",
+        "cash": 449479.7457000003,
+        "positions_value": 599445.0,
+        "total_value": 1048924.7457000003,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-02-05",
+        "cash": 449479.7457000003,
+        "positions_value": 592901.0,
+        "total_value": 1042380.7457000003,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-02-06",
+        "cash": 576460.9171000003,
+        "positions_value": 469858.0,
+        "total_value": 1046318.9171000003,
+        "n_positions": 4
+      },
+      {
+        "date": "2026-02-09",
+        "cash": 462018.3349000003,
+        "positions_value": 587337.0,
+        "total_value": 1049355.3349000004,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-02-10",
+        "cash": 478217.2781000003,
+        "positions_value": 587498.0,
+        "total_value": 1065715.2781000002,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-02-11",
+        "cash": 478217.2781000003,
+        "positions_value": 592439.0,
+        "total_value": 1070656.2781000002,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-02-12",
+        "cash": 478217.2781000003,
+        "positions_value": 583710.0,
+        "total_value": 1061927.2781000002,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-02-13",
+        "cash": 478217.2781000003,
+        "positions_value": 577936.0,
+        "total_value": 1056153.2781000002,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-02-24",
+        "cash": 478217.2781000003,
+        "positions_value": 583840.0,
+        "total_value": 1062057.2781000002,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-02-25",
+        "cash": 478217.2781000003,
+        "positions_value": 583302.0,
+        "total_value": 1061519.2781000002,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-02-26",
+        "cash": 478217.2781000003,
+        "positions_value": 583284.0,
+        "total_value": 1061501.2781000002,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-02-27",
+        "cash": 491490.75490000035,
+        "positions_value": 578173.0,
+        "total_value": 1069663.7549000003,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-03-02",
+        "cash": 482464.22200000036,
+        "positions_value": 590967.0,
+        "total_value": 1073431.2220000003,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-03-03",
+        "cash": 600442.2470000003,
+        "positions_value": 467165.0,
+        "total_value": 1067607.2470000004,
+        "n_positions": 4
+      },
+      {
+        "date": "2026-03-04",
+        "cash": 480244.19240000035,
+        "positions_value": 583100.0,
+        "total_value": 1063344.1924000003,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-03-05",
+        "cash": 480244.19240000035,
+        "positions_value": 567842.0,
+        "total_value": 1048086.1924000003,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-03-06",
+        "cash": 480244.19240000035,
+        "positions_value": 576954.0,
+        "total_value": 1057198.1924000003,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-03-09",
+        "cash": 480244.19240000035,
+        "positions_value": 575030.0,
+        "total_value": 1055274.1924000003,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-03-10",
+        "cash": 480244.19240000035,
+        "positions_value": 575820.0,
+        "total_value": 1056064.1924000003,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-03-11",
+        "cash": 480244.19240000035,
+        "positions_value": 576132.0,
+        "total_value": 1056376.1924000003,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-03-12",
+        "cash": 474753.0944000004,
+        "positions_value": 582629.0,
+        "total_value": 1057382.0944000003,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-03-13",
+        "cash": 475114.46140000044,
+        "positions_value": 578244.0,
+        "total_value": 1053358.4614000004,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-03-16",
+        "cash": 460796.7271000004,
+        "positions_value": 591803.0,
+        "total_value": 1052599.7271000005,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-03-17",
+        "cash": 460796.7271000004,
+        "positions_value": 581468.0,
+        "total_value": 1042264.7271000005,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-03-18",
+        "cash": 574201.2953000005,
+        "positions_value": 462783.0,
+        "total_value": 1036984.2953000005,
+        "n_positions": 4
+      },
+      {
+        "date": "2026-03-19",
+        "cash": 546814.8368000004,
+        "positions_value": 481058.0,
+        "total_value": 1027872.8368000004,
+        "n_positions": 4
+      },
+      {
+        "date": "2026-03-20",
+        "cash": 764305.4552000004,
+        "positions_value": 253386.0,
+        "total_value": 1017691.4552000004,
+        "n_positions": 2
+      },
+      {
+        "date": "2026-03-23",
+        "cash": 699180.9716000004,
+        "positions_value": 307640.0,
+        "total_value": 1006820.9716000004,
+        "n_positions": 2
+      },
+      {
+        "date": "2026-03-24",
+        "cash": 447331.99300000037,
+        "positions_value": 567318.0,
+        "total_value": 1014649.9930000004,
+        "n_positions": 4
+      },
+      {
+        "date": "2026-03-25",
+        "cash": 447331.99300000037,
+        "positions_value": 563698.0,
+        "total_value": 1011029.9930000004,
+        "n_positions": 4
+      },
+      {
+        "date": "2026-03-26",
+        "cash": 776724.6434000004,
+        "positions_value": 260976.0,
+        "total_value": 1037700.6434000004,
+        "n_positions": 2
+      },
+      {
+        "date": "2026-03-27",
+        "cash": 776724.6434000004,
+        "positions_value": 259662.0,
+        "total_value": 1036386.6434000004,
+        "n_positions": 2
+      }
+    ],
+    "positions": {
+      "600538": {
+        "qty": 21400,
+        "avg_cost": 6.53
+      },
+      "600167": {
+        "qty": 16200,
+        "avg_cost": 6.9
+      }
+    }
+  },
+  "v8": {
+    "initial": 1000000,
+    "final": 1058921.6636000006,
+    "return": 0.05892166360000051,
+    "n_buys": 17,
+    "n_sells": 17,
+    "win_rate": 0.6470588235294118,
+    "trades": [
+      {
+        "date": "2026-01-05",
+        "symbol": "300597",
+        "action": "buy",
+        "price": 9.3,
+        "qty": 21500,
+        "score": 0.9647000000000001,
+        "cci": 20.516679,
+        "wr": -40.15748,
+        "rsi": 52.152194,
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-01-05",
+        "symbol": "300692",
+        "action": "buy",
+        "price": 8.56,
+        "qty": 18600,
+        "score": 0.9647000000000001,
+        "cci": -6.574511,
+        "wr": -68.141593,
+        "rsi": 51.704525,
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-01-05",
+        "symbol": "002531",
+        "action": "buy",
+        "price": 6.93,
+        "qty": 18400,
+        "score": 0.9647000000000001,
+        "cci": 68.4467,
+        "wr": -8.888889,
+        "rsi": 52.131509,
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-01-05",
+        "symbol": "688602",
+        "action": "buy",
+        "price": 8.88,
+        "qty": 11500,
+        "score": 0.9647000000000001,
+        "cci": 17.331022,
+        "wr": -24.468085,
+        "rsi": 51.015548,
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-01-05",
+        "symbol": "601360",
+        "action": "buy",
+        "price": 11.31,
+        "qty": 7200,
+        "score": 0.9647000000000001,
+        "cci": 25.537634,
+        "wr": -13.496933,
+        "rsi": 50.2362,
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-01-12",
+        "symbol": "601360",
+        "action": "sell",
+        "price": 13.790000000000001,
+        "qty": 7200,
+        "pnl": 17627.637600000002,
+        "reason": "take_profit",
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-01-12",
+        "symbol": "000524",
+        "action": "buy",
+        "price": 12.46,
+        "qty": 6800,
+        "score": 0.8774,
+        "cci": 91.617322,
+        "wr": -48.739496,
+        "rsi": 55.856305,
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-01-14",
+        "symbol": "300597",
+        "action": "sell",
+        "price": 10.71,
+        "qty": 21500,
+        "pnl": 29785.39050000001,
+        "reason": "take_profit",
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-01-14",
+        "symbol": "603330",
+        "action": "buy",
+        "price": 7.4,
+        "qty": 15400,
+        "score": 0.8774,
+        "cci": 94.631355,
+        "wr": -38.0,
+        "rsi": 51.044363,
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-01-19",
+        "symbol": "300692",
+        "action": "sell",
+        "price": 9.18,
+        "qty": 18600,
+        "pnl": 11139.279600000009,
+        "reason": "ma_death",
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-01-19",
+        "symbol": "600665",
+        "action": "buy",
+        "price": 3.37,
+        "qty": 37300,
+        "score": 0.8774,
+        "cci": 5.621692,
+        "wr": -10.0,
+        "rsi": 50.772379,
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-01-21",
+        "symbol": "000524",
+        "action": "sell",
+        "price": 12.8,
+        "qty": 6800,
+        "pnl": 2111.8080000000045,
+        "reason": "ma_death",
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-01-22",
+        "symbol": "002531",
+        "action": "sell",
+        "price": 7.3100000000000005,
+        "qty": 18400,
+        "pnl": 6682.640799999994,
+        "reason": "ma_death",
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-01-22",
+        "symbol": "600421",
+        "action": "buy",
+        "price": 7.04,
+        "qty": 20500,
+        "score": 0.9647000000000001,
+        "cci": 5.055238,
+        "wr": -40.707965,
+        "rsi": 50.823308,
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-01-23",
+        "symbol": "603838",
+        "action": "buy",
+        "price": 7.5,
+        "qty": 15400,
+        "score": 0.8774,
+        "cci": 50.559465,
+        "wr": -43.396226,
+        "rsi": 52.505901,
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-01-28",
+        "symbol": "688602",
+        "action": "sell",
+        "price": 9.19,
+        "qty": 11500,
+        "pnl": 3321.9244999999937,
+        "reason": "ma_death",
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-01-28",
+        "symbol": "002100",
+        "action": "buy",
+        "price": 7.23,
+        "qty": 15700,
+        "score": 0.9647000000000001,
+        "cci": -12.265512,
+        "wr": -36.585366,
+        "rsi": 52.084983,
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-02-02",
+        "symbol": "600421",
+        "action": "sell",
+        "price": 8.16,
+        "qty": 20500,
+        "pnl": 22575.255999999994,
+        "reason": "take_profit",
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-02-04",
+        "symbol": "603330",
+        "action": "sell",
+        "price": 7.5600000000000005,
+        "qty": 15400,
+        "pnl": 2196.2248000000254,
+        "reason": "ma_death",
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-02-05",
+        "symbol": "000886",
+        "action": "buy",
+        "price": 6.61,
+        "qty": 22300,
+        "score": 0.7577,
+        "cci": 103.286378,
+        "wr": -18.0,
+        "rsi": 51.199026,
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-02-06",
+        "symbol": "600665",
+        "action": "sell",
+        "price": 3.61,
+        "qty": 37300,
+        "pnl": 8642.298100000015,
+        "reason": "ma_death",
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-02-06",
+        "symbol": "603838",
+        "action": "sell",
+        "price": 7.7,
+        "qty": 15400,
+        "pnl": 2807.2660000000033,
+        "reason": "ma_death",
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-02-09",
+        "symbol": "002789",
+        "action": "buy",
+        "price": 10.27,
+        "qty": 16400,
+        "score": 0.9647000000000001,
+        "cci": 58.649446,
+        "wr": -26.363636,
+        "rsi": 52.831814,
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-02-09",
+        "symbol": "002235",
+        "action": "buy",
+        "price": 10.44,
+        "qty": 12900,
+        "score": 0.9647000000000001,
+        "cci": -0.545777,
+        "wr": -25.263158,
+        "rsi": 51.613408,
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-02-09",
+        "symbol": "000509",
+        "action": "buy",
+        "price": 3.52,
+        "qty": 30700,
+        "score": 0.8177000000000001,
+        "cci": 103.092767,
+        "wr": -33.333333,
+        "rsi": 54.72729,
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-02-10",
+        "symbol": "002789",
+        "action": "sell",
+        "price": 10.22,
+        "qty": 16400,
+        "pnl": -1205.4983999999822,
+        "reason": "ma_death",
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-02-11",
+        "symbol": "603600",
+        "action": "buy",
+        "price": 11.91,
+        "qty": 10000,
+        "score": 0.8774,
+        "cci": -8.465608,
+        "wr": -44.927536,
+        "rsi": 51.024095,
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-03-02",
+        "symbol": "002235",
+        "action": "sell",
+        "price": 9.67,
+        "qty": 12900,
+        "pnl": -10219.908899999995,
+        "reason": "stop_loss",
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-03-02",
+        "symbol": "603600",
+        "action": "sell",
+        "price": 11.21,
+        "qty": 10000,
+        "pnl": -7257.829999999987,
+        "reason": "stop_loss",
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-03-03",
+        "symbol": "000886",
+        "action": "sell",
+        "price": 6.15,
+        "qty": 22300,
+        "pnl": -10573.433499999985,
+        "reason": "stop_loss",
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-03-03",
+        "symbol": "000509",
+        "action": "sell",
+        "price": 3.25,
+        "qty": 30700,
+        "pnl": -8518.482499999998,
+        "reason": "stop_loss",
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-03-09",
+        "symbol": "600969",
+        "action": "buy",
+        "price": 10.73,
+        "qty": 17700,
+        "score": 0.9647000000000001,
+        "cci": 0.712314,
+        "wr": -14.375,
+        "rsi": 52.487345,
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-03-13",
+        "symbol": "002100",
+        "action": "sell",
+        "price": 7.7,
+        "qty": 15700,
+        "pnl": 7100.953000000009,
+        "reason": "ma_death",
+        "strategy": "v8"
+      },
+      {
+        "date": "2026-03-20",
+        "symbol": "600969",
+        "action": "sell",
+        "price": 9.94,
+        "qty": 17700,
+        "pnl": -14387.657399999996,
+        "reason": "stop_loss",
+        "strategy": "v8"
+      }
+    ],
+    "history": [
+      {
+        "date": "2026-01-05",
+        "cash": 328898.70099999994,
+        "positions_value": 671879.0,
+        "total_value": 1000777.7009999999,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-06",
+        "cash": 328898.70099999994,
+        "positions_value": 673884.0,
+        "total_value": 1002782.7009999999,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-07",
+        "cash": 328898.70099999994,
+        "positions_value": 671397.0,
+        "total_value": 1000295.7009999999,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-08",
+        "cash": 328898.70099999994,
+        "positions_value": 681770.0,
+        "total_value": 1010668.7009999999,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-09",
+        "cash": 328898.70099999994,
+        "positions_value": 693195.0,
+        "total_value": 1022093.7009999999,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-12",
+        "cash": 343120.1922,
+        "positions_value": 718407.0,
+        "total_value": 1061527.1922,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-13",
+        "cash": 343120.1922,
+        "positions_value": 708320.0,
+        "total_value": 1051440.1922,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-14",
+        "cash": 458747.43470000004,
+        "positions_value": 609570.0,
+        "total_value": 1068317.4347,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-15",
+        "cash": 458747.43470000004,
+        "positions_value": 609811.0,
+        "total_value": 1068558.4347,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-16",
+        "cash": 458747.43470000004,
+        "positions_value": 609431.0,
+        "total_value": 1068178.4347,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-19",
+        "cash": 503238.30300000013,
+        "positions_value": 569923.0,
+        "total_value": 1073161.303,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-20",
+        "cash": 503238.30300000013,
+        "positions_value": 572590.0,
+        "total_value": 1075828.303,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-21",
+        "cash": 590078.1110000001,
+        "positions_value": 490419.0,
+        "total_value": 1080497.111,
+        "n_positions": 4
+      },
+      {
+        "date": "2026-01-22",
+        "cash": 579765.1358000003,
+        "positions_value": 501360.0,
+        "total_value": 1081125.1358000003,
+        "n_positions": 4
+      },
+      {
+        "date": "2026-01-23",
+        "cash": 464114.9858000003,
+        "positions_value": 627083.0,
+        "total_value": 1091197.9858000004,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-26",
+        "cash": 464114.9858000003,
+        "positions_value": 625215.0,
+        "total_value": 1089329.9858000004,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-27",
+        "cash": 464114.9858000003,
+        "positions_value": 623680.0,
+        "total_value": 1087794.9858000004,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-28",
+        "cash": 455898.34600000037,
+        "positions_value": 623690.0,
+        "total_value": 1079588.3460000004,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-29",
+        "cash": 455898.34600000037,
+        "positions_value": 629357.0,
+        "total_value": 1085255.3460000004,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-01-30",
+        "cash": 455898.34600000037,
+        "positions_value": 636539.0,
+        "total_value": 1092437.3460000004,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-02-02",
+        "cash": 622793.6020000004,
+        "positions_value": 468602.0,
+        "total_value": 1091395.6020000004,
+        "n_positions": 4
+      },
+      {
+        "date": "2026-02-03",
+        "cash": 622793.6020000004,
+        "positions_value": 470559.0,
+        "total_value": 1093352.6020000004,
+        "n_positions": 4
+      },
+      {
+        "date": "2026-02-04",
+        "cash": 738949.8268000004,
+        "positions_value": 360513.0,
+        "total_value": 1099462.8268000004,
+        "n_positions": 3
+      },
+      {
+        "date": "2026-02-05",
+        "cash": 591355.2029000004,
+        "positions_value": 509201.0,
+        "total_value": 1100556.2029000004,
+        "n_positions": 4
+      },
+      {
+        "date": "2026-02-06",
+        "cash": 844005.7670000005,
+        "positions_value": 257799.0,
+        "total_value": 1101804.7670000005,
+        "n_positions": 2
+      },
+      {
+        "date": "2026-02-09",
+        "cash": 432303.2486000004,
+        "positions_value": 668140.0,
+        "total_value": 1100443.2486000005,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-02-10",
+        "cash": 599525.7502000004,
+        "positions_value": 508825.0,
+        "total_value": 1108350.7502000004,
+        "n_positions": 4
+      },
+      {
+        "date": "2026-02-11",
+        "cash": 480270.9202000004,
+        "positions_value": 626633.0,
+        "total_value": 1106903.9202000005,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-02-12",
+        "cash": 480270.9202000004,
+        "positions_value": 614024.0,
+        "total_value": 1094294.9202000005,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-02-13",
+        "cash": 480270.9202000004,
+        "positions_value": 615585.0,
+        "total_value": 1095855.9202000005,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-02-24",
+        "cash": 480270.9202000004,
+        "positions_value": 616669.0,
+        "total_value": 1096939.9202000005,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-02-25",
+        "cash": 480270.9202000004,
+        "positions_value": 620856.0,
+        "total_value": 1101126.9202000005,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-02-26",
+        "cash": 480270.9202000004,
+        "positions_value": 617358.0,
+        "total_value": 1097628.9202000005,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-02-27",
+        "cash": 480270.9202000004,
+        "positions_value": 617928.0,
+        "total_value": 1098198.9202000005,
+        "n_positions": 5
+      },
+      {
+        "date": "2026-03-02",
+        "cash": 716569.1813000004,
+        "positions_value": 357377.0,
+        "total_value": 1073946.1813000003,
+        "n_positions": 3
+      },
+      {
+        "date": "2026-03-03",
+        "cash": 952944.2653000004,
+        "positions_value": 112412.0,
+        "total_value": 1065356.2653000006,
+        "n_positions": 1
+      },
+      {
+        "date": "2026-03-04",
+        "cash": 952944.2653000004,
+        "positions_value": 112569.0,
+        "total_value": 1065513.2653000006,
+        "n_positions": 1
+      },
+      {
+        "date": "2026-03-05",
+        "cash": 952944.2653000004,
+        "positions_value": 109743.0,
+        "total_value": 1062687.2653000006,
+        "n_positions": 1
+      },
+      {
+        "date": "2026-03-06",
+        "cash": 952944.2653000004,
+        "positions_value": 114296.0,
+        "total_value": 1067240.2653000006,
+        "n_positions": 1
+      },
+      {
+        "date": "2026-03-09",
+        "cash": 762776.3680000005,
+        "positions_value": 307063.0,
+        "total_value": 1069839.3680000005,
+        "n_positions": 2
+      },
+      {
+        "date": "2026-03-10",
+        "cash": 762776.3680000005,
+        "positions_value": 306566.0,
+        "total_value": 1069342.3680000005,
+        "n_positions": 2
+      },
+      {
+        "date": "2026-03-11",
+        "cash": 762776.3680000005,
+        "positions_value": 312030.0,
+        "total_value": 1074806.3680000005,
+        "n_positions": 2
+      },
+      {
+        "date": "2026-03-12",
+        "cash": 762776.3680000005,
+        "positions_value": 314722.0,
+        "total_value": 1077498.3680000005,
+        "n_positions": 2
+      },
+      {
+        "date": "2026-03-13",
+        "cash": 883388.3210000005,
+        "positions_value": 189744.0,
+        "total_value": 1073132.3210000005,
+        "n_positions": 1
+      },
+      {
+        "date": "2026-03-16",
+        "cash": 883388.3210000005,
+        "positions_value": 185496.0,
+        "total_value": 1068884.3210000005,
+        "n_positions": 1
+      },
+      {
+        "date": "2026-03-17",
+        "cash": 883388.3210000005,
+        "positions_value": 183549.0,
+        "total_value": 1066937.3210000005,
+        "n_positions": 1
+      },
+      {
+        "date": "2026-03-18",
+        "cash": 883388.3210000005,
+        "positions_value": 184434.0,
+        "total_value": 1067822.3210000005,
+        "n_positions": 1
+      },
+      {
+        "date": "2026-03-19",
+        "cash": 883388.3210000005,
+        "positions_value": 180894.0,
+        "total_value": 1064282.3210000005,
+        "n_positions": 1
+      },
+      {
+        "date": "2026-03-20",
+        "cash": 1058921.6636000006,
+        "positions_value": 0,
+        "total_value": 1058921.6636000006,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-23",
+        "cash": 1058921.6636000006,
+        "positions_value": 0,
+        "total_value": 1058921.6636000006,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-24",
+        "cash": 1058921.6636000006,
+        "positions_value": 0,
+        "total_value": 1058921.6636000006,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-25",
+        "cash": 1058921.6636000006,
+        "positions_value": 0,
+        "total_value": 1058921.6636000006,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-26",
+        "cash": 1058921.6636000006,
+        "positions_value": 0,
+        "total_value": 1058921.6636000006,
+        "n_positions": 0
+      },
+      {
+        "date": "2026-03-27",
+        "cash": 1058921.6636000006,
+        "positions_value": 0,
+        "total_value": 1058921.6636000006,
+        "n_positions": 0
+      }
+    ],
+    "positions": {}
+  }
+}

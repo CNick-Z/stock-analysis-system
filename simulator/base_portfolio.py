@@ -1,0 +1,429 @@
+# simulator/base_portfolio.py
+# 单策略模拟账户
+# =============================================================
+"""
+单账户持仓管理器。
+
+职责：
+  - 管理现金、持仓、交易记录
+  - 每日调度：先处理持仓出场 → 再选股买入
+  - 对接 BaseStrategy 标准接口
+
+使用方式：
+  portfolio = BasePortfolio("V4", 1_000_000, strategy_v4)
+  portfolio.on_day("2026-01-15", daily_df, market=market_ctx)
+"""
+
+import logging
+from typing import Dict, List, Optional, Tuple, Any
+import pandas as pd
+
+logger = logging.getLogger(__name__)
+
+
+class BasePortfolio:
+    """
+    单策略模拟账户
+
+    管理单策略的现金、持仓和交易历史。
+    每日调用 on_day() 完成调仓逻辑。
+
+    Attributes:
+        name: 账户名称
+        cash: 当前现金余额
+        initial_cash: 初始资金
+        strategy: 策略实例（需实现 BaseStrategy 接口）
+        positions: 持仓字典 {symbol: pos_dict}
+        trades: 交易历史列表
+    """
+
+    def __init__(
+        self,
+        name: str,
+        initial_cash: float,
+        strategy: Any,
+    ):
+        """
+        Args:
+            name: 账户名称
+            initial_cash: 初始资金
+            strategy: 策略实例（需实现 filter_buy / score / should_sell 接口）
+        """
+        self.name = name
+        self.cash = initial_cash
+        self.initial_cash = initial_cash
+        self.strategy = strategy
+        self.positions: Dict[str, dict] = {}  # {symbol: pos_dict}
+        self.trades: List[dict] = []
+
+    # ------------------------------------------------------------------
+    # 核心方法
+    # ------------------------------------------------------------------
+
+    def on_day(
+        self,
+        date: str,
+        daily_df: pd.DataFrame,
+        market: Optional[dict] = None,
+    ) -> List[dict]:
+        """
+        每日调仓逻辑
+
+        顺序：
+          1. 遍历持仓 → 调用 strategy.should_sell() → 触发出场
+          2. 调用 strategy.filter_buy() + strategy.score() → 选股买入
+          3. 返回当日所有交易列表（包含买卖）
+
+        Args:
+            date: 当日日期字符串（YYYY-MM-DD）
+            daily_df: 当日全部股票的行情 DataFrame
+                     需包含：symbol, open, high, low, close, next_open 等列
+            market: 市场上下文（可选），如市场宽度、情绪指标等
+
+        Returns:
+            当日交易列表，每项格式：
+              {
+                'date': str,
+                'symbol': str,
+                'action': 'buy' | 'sell',
+                'price': float,
+                'qty': int,
+                'reason': str,
+                'pnl': float | None  # 仅 sell 有
+              }
+        """
+        daily_df = daily_df.copy()
+        daily_df['date'] = date
+
+        # ========== 1. 处理持仓出场 ==========
+        sell_trades = self._process_exits(date, daily_df, market)
+
+        # ========== 2. 选股买入 ==========
+        buy_trades = self._process_buys(date, daily_df, market)
+
+        # ========== 3. 记录并返回 ==========
+        all_trades = sell_trades + buy_trades
+        self.trades.extend(all_trades)
+
+        if all_trades:
+            logger.debug(
+                f"[{self.name}] {date} — 交易 {len(all_trades)} 笔 "
+                f"(卖出 {len(sell_trades)}, 买入 {len(buy_trades)})"
+            )
+
+        return all_trades
+
+    def _process_exits(
+        self,
+        date: str,
+        daily_df: pd.DataFrame,
+        market: Optional[dict],
+    ) -> List[dict]:
+        """
+        遍历持仓，判断是否出场
+
+        Args:
+            date: 当日日期
+            daily_df: 当日行情
+            market: 市场上下文
+
+        Returns:
+            卖出交易列表
+        """
+        sell_trades = []
+
+        for sym, pos in list(self.positions.items()):
+            row = daily_df[daily_df['symbol'] == sym]
+            if row.empty:
+                # 当日无行情（停牌等），跳过出场判断
+                logger.debug(f"[{self.name}] {date} {sym} 无当日行情，跳过出场")
+                continue
+
+            row = row.iloc[0]
+
+            # 判断是否卖出
+            should_sell, reason = self.strategy.should_sell(row, pos, market)
+
+            if should_sell:
+                # 计算实际卖出价格（优先 next_open，其次 close）
+                sell_price = row.get('next_open')
+                if pd.isna(sell_price) or sell_price <= 0:
+                    sell_price = row.get('close', pos['avg_cost'])
+
+                # ========== 涨跌停边界检查 ==========
+                # 注意：使用 9.5% 而非 10% 作为判断阈值
+                # 原因：1) 浮点数精度问题，10% 在二进制中无法精确表示
+                #      2) 创业板/科创板涨跌幅为 20%，ST股票为 5%，9.5% 作为统一容错边界
+                #      3) 避免价格刚好触及涨停板时的边界争议
+                # 跌停不能卖出（跌幅 > 9.5% 视为跌停板）
+                prev_close = row.get('close', sell_price)
+                if prev_close > 0:
+                    change_pct = (sell_price - prev_close) / prev_close
+                    if change_pct < -0.095:
+                        # 跌停板，无法卖出，记录并跳过
+                        logger.debug(
+                            f"[{self.name}] {date} {sym} 跌停板，跳过卖出 "
+                            f"(原因: {reason}, 跌幅: {change_pct:.2%})"
+                        )
+                        # 跌停无法卖出时，不平仓（持仓继续保留到下一个交易日）
+                        # 注意：止损等条件仍然有效，下个交易日若非跌停则继续判断
+                        continue
+
+                qty = pos['qty']
+                pnl = (sell_price - pos['avg_cost']) * qty
+
+                trade = {
+                    'date': date,
+                    'symbol': sym,
+                    'action': 'sell',
+                    'price': round(sell_price, 2),
+                    'qty': qty,
+                    'reason': reason,
+                    'entry_date': pos.get('entry_date', ''),
+                    'entry_price': pos.get('avg_cost', 0),
+                    'pnl': round(pnl, 2),
+                    'pnl_pct': round((sell_price / pos['avg_cost'] - 1) * 100, 2),
+                    'limit_down_blocked': False,  # 跌停被阻挡的标志
+                }
+                sell_trades.append(trade)
+                self._close_position(sym, sell_price, trade)
+
+        return sell_trades
+
+    def _process_buys(
+        self,
+        date: str,
+        daily_df: pd.DataFrame,
+        market: Optional[dict],
+    ) -> List[dict]:
+        """
+        选股买入
+
+        逻辑：
+          1. filter_buy() 过滤候选
+          2. score() 评分排序
+          3. 按评分买 top N（剩余 slot）
+          4. 每只买入金额 = 可用现金 * position_size / N
+
+        Args:
+            date: 当日日期
+            daily_df: 当日行情
+            market: 市场上下文
+
+        Returns:
+            买入交易列表
+        """
+        buy_trades = []
+
+        # 可用 slot
+        slots = self.strategy.max_positions - len(self.positions)
+        if slots <= 0:
+            logger.debug(f"[{self.name}] {date} 持仓已满（{len(self.positions)}/{self.strategy.max_positions}），跳过选股")
+            return buy_trades
+
+        # 可用现金
+        available_cash = self.cash
+        if available_cash <= 0:
+            logger.debug(f"[{self.name}] {date} 现金不足，跳过选股")
+            return buy_trades
+
+        # filter_buy → score
+        try:
+            candidates = self.strategy.filter_buy(daily_df)
+            if candidates.empty:
+                return buy_trades
+
+            scored = self.strategy.score(candidates)
+        except Exception as e:
+            logger.warning(f"[{self.name}] {date} filter_buy/score 异常: {e}")
+            return buy_trades
+
+        # 取 top N（排除已在持仓的）
+        held_symbols = set(self.positions.keys())
+        top_n = scored[~scored['symbol'].isin(held_symbols)].head(slots)
+
+        # 每只分配金额
+        per_stock_cash = (available_cash * self.strategy.position_size) / max(len(top_n), 1)
+
+        for _, row in top_n.iterrows():
+            sym = row['symbol']
+
+            # 实际买入价（优先 open，其次 close）
+            buy_price = row.get('next_open')
+            if pd.isna(buy_price) or buy_price <= 0:
+                buy_price = row.get('open', row.get('close'))
+            if pd.isna(buy_price) or buy_price <= 0:
+                logger.warning(f"[{self.name}] {date} {sym} 无法获取有效价格，跳过")
+                continue
+
+            # 涨跌停检查（涨停不能买）
+            # 注意：使用 9.5% 而非 10% 作为判断阈值（原因同上：浮点精度 + 兼容不同板）
+            prev_close = row.get('close', buy_price)
+            if prev_close > 0:
+                change_pct = abs(buy_price - prev_close) / prev_close
+                # 简单判断：涨幅 > 9.5% 视为涨停板，不买入
+                if (buy_price > prev_close * 1.095):
+                    logger.debug(f"[{self.name}] {date} {sym} 涨停板，跳过买入")
+                    continue
+
+            qty = int(per_stock_cash / buy_price)
+            qty = (qty // 100) * 100  # 整手（A股最小100股）
+            if qty < 100:
+                continue  # 买不了1手，跳过
+
+            cost = qty * buy_price
+            if cost > self.cash:
+                qty = (int(self.cash / buy_price) // 100) * 100
+                if qty < 100:
+                    continue
+                cost = qty * buy_price
+
+            # 记录入场均线关系（用于 MA死叉出场）
+            entry_sma20_le_sma55 = row.get('sma_20', float('inf')) <= row.get('sma_55', 0)
+
+            trade = {
+                'date': date,
+                'symbol': sym,
+                'action': 'buy',
+                'price': round(buy_price, 2),
+                'qty': qty,
+                'reason': f"SCORE={row.get('score', 0):.4f}",
+                'cost': round(cost, 2),
+                'entry_sma20_le_sma55': entry_sma20_le_sma55,
+            }
+            buy_trades.append(trade)
+            self._open_position(sym, row, qty, buy_price, date, entry_sma20_le_sma55)
+
+        return buy_trades
+
+    def _open_position(
+        self,
+        symbol: str,
+        row: pd.Series,
+        qty: int,
+        price: float,
+        date: str,
+        entry_sma20_le_sma55: bool,
+    ):
+        """
+        记录新持仓
+
+        Args:
+            symbol: 股票代码
+            row: 当日行情行（用于提取指标）
+            qty: 买入数量
+            price: 买入价格
+            date: 买入日期
+            entry_sma20_le_sma55: 入场时 sma20 <= sma55（用于 MA死叉出场）
+        """
+        cost = qty * price
+        self.cash -= cost
+
+        self.positions[symbol] = {
+            'qty': qty,
+            'avg_cost': price,
+            'entry_date': date,
+            'entry_sma20_le_sma55': entry_sma20_le_sma55,
+            # 附加信息（方便回溯）
+            'sma_20': row.get('sma_20', 0),
+            'sma_55': row.get('sma_55', 0),
+            'sma_240': row.get('sma_240', 0),
+            'money_flow_trend': row.get('money_flow_trend', None),
+        }
+        logger.debug(
+            f"[{self.name}] 买入 {symbol} x{qty} @{price:.2f} "
+            f"(现金余额: {self.cash:.2f}, sma20_le_sma55={entry_sma20_le_sma55})"
+        )
+
+    def _close_position(
+        self,
+        symbol: str,
+        sell_price: float,
+        trade_record: dict,
+    ):
+        """
+        平仓
+
+        Args:
+            symbol: 股票代码
+            sell_price: 卖出价格
+            trade_record: 交易记录（用于日志）
+        """
+        pos = self.positions.pop(symbol, None)
+        if pos is None:
+            logger.warning(f"[{self.name}] 平仓 {symbol} 但未找到持仓记录")
+            return
+
+        proceeds = pos['qty'] * sell_price
+        self.cash += proceeds
+
+        logger.debug(
+            f"[{self.name}] 卖出 {symbol} x{pos['qty']} @{sell_price:.2f} "
+            f"原因: {trade_record.get('reason', 'N/A')} "
+            f"盈亏: {trade_record.get('pnl_pct', 0):.2f}% "
+            f"(现金余额: {self.cash:.2f})"
+        )
+
+    # ------------------------------------------------------------------
+    # 辅助方法
+    # ------------------------------------------------------------------
+
+    def get_positions_value(self, current_prices: dict) -> float:
+        """
+        计算当前持仓市值
+
+        Args:
+            current_prices: {symbol: current_price} 字典
+
+        Returns:
+            持仓总市值
+        """
+        total = 0.0
+        for sym, pos in self.positions.items():
+            price = current_prices.get(sym, pos['avg_cost'])
+            total += pos['qty'] * price
+        return total
+
+    def get_total_value(self, current_prices: dict) -> float:
+        """总资产 = 现金 + 持仓市值"""
+        return self.cash + self.get_positions_value(current_prices)
+
+    def get_stats(self, current_prices: Optional[dict] = None) -> dict:
+        """
+        获取账户统计信息
+
+        Args:
+            current_prices: {symbol: price} 字典（可选），用于计算浮动盈亏
+
+        Returns:
+            账户统计字典
+        """
+        closed_trades = [t for t in self.trades if t['action'] == 'sell']
+        winning_trades = [t for t in closed_trades if t.get('pnl', 0) > 0]
+
+        total_pnl = sum(t.get('pnl', 0) for t in closed_trades)
+        current_value = self.get_total_value(current_prices or {})
+        total_return = (current_value - self.initial_cash) / self.initial_cash
+
+        return {
+            'name': self.name,
+            'initial_cash': self.initial_cash,
+            'cash': round(self.cash, 2),
+            'positions_value': round(current_value - self.cash, 2),
+            'total_value': round(current_value, 2),
+            'total_return': round(total_return * 100, 2),
+            'total_return_pct': f"{total_return * 100:+.2f}%",
+            'n_positions': len(self.positions),
+            'n_trades': len(closed_trades),
+            'n_winning': len(winning_trades),
+            'win_rate': round(len(winning_trades) / max(len(closed_trades), 1) * 100, 2),
+            'total_pnl': round(total_pnl, 2),
+        }
+
+    def __repr__(self) -> str:
+        return (
+            f"<BasePortfolio name={self.name} "
+            f"cash={self.cash:.0f} "
+            f"positions={len(self.positions)} "
+            f"trades={len(self.trades)}>"
+        )
