@@ -26,8 +26,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from simulator import MultiSimulator
 from strategies.score.v8.strategy import ScoreV8Strategy
+from utils.data_loader import load_strategy_data
 
-DATA_DIR = '/root/.openclaw/workspace/data/warehouse'
 OUT_DIR = '/root/.openclaw/workspace/projects/stock-analysis-system/backtest_results'
 os.makedirs(OUT_DIR, exist_ok=True)
 
@@ -37,30 +37,38 @@ DEFAULT_YEARS = range(2018, 2026)
 
 def load_year_data(year: int) -> pd.DataFrame:
     """
-    加载某年的技术指标+日线数据，并完成所有指标预处理。
-    返回的 DataFrame 包含完整选股条件列，可直接供 ScoreV8Strategy 使用。
+    加载某年的完整策略数据（含资金流+财务+技术指标）。
+
+    统一通过 data_loader.py 的 load_strategy_data() 获取，
+    保证 money_flow_trend 等字段在回测中正确生效。
+
+    Returns:
+        包含全部技术指标 + 资金流 + 财务字段的 DataFrame，
+        可直接供 ScoreV8Strategy 使用。
     """
-    tech = pd.read_parquet(f'{DATA_DIR}/technical_indicators_year={year}/data.parquet')
-    daily = pd.read_parquet(f'{DATA_DIR}/daily_data_year={year}/data.parquet')
-    df = pd.merge(tech, daily, on=['date', 'symbol'], how='inner')
-    del tech, daily
-    gc.collect()
+    # next_open 在 load_strategy_data 中没有（data_loader 只做当日字段），
+    # 需要在返回后单独计算。
+    df = load_strategy_data(years=[year], add_money_flow=True)
 
-    # === 基础指标（MultiSimulator 内部也需要这些列） ===
-    df['vol_ratio'] = df['volume'] / (df['vol_ma5'] + 1e-10)
-    df['boll_pos'] = (df['sma_5'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'] + 1e-10)
-    df['boll_pos'] = df['boll_pos'].clip(0, 1)
-
-    # next_open 用于模拟次日开盘买入/卖出
+    # next_open：次日开盘价（用于模拟次日开盘买入/卖出）
     df['next_open'] = df.groupby('symbol')['open'].shift(-1)
 
-    # 处理合并后的重名字段（pandas 默认用 _x/_y 后缀）
-    if 'turnover_rate_y' in df.columns:
-        df['turnover_rate'] = df['turnover_rate_y']
-    elif 'turnover_rate_x' in df.columns:
-        df['turnover_rate'] = df['turnover_rate_x']
+    # 处理重名字段（合并时 pandas 可能产生 _x/_y 后缀）
+    for suffix in ('_x', '_y'):
+        dup = [c for c in df.columns if c.endswith(suffix)]
+        for col in dup:
+            base = col.rsplit(suffix, 1)[0]
+            if base not in df.columns:
+                df.rename(columns={col: base}, inplace=True)
 
-    df = df.sort_values('date').reset_index(drop=True)
+    # 日志：确认关键字段存在
+    key_fields = ['money_flow_trend', 'vol_ratio', 'sma_5', 'sma_20', 'next_open']
+    present = {f: f in df.columns for f in key_fields}
+    print(f"  [load_year_data] 关键字段: {present}")
+    print(f"  [load_year_data] money_flow_trend 非空率: "
+          f"{(df['money_flow_trend'].notna()).mean():.1%}"
+          if 'money_flow_trend' in df.columns else "  [load_year_data] money_flow_trend 列不存在")
+
     return df
 
 
