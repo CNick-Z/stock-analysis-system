@@ -15,9 +15,9 @@ v6核心 + IC增强过滤
   - price_filter: 价格3-15元
 
 【IC增强过滤 - 剔除】
-  - RSI>70 或 <25
+  - RSI>70 或 <35
   - 换手率>2.79%
-  - WR>-95
+  - WR>-90
   - CCI<-200
 
 【IC增强过滤 - 加分】
@@ -114,9 +114,9 @@ def _apply_ic_filter(df: pd.DataFrame) -> pd.DataFrame:
     
     # ===== IC 增强过滤 — 剔除条件 =====
     exclude_mask = (
-        (df['rsi_14'] > 70) | (df['rsi_14'] < 25) |
+        (df['rsi_14'] > 70) | (df['rsi_14'] < 35) |
         (df['turnover_rate'] > 2.79) |
-        (df['williams_r'] < -95) |
+        (df['williams_r'] < -90) |
         (df['cci_20'] < -200)
     )
     df = df[~exclude_mask].copy()
@@ -269,9 +269,9 @@ class ScoreV8Strategy:
       - price_filter: 价格 3-15 元
     
     【IC增强过滤 - 剔除】
-      - RSI > 70 或 < 25
+      - RSI > 70 或 < 35
       - 换手率 > 2.79%
-      - WR < -95
+      - WR < -90
       - CCI < -200
     
     【IC增强过滤 - 加分】
@@ -416,9 +416,9 @@ class ScoreV8Strategy:
             "rsi_filter": "RSI 在 50-60 之间",
             "price_filter": "价格 3-15 元",
             # IC 剔除
-            "ic_exclude_rsi": "RSI > 70 或 < 25",
+            "ic_exclude_rsi": "RSI > 70 或 < 35",
             "ic_exclude_turnover": "换手率 > 2.79%",
-            "ic_exclude_wr": "WR < -95",
+            "ic_exclude_wr": "WR < -90",
             "ic_exclude_cci": "CCI < -200",
             # IC 加分
             "ic_bonus_cci": "CCI < -100 → +0.10",
