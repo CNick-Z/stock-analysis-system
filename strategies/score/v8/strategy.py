@@ -17,7 +17,6 @@ v6核心 + IC增强过滤
 【IC增强过滤 - 剔除】
   - RSI>70 或 <25
   - 换手率>2.79%
-  - vol_ratio>0.8  # IC/IR验证：>0.8剔除，8年IC=+0.0054最优（2026-03-30调优）
   - WR>-95
   - CCI<-200
 
@@ -25,6 +24,7 @@ v6核心 + IC增强过滤
   - CCI<-100: +0.10分
   - WR<-80: +0.05分
   - 换手率<0.42%: +0.05分
+  - vol_ratio<0.71: +0.05分  # IC=+0.0037最优区间（2026-03-30调优）
 
 【出场规则】
   - 止损: 5%
@@ -113,13 +113,9 @@ def _apply_ic_filter(df: pd.DataFrame) -> pd.DataFrame:
         df['turnover_rate'] = df['turnover_rate_x']
     
     # ===== IC 增强过滤 — 剔除条件 =====
-    # IC/IR分析结论：vol_ratio > 0.8 区间IC最差(-0.0159)，硬剔除
-    # 阈值从1.25收紧到0.8（2026-03-30 IC/IR调优）
-    # 注意：原 vol_ratio > 1.25 已移除（与 volume_condition 冲突），现以 0.8 为阈值
     exclude_mask = (
         (df['rsi_14'] > 70) | (df['rsi_14'] < 25) |
         (df['turnover_rate'] > 2.79) |
-        (df['vol_ratio'] > 0.8) |
         (df['williams_r'] < -95) |
         (df['cci_20'] < -200)
     )
@@ -143,6 +139,7 @@ def _apply_ic_filter(df: pd.DataFrame) -> pd.DataFrame:
     df.loc[df['cci_20'] < -100, 'ic_bonus'] += 0.10
     df.loc[df['williams_r'] < -80, 'ic_bonus'] += 0.05
     df.loc[df['turnover_rate'] < 0.42, 'ic_bonus'] += 0.05
+    df.loc[df['vol_ratio'] < 0.71, 'ic_bonus'] += 0.05
     
     return df
 
@@ -248,6 +245,7 @@ def _score_row_v8(row: pd.Series) -> float:
     if row.get('cci_20', 0) < -100: score += 0.10
     if row.get('williams_r', 0) < -80: score += 0.05
     if row.get('turnover_rate', 999) < 0.42: score += 0.05
+    if row.get('vol_ratio', 999) < 0.71: score += 0.05
     
     return score
 
@@ -280,6 +278,7 @@ class ScoreV8Strategy:
       - CCI < -100: +0.10
       - WR < -80: +0.05
       - 换手率 < 0.42%: +0.05
+      - vol_ratio < 0.71: +0.05
     
     【出场规则】
       - 止损: 5%
@@ -419,13 +418,13 @@ class ScoreV8Strategy:
             # IC 剔除
             "ic_exclude_rsi": "RSI > 70 或 < 25",
             "ic_exclude_turnover": "换手率 > 2.79%",
-            # ic_exclude_vol_ratio 已移除（与 volume_condition 冲突）
             "ic_exclude_wr": "WR < -95",
             "ic_exclude_cci": "CCI < -200",
             # IC 加分
             "ic_bonus_cci": "CCI < -100 → +0.10",
             "ic_bonus_wr": "WR < -80 → +0.05",
             "ic_bonus_turnover": "换手率 < 0.42% → +0.05",
+            "ic_bonus_vol_ratio": "vol_ratio < 0.71 → +0.05",
             # 风控
             "stop_loss": f"{self.stop_loss:.0%}",
             "take_profit": f"{self.take_profit:.0%}",
