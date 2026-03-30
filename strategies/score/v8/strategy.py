@@ -17,8 +17,8 @@ v6核心 + IC增强过滤
 【IC增强过滤 - 剔除】
   - RSI>70 或 <25
   - 换手率>2.79%
-  # - vol_ratio>1.25  # 已移除，与 volume_condition 冲突
-  - WR<-95
+  - vol_ratio>0.8  # IC/IR验证：>0.8剔除，8年IC=+0.0054最优（2026-03-30调优）
+  - WR>-95
   - CCI<-200
 
 【IC增强过滤 - 加分】
@@ -113,10 +113,13 @@ def _apply_ic_filter(df: pd.DataFrame) -> pd.DataFrame:
         df['turnover_rate'] = df['turnover_rate_x']
     
     # ===== IC 增强过滤 — 剔除条件 =====
-    # 注意：vol_ratio > 1.25 已移除（原排除157/198候选，过严，与 volume_condition 冲突）
+    # IC/IR分析结论：vol_ratio > 0.8 区间IC最差(-0.0159)，硬剔除
+    # 阈值从1.25收紧到0.8（2026-03-30 IC/IR调优）
+    # 注意：原 vol_ratio > 1.25 已移除（与 volume_condition 冲突），现以 0.8 为阈值
     exclude_mask = (
         (df['rsi_14'] > 70) | (df['rsi_14'] < 25) |
         (df['turnover_rate'] > 2.79) |
+        (df['vol_ratio'] > 0.8) |
         (df['williams_r'] < -95) |
         (df['cci_20'] < -200)
     )
