@@ -1,0 +1,596 @@
+#!/usr/bin/env python3
+"""
+BaseFramework — 统一回测/模拟盘框架
+=====================================
+所有策略共用此框架，只需实现 Strategy 接口。
+
+接口：
+    Strategy.filter_buy(daily_df) → DataFrame
+    Strategy.score(candidates) → DataFrame（带 score 列）
+    Strategy.should_sell(row, pos, market) → (bool, str)
+    Strategy.on_tick(row, pos)  → 更新持仓状态
+
+用法：
+    # 回测
+    framework = BaseFramework(initial_cash=500_000)
+    framework.run_backtest(strategy=V8Strategy(), start='2024-01-01', end='2024-12-31')
+
+    # 模拟盘
+    framework = BaseFramework(initial_cash=500_000)
+    framework.run_simulate(strategy=V8Strategy(), target_date='2026-03-31')
+
+框架职责：
+    ✅ 逐日循环（先出场再入场）
+    ✅ 涨跌停过滤
+    ✅ 仓位分配
+    ✅ 资金管理
+    ✅ 状态持久化
+    ✅ 交易通知
+
+策略职责：
+    ✅ filter_buy / score / should_sell / on_tick
+    ✅ 提供入场/出场信号
+"""
+
+import json
+import logging
+import sys
+from pathlib import Path
+from typing import Optional, List, Dict, Any
+from dataclasses import dataclass, field
+
+import pandas as pd
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+logger = logging.getLogger(__name__)
+
+# ============================================================
+# 数据类
+# ============================================================
+
+@dataclass
+class Position:
+    """持仓"""
+    symbol: str
+    qty: int
+    avg_cost: float
+    entry_date: str
+    entry_price: float
+    # 框架维护的状态
+    days_held: int = 0
+    consecutive_bad_days: int = 0
+    # 额外字段（策略自行读写）
+    extra: Dict = field(default_factory=dict)
+
+
+@dataclass
+class Trade:
+    """交易记录"""
+    date: str
+    symbol: str
+    action: str          # buy / sell
+    price: float
+    qty: int
+    pnl: float = 0.0    # 平仓盈亏（卖出时计算）
+    reason: str = ''     # 出场原因
+    pnl_pct: float = 0.0
+
+
+@dataclass
+class MarketSnapshot:
+    """市场快照（每个交易日更新）"""
+    date: str
+    cash: float
+    total_value: float
+    n_positions: int
+    total_return: float
+
+
+# ============================================================
+# 策略接口（抽象）
+# ============================================================
+
+class Strategy:
+    """
+    策略基类 — 所有策略必须实现此接口
+
+    接口方法由框架调用，策略提供信号判断逻辑。
+    """
+
+    name: str = "Strategy"
+
+    # 策略声明需要哪些额外列（框架在 prepare 时加载并合并到 daily_df）
+    REQUIRED_COLUMNS: list = []
+
+    def prepare(self, dates: list, loader: 'DataLoader'):
+        """
+        框架调用：策略按需加载私有数据
+
+        Args:
+            dates: 交易日列表 [start_date, ..., end_date]
+            loader: 数据加载器（DataLoader 实例）
+        """
+        self._extra_data = {}
+
+    def filter_buy(self, daily_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        入场过滤：返回候选股票（必须包含 symbol 列）
+
+        Args:
+            daily_df: 当日全市场数据
+
+        Returns:
+            DataFrame with symbol column
+        """
+        raise NotImplementedError
+
+    def score(self, candidates: pd.DataFrame) -> pd.DataFrame:
+        """
+        候选评分排序：返回带 score 列的 DataFrame
+
+        Args:
+            candidates: filter_buy() 的结果
+
+        Returns:
+            DataFrame with symbol and score columns, sorted descending by score
+        """
+        raise NotImplementedError
+
+    def should_sell(self, row: pd.Series, pos: dict, market: dict) -> tuple:
+        """
+        判断是否出场
+
+        Args:
+            row: 当日行情（Series）
+            pos: 持仓信息（dict），框架维护
+            market: 市场快照（dict）
+
+        Returns:
+            (should_sell: bool, reason: str)
+        """
+        raise NotImplementedError
+
+    def on_tick(self, row: pd.Series, pos: dict, market: dict) -> None:
+        """
+        每日 tick 回调 — 更新持仓状态
+
+        Args:
+            row: 当日行情
+            pos: 持仓信息（框架维护，策略修改）
+            market: 市场快照
+        """
+        # 默认实现：仅更新持仓天数
+        pos['days_held'] = pos.get('days_held', 0) + 1
+
+
+# ============================================================
+# BaseFramework
+# ============================================================
+
+class BaseFramework:
+    """
+    统一回测/模拟盘框架
+
+    Args:
+        initial_cash: 初始资金
+        max_positions: 最大持仓数
+        position_size: 每只股票仓位比例
+        commission_pct: 手续费率（默认 0.0003）
+        slippage_pct: 滑点（默认 0.0001）
+    """
+
+    def __init__(
+        self,
+        initial_cash: float = 500_000,
+        max_positions: int = 5,
+        position_size: float = 0.20,
+        commission_pct: float = 0.0003,
+        slippage_pct: float = 0.0001,
+        state_file: str = "/tmp/framework_state.json",
+    ):
+        self.initial_cash = initial_cash
+        self.max_positions = max_positions
+        self.position_size = position_size
+        self.commission_pct = commission_pct
+        self.slippage_pct = slippage_pct
+        self.state_file = Path(state_file)
+
+        # 运行时状态
+        self.cash: float = initial_cash
+        self.positions: Dict[str, dict] = {}
+        self.trades: List[dict] = []
+        self.market_snapshots: List[dict] = []
+        self.n_winning: int = 0
+        self.n_total: int = 0
+        self._strategy: Optional[Strategy] = None
+
+    # ============================================================
+    # 状态持久化
+    # ============================================================
+
+    def save_state(self):
+        """保存当前状态到文件"""
+        state = {
+            "cash": self.cash,
+            "positions": {
+                sym: {**pos, "extra": pos.get("extra", {})}
+                for sym, pos in self.positions.items()
+            },
+            "trades": self.trades[-100:],  # 只保留最近100条
+            "n_winning": self.n_winning,
+            "n_total": self.n_total,
+        }
+        with open(self.state_file, "w") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+        logger.info(f"状态已保存: {self.state_file}")
+
+    def load_state(self) -> bool:
+        """从文件恢复状态，返回是否成功"""
+        if not self.state_file.exists():
+            return False
+        try:
+            with open(self.state_file) as f:
+                state = json.load(f)
+            self.cash = state["cash"]
+            self.positions = state["positions"]
+            self.trades = state.get("trades", [])
+            self.n_winning = state.get("n_winning", 0)
+            self.n_total = state.get("n_total", 0)
+            logger.info(f"状态已恢复: 现金{self.cash:,.0f}, 持仓{len(self.positions)}只")
+            return True
+        except Exception as e:
+            logger.warning(f"状态恢复失败: {e}")
+            return False
+
+    def reset(self):
+        """重置状态"""
+        self.cash = self.initial_cash
+        self.positions = {}
+        self.trades = []
+        self.market_snapshots = []
+        self.n_winning = 0
+        self.n_total = 0
+        if self.state_file.exists():
+            self.state_file.unlink()
+        logger.info("状态已重置")
+
+    # ============================================================
+    # 回测
+    # ============================================================
+
+    def run_backtest(
+        self,
+        strategy: Strategy,
+        df: pd.DataFrame,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ):
+        """
+        运行回测
+
+        Args:
+            strategy: 策略实例（实现 Strategy 接口）
+            df: 预加载的全市场数据（date, symbol, open, high, low, close, volume 等）
+            start_date: 回测开始日期（可选，从 df 中过滤）
+            end_date: 回测结束日期（可选）
+        """
+        self._strategy = strategy
+        self.reset()
+
+        # 过滤日期范围
+        if start_date:
+            df = df[df["date"] >= start_date].copy()
+        if end_date:
+            df = df[df["date"] <= end_date].copy()
+
+        dates = sorted(df["date"].unique())
+        logger.info(f"回测区间: {dates[0]} ~ {dates[-1]}（{len(dates)}个交易日）")
+
+        for i, date in enumerate(dates):
+            self._on_day(date, df, dates)
+
+            # 每日快照
+            total_value = self._calc_total_value(df, date)
+            snap = MarketSnapshot(
+                date=date,
+                cash=self.cash,
+                total_value=total_value,
+                n_positions=len(self.positions),
+                total_return=(total_value / self.initial_cash - 1) * 100,
+            )
+            self.market_snapshots.append(snap.__dict__)
+
+            if (i + 1) % 20 == 0:
+                logger.info(
+                    f"  {date} ({i+1}/{len(dates)}): "
+                    f"持仓{len(self.positions)}只, "
+                    f"总值{total_value/10000:.1f}万({snap.total_return:+.1f}%)"
+                )
+
+        # 最终报告
+        self._print_summary()
+
+    # ============================================================
+    # 模拟盘
+    # ============================================================
+
+    def run_simulate(
+        self,
+        strategy: Strategy,
+        df: pd.DataFrame,
+        target_date: str,
+    ):
+        """
+        运行单日模拟盘（从状态文件恢复，继续交易）
+
+        Args:
+            strategy: 策略实例
+            df: 预加载数据
+            target_date: 目标日期
+        """
+        self._strategy = strategy
+
+        # 尝试恢复状态
+        if not self.load_state():
+            self.reset()
+
+        self._on_day(target_date, df, dates=[target_date])
+        self.save_state()
+
+        total_value = self._calc_total_value(df, target_date)
+        logger.info(
+            f"模拟完成: {target_date} | "
+            f"现金{self.cash:,.0f} | "
+            f"持仓{len(self.positions)}只 | "
+            f"总值{total_value/10000:.1f}万"
+        )
+
+    # ============================================================
+    # 核心逻辑
+    # ============================================================
+
+    def _on_day(self, date: str, df: pd.DataFrame, dates: Optional[List[str]] = None):
+        """
+        每日处理逻辑：
+          1. 更新持仓信息
+          2. 处理出场
+          3. 处理入场
+        """
+        daily = df[df["date"] == date].copy()
+        if daily.empty:
+            return
+
+        # 计算次日日期（用于成交日期）
+        next_date = None
+        if dates:
+            idx = dates.index(date) if date in dates else -1
+            if 0 <= idx < len(dates) - 1:
+                next_date = dates[idx + 1]
+
+        market = {
+            "date": date,
+            "cash": self.cash,
+            "total_value": self._calc_total_value(df, date),
+            "next_date": next_date,
+        }
+
+        # ── 1. 更新持仓状态 ──
+        for sym, pos in list(self.positions.items()):
+            row = daily[daily["symbol"] == sym]
+            if row.empty:
+                continue
+            r = row.iloc[0]
+            pos["latest_price"] = r.get("close", pos.get("avg_cost", 0))
+            try:
+                self._strategy.on_tick(r, pos, market)
+            except TypeError:
+                self._strategy.on_tick(r, pos)  # 兼容2参数策略
+
+        # ── 2. 处理出场 ──
+        self._process_sells(daily, market)
+
+        # ── 3. 处理入场 ──
+        self._process_buys(df, daily, market)
+
+    def _process_sells(self, daily: pd.DataFrame, market: dict):
+        """处理所有持仓的出场"""
+        for sym in list(self.positions.keys()):
+            row = daily[daily["symbol"] == sym]
+            if row.empty:
+                continue
+            r = row.iloc[0]
+            pos = self.positions[sym]
+
+            should_sell, reason = self._strategy.should_sell(r, pos, market)
+            if not should_sell:
+                continue
+
+            # 卖出价：回测用次日开盘，模拟盘（单日）用当日收盘
+            exec_price = r.get("next_open")
+            if pd.isna(exec_price):
+                exec_price = r.get("close", pos["avg_cost"])
+
+            exec_price = exec_price * (1 - self.slippage_pct)  # 滑点
+
+            # 次日涨跌停检查（用 next_limit_up/down 字段，次日涨停则无法卖出）
+            if r.get("next_limit_up", False) or r.get("next_limit_down", False):
+                continue  # 次日涨跌停，无法卖出，跳过
+
+            # 计算收益
+            pnl = (exec_price - pos["avg_cost"]) * pos["qty"]
+            pnl_pct = (exec_price - pos["avg_cost"]) / pos["avg_cost"] * 100
+
+            # 扣除手续费
+            sell_value = exec_price * pos["qty"] * (1 - self.commission_pct)
+            self.cash += sell_value
+
+            # 记录
+            trade = Trade(
+                date=market.get("next_date", market["date"]),
+                symbol=sym,
+                action="sell",
+                price=exec_price,
+                qty=pos["qty"],
+                pnl=pnl,
+                reason=reason,
+                pnl_pct=pnl_pct,
+            )
+            self.trades.append(trade.__dict__)
+            self.n_total += 1
+            if pnl > 0:
+                self.n_winning += 1
+
+            del self.positions[sym]
+            logger.info(f"  卖出 {sym} @{exec_price:.2f} ({reason}, {pnl_pct:+.1f}%)")
+
+    def _process_buys(self, full_df: pd.DataFrame, daily: pd.DataFrame, market: dict):
+        """处理新入场"""
+        if len(self.positions) >= self.max_positions:
+            return
+
+        # 可用资金
+        avail_cash = self.cash * self.position_size
+        slots = self.max_positions - len(self.positions)
+
+        # 策略选股（传入完整 year df，策略内部过滤到当日）
+        candidates = self._strategy.filter_buy(full_df, market.get("date"))
+        if candidates.empty:
+            return
+
+        scored = self._strategy.score(candidates)
+        if scored.empty:
+            return
+
+        # 按评分排序，取前 slots 只
+        fill_count = 0  # 实际成交数量（用于均分资金）
+        to_buy = []
+
+        for _, row in scored.iterrows():
+            if fill_count >= slots:
+                break
+            sym = row["symbol"]
+            if sym in self.positions:
+                continue
+
+            day_row = daily[daily["symbol"] == sym]
+            if day_row.empty:
+                continue
+            r = day_row.iloc[0]
+
+            # 涨跌停不买
+            if r.get("limit_up", False) or r.get("limit_down", False):
+                continue
+
+            # 买入价：优先次日开盘（回测），其次当日开盘（模拟盘）
+            # 当只有单日数据时 next_open 为 NaN，此时用当日 open 成交
+            exec_price = r.get("next_open")
+            if pd.isna(exec_price):
+                exec_price = r.get("open")
+                logger.debug(f"  [{sym}] next_open 缺失，用 open={exec_price:.2f}")
+
+            exec_price = exec_price * (1 + self.slippage_pct)  # 滑点
+
+            if exec_price <= 0 or avail_cash < exec_price * 100:
+                continue
+
+            to_buy.append((sym, row, r, exec_price))
+            fill_count += 1
+
+        # 均分资金（用实际成交数量）
+        if fill_count == 0:
+            return
+        per_stock_cash = avail_cash / fill_count
+
+        for sym, row, r, exec_price in to_buy:
+            buy_qty = int(per_stock_cash / exec_price)
+            buy_qty = (buy_qty // 100) * 100  # 整手
+            if buy_qty < 100:
+                continue
+
+            cost = buy_qty * exec_price * (1 + self.commission_pct)
+            if cost > self.cash:
+                continue
+
+            self.cash -= cost
+            self.positions[sym] = {
+                "qty": buy_qty,
+                "avg_cost": exec_price,
+                "entry_date": market["date"],
+                "entry_price": exec_price,
+                "latest_price": exec_price,
+                "days_held": 0,
+                "consecutive_bad_days": 0,
+                "extra": {},
+            }
+
+            trade = Trade(
+                date=market.get("next_date", market["date"]),
+                symbol=sym,
+                action="buy",
+                price=exec_price,
+                qty=buy_qty,
+            )
+            self.trades.append(trade.__dict__)
+
+            logger.info(
+                f"  买入 {sym} @{exec_price:.2f} × {buy_qty}股 "
+                f"(评分:{row.get('score', 0):.0f})"
+            )
+
+    def _calc_total_value(self, df: pd.DataFrame, date: str) -> float:
+        """计算当日总资产"""
+        total = self.cash
+        daily = df[df["date"] == date]
+        for sym, pos in self.positions.items():
+            row = daily[daily["symbol"] == sym]
+            if not row.empty:
+                price = row.iloc[0].get("close", pos.get("avg_cost", 0))
+                total += price * pos["qty"]
+            else:
+                total += pos.get("latest_price", pos["avg_cost"]) * pos["qty"]
+        return total
+
+    def _print_summary(self):
+        """打印回测汇总"""
+        closed = [t for t in self.trades if t["action"] == "sell"]
+        total_pnl = sum(t["pnl"] for t in closed)
+        win_rate = self.n_winning / max(self.n_total, 1) * 100
+
+        final_value = self.cash + sum(
+            pos["latest_price"] * pos["qty"]
+            for pos in self.positions.values()
+        )
+        total_return = (final_value / self.initial_cash - 1) * 100
+
+        # 最大回撤
+        values = [s["total_value"] for s in self.market_snapshots]
+        peak = self.initial_cash
+        max_dd = 0
+        for v in values:
+            if v > peak:
+                peak = v
+            dd = (v - peak) / peak * 100
+            if dd < max_dd:
+                max_dd = dd
+
+        print(f"\n{'='*50}")
+        print(f"  回测汇总")
+        print(f"{'='*50}")
+        print(f"  初始资金:  {self.initial_cash:>12,.0f}")
+        print(f"  最终价值:  {final_value:>12,.0f} ({total_return:+.2f}%)")
+        print(f"  最大回撤:  {max_dd:>12.2f}%")
+        print(f"  总交易数:  {self.n_total:>12} 笔")
+        print(f"  胜率:      {win_rate:>12.1f}%")
+        print(f"  累计盈亏:  {total_pnl:>12,.0f}")
+        print(f"  当前持仓:  {len(self.positions):>12} 只")
+        print(f"{'='*50}")
+
+        # 出场原因分布
+        if closed:
+            from collections import Counter
+            reasons = Counter(t.get("reason", "") for t in closed)
+            print(f"\n出场原因分布:")
+            for reason, count in reasons.most_common():
+                print(f"  {reason or 'unknown'}: {count}笔")
