@@ -88,6 +88,54 @@ class MarketSnapshot:
     total_return: float
 
 
+@dataclass
+class CandidateSignal:
+    """候选交易信号"""
+    date: str
+    symbol: str
+    score: float
+    # 技术指标
+    rsi: float = 0.0
+    cci: float = 0.0
+    wr: float = 0.0
+    macd_state: str = ""
+    kdj_state: str = ""
+    boll_state: str = ""
+    # 基本信息
+    industry: str = ""
+    name: str = ""
+    close: float = 0.0
+    limit_up: bool = False
+    limit_down: bool = False
+    # 状态
+    status: str = ""  # OK-买入 / X-未买-原因
+    reason: str = ""  # 未买原因
+
+
+# ── 工具函数 ──────────────────────────────────────────────────────
+def _infer_macd_state(r: pd.Series) -> str:
+    """从行情行推断 MACD 状态"""
+    macd = r.get("macd", 0) or 0
+    macd_sig = r.get("macd_signal", 0) or 0
+    if macd > macd_sig:
+        return "金叉"
+    elif macd > 0:
+        return "红柱"
+    else:
+        return "绿柱"
+
+
+def _infer_kdj_state(r: pd.Series) -> str:
+    """从行情行推断 KDJ 状态"""
+    kdj_j = r.get("kdj_j", 0) or 0
+    if kdj_j > 80:
+        return "高位"
+    elif kdj_j < 20:
+        return "低位"
+    else:
+        return "中性"
+
+
 # ============================================================
 # 策略接口（抽象）
 # ============================================================
@@ -189,6 +237,7 @@ class BaseFramework:
         commission_pct: float = 0.0003,
         slippage_pct: float = 0.0001,
         state_file: str = "/tmp/framework_state.json",
+        market_regime_filter = None,
     ):
         self.initial_cash = initial_cash
         self.max_positions = max_positions
@@ -196,6 +245,7 @@ class BaseFramework:
         self.commission_pct = commission_pct
         self.slippage_pct = slippage_pct
         self.state_file = Path(state_file)
+        self.market_regime_filter = market_regime_filter
 
         # 运行时状态
         self.cash: float = initial_cash
@@ -204,6 +254,7 @@ class BaseFramework:
         self.market_snapshots: List[dict] = []
         self.n_winning: int = 0
         self.n_total: int = 0
+        self.candidates: List[dict] = []  # 候选信号列表
         self._strategy: Optional[Strategy] = None
 
     # ============================================================
@@ -221,6 +272,7 @@ class BaseFramework:
             "trades": self.trades[-100:],  # 只保留最近100条
             "n_winning": self.n_winning,
             "n_total": self.n_total,
+            "candidates": self.candidates[-50:],  # 只保留最近50天的候选
         }
         with open(self.state_file, "w") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
@@ -238,6 +290,7 @@ class BaseFramework:
             self.trades = state.get("trades", [])
             self.n_winning = state.get("n_winning", 0)
             self.n_total = state.get("n_total", 0)
+            self.candidates = state.get("candidates", [])
             logger.info(f"状态已恢复: 现金{self.cash:,.0f}, 持仓{len(self.positions)}只")
             return True
         except Exception as e:
@@ -252,6 +305,7 @@ class BaseFramework:
         self.market_snapshots = []
         self.n_winning = 0
         self.n_total = 0
+        self.candidates = []
         if self.state_file.exists():
             self.state_file.unlink()
         logger.info("状态已重置")
@@ -383,6 +437,14 @@ class BaseFramework:
                 continue
             r = row.iloc[0]
             pos["latest_price"] = r.get("close", pos.get("avg_cost", 0))
+            # 存储技术指标到 extra（供报告使用）
+            if "extra" not in pos:
+                pos["extra"] = {}
+            pos["extra"]["rsi"] = r.get("rsi_14")
+            pos["extra"]["macd_state"] = _infer_macd_state(r)
+            pos["extra"]["kdj_state"] = _infer_kdj_state(r)
+            pos["extra"]["industry"] = r.get("industry", "")
+            pos["extra"]["name"] = r.get("name", "")
             try:
                 self._strategy.on_tick(r, pos, market)
             except TypeError:
@@ -450,12 +512,24 @@ class BaseFramework:
         if len(self.positions) >= self.max_positions:
             return
 
-        # 可用资金
-        avail_cash = self.cash * self.position_size
+        # 查询大盘仓位上限
+        position_limit = 1.0
+        if self.market_regime_filter:
+            regime_info = self.market_regime_filter.get_regime(market["date"])
+            position_limit = regime_info["position_limit"]
+            logger.debug(
+                f"  大盘状态: {regime_info['regime']} | "
+                f"{regime_info['signal']} | "
+                f"仓位上限: {position_limit:.0%} | "
+                f"RSI14: {regime_info['rsi14']:.1f}"
+            )
+
+        # 可用资金 = 现金 × 账户总仓位上限（受 regime 影响）
+        avail_cash = self.cash * position_limit
         slots = self.max_positions - len(self.positions)
 
-        # 策略选股（传入完整 year df，策略内部过滤到当日）
-        candidates = self._strategy.filter_buy(full_df, market.get("date"))
+        # 策略选股
+        candidates = self._strategy.filter_buy(daily, market.get("date"))
         if candidates.empty:
             return
 
@@ -463,54 +537,127 @@ class BaseFramework:
         if scored.empty:
             return
 
-        # 按评分排序，取前 slots 只
-        fill_count = 0  # 实际成交数量（用于均分资金）
-        to_buy = []
-
+        # ---- 第一遍：构建所有候选信号记录 ----
+        today_candidates = []
         for _, row in scored.iterrows():
-            if fill_count >= slots:
-                break
             sym = row["symbol"]
-            if sym in self.positions:
-                continue
-
             day_row = daily[daily["symbol"] == sym]
             if day_row.empty:
                 continue
             r = day_row.iloc[0]
 
-            # 涨跌停不买
-            if r.get("limit_up", False) or r.get("limit_down", False):
-                continue
+            macd = r.get("macd", 0) or 0
+            macd_sig = r.get("macd_signal", 0) or 0
+            macd_prev = macd
+            try:
+                prev_df = full_df[(full_df["symbol"] == sym) & (full_df["date"] < market["date"])]
+                if not prev_df.empty:
+                    macd_prev = prev_df.iloc[-1].get("macd", 0) or 0
+            except:
+                pass
+            macd_cross = (macd > macd_sig) and (macd_prev <= macd_sig)
+            macd_state = "金叉" if macd_cross else ("红柱" if macd > 0 else "绿柱")
 
-            # 买入价：优先次日开盘（回测），其次当日开盘（模拟盘）
-            # 当只有单日数据时 next_open 为 NaN，此时用当日 open 成交
+            kdj_j = r.get("kdj_j", 0) or 0
+            kdj_state = "高位" if kdj_j > 80 else ("低位" if kdj_j < 20 else "中性")
+
+            cand = {
+                "date": market["date"],
+                "symbol": sym,
+                "score": round(float(row.get("score", 0)), 2),
+                "rsi": round(float(r.get("rsi_14", 0) or 0), 1),
+                "cci": round(float(r.get("cci_20", 0) or 0), 1),
+                "macd_state": macd_state,
+                "macd_state": macd_state,
+                "kdj_state": kdj_state,
+                "industry": str(r.get("industry", "")),
+                "name": str(r.get("name", "")),
+                "close": round(float(r.get("close", 0) or 0), 2),
+                "limit_up": bool(r.get("limit_up", False)),
+                "limit_down": bool(r.get("limit_down", False)),
+                "status": "pending",
+                "reason": "",
+            }
+            today_candidates.append(cand)
+
+        # ---- 第二遍：标记未买入原因 ----
+        for cand in today_candidates:
+            sym = cand["symbol"]
+            if sym in self.positions:
+                cand["status"] = "X0 - 已持仓"
+                cand["reason"] = "已持有该股票"
+                continue
+            day_row = daily[daily["symbol"] == sym]
+            if day_row.empty:
+                cand["status"] = "X1 - 数据异常"
+                cand["reason"] = "行情数据缺失"
+                continue
+            r = day_row.iloc[0]
+            if r.get("limit_up", False):
+                cand["status"] = "X2 - 涨停"
+                cand["reason"] = "涨停无法买入"
+                continue
+            if r.get("limit_down", False):
+                cand["status"] = "X3 - 跌停"
+                cand["reason"] = "跌停风险"
+                continue
             exec_price = r.get("next_open")
             if pd.isna(exec_price):
-                exec_price = r.get("open")
-                logger.debug(f"  [{sym}] next_open 缺失，用 open={exec_price:.2f}")
-
-            exec_price = exec_price * (1 + self.slippage_pct)  # 滑点
-
+                exec_price = r.get("open", 0) or 0
+            exec_price = exec_price * (1 + self.slippage_pct)
+            if slots <= 0:
+                cand["status"] = "X4 - 已满仓"
+                cand["reason"] = f"仓位已满({len(self.positions)}/{self.max_positions})"
+                continue
             if exec_price <= 0 or avail_cash < exec_price * 100:
+                cand["status"] = "X5 - 资金不足"
+                cand["reason"] = "可用资金不足"
                 continue
 
-            to_buy.append((sym, row, r, exec_price))
-            fill_count += 1
+        # ---- 第三遍：执行买入 ----
+        to_buy = []
+        buy_count = 0
+        for cand in today_candidates:
+            if cand["status"] != "pending":
+                continue
+            sym = cand["symbol"]
+            if buy_count >= slots:
+                cand["status"] = "X4 - 已满仓"
+                cand["reason"] = f"仓位已满({len(self.positions)}/{self.max_positions})"
+                continue
+            day_row = daily[daily["symbol"] == sym]
+            if day_row.empty:
+                continue
+            r = day_row.iloc[0]
+            exec_price = r.get("next_open")
+            if pd.isna(exec_price):
+                exec_price = r.get("open", 0) or 0
+            exec_price = exec_price * (1 + self.slippage_pct)
+            to_buy.append((sym, cand, r, exec_price))
+            buy_count += 1
 
-        # 均分资金（用实际成交数量）
-        if fill_count == 0:
+        if not to_buy:
+            self.candidates = [c for c in self.candidates if c["date"] != market["date"]]
+            self.candidates.extend(today_candidates)
             return
-        per_stock_cash = avail_cash / fill_count
 
-        for sym, row, r, exec_price in to_buy:
+        per_stock_cash = min(
+            avail_cash / len(to_buy),
+            self.cash * self.position_size * position_limit
+        )
+
+        for sym, cand, r, exec_price in to_buy:
             buy_qty = int(per_stock_cash / exec_price)
-            buy_qty = (buy_qty // 100) * 100  # 整手
+            buy_qty = (buy_qty // 100) * 100
             if buy_qty < 100:
+                cand["status"] = "X5 - 资金不足"
+                cand["reason"] = f"资金不足(买入{buy_qty}股<1手)"
                 continue
 
             cost = buy_qty * exec_price * (1 + self.commission_pct)
             if cost > self.cash:
+                cand["status"] = "X5 - 资金不足"
+                cand["reason"] = "资金不足"
                 continue
 
             self.cash -= cost
@@ -524,6 +671,10 @@ class BaseFramework:
                 "consecutive_bad_days": 0,
                 "extra": {},
             }
+            for c in today_candidates:
+                if c["symbol"] == sym:
+                    c["status"] = "OK - 买入"
+                    break
 
             trade = Trade(
                 date=market.get("next_date", market["date"]),
@@ -533,11 +684,14 @@ class BaseFramework:
                 qty=buy_qty,
             )
             self.trades.append(trade.__dict__)
-
             logger.info(
-                f"  买入 {sym} @{exec_price:.2f} × {buy_qty}股 "
-                f"(评分:{row.get('score', 0):.0f})"
+                f"  买入 {sym} @{exec_price:.2f} x {buy_qty}股 "
+                f"(评分:{cand.get('score', 0):.0f})"
             )
+
+        # ---- 合并候选 ----
+        self.candidates = [c for c in self.candidates if c["date"] != market["date"]]
+        self.candidates.extend(today_candidates)
 
     def _calc_total_value(self, df: pd.DataFrame, date: str) -> float:
         """计算当日总资产"""
