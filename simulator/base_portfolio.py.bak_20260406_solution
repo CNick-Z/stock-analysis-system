@@ -145,39 +145,6 @@ class BasePortfolio:
             if hasattr(self.strategy, 'on_tick'):
                 self.strategy.on_tick(row, pos)
 
-            # ========== 改动5: 分批建仓 - 执行加仓 ==========
-            # 条件：awaiting_add=True + 有确认信号 + 现金充足
-            if pos.get('awaiting_add', False) and self.cash > 0:
-                buy_price_add = row.get('next_open') or row.get('close')
-                if buy_price_add and buy_price_add > 0:
-                    # 计算剩余目标仓位
-                    target_pct = pos.get('target_pct', 0.02)
-                    first_qty = pos.get('first_buy_qty', 0)
-                    first_price = pos.get('first_buy_price', 0)
-                    if first_qty > 0 and first_price > 0:
-                        # 目标股数 vs 当前股数
-                        row_dict = row.to_dict() if hasattr(row, 'to_dict') else dict(row)
-                        add_confirmed = (
-                            row_dict.get('signal_type', '') in ('W4_BUY', 'W2_BUY', 'C_BUY') and
-                            row_dict.get('signal_status', '') in ('CONFIRMED', 'ALERT')
-                        )
-                        if add_confirmed:
-                            # 首仓已开（qty >= first_qty），且有确认信号 → 加仓
-                            target_qty = int((target_pct * self.cash) / buy_price_add)
-                            target_qty = (target_qty // 100) * 100
-                            add_qty = target_qty - pos['qty']
-                            if add_qty >= 100 and add_qty * buy_price_add <= self.cash:
-                                self.cash -= add_qty * buy_price_add
-                                pos['qty'] += add_qty
-                                # 更新 avg_cost
-                                total_cost = first_qty * first_price + add_qty * buy_price_add
-                                pos['avg_cost'] = round(total_cost / pos['qty'], 2)
-                                pos['awaiting_add'] = False
-                                logger.debug(
-                                    f"[{self.name}] 加仓 {sym} x{add_qty} @{buy_price_add:.2f} "
-                                    f"(目标仓位{target_pct:.0%}, 现金余额: {self.cash:.2f})"
-                                )
-
             # 判断是否卖出
             should_sell, reason = self.strategy.should_sell(row, pos, market)
 
@@ -303,26 +270,7 @@ class BasePortfolio:
                     logger.debug(f"[{self.name}] {date} {sym} 涨停板，跳过买入")
                     continue
 
-            # ========== 改动4: 仓位分级（根据信号置信度调整仓位） ==========
-            entry_signal = row.get('signal_type', 'W2_BUY')
-            confidence = row.get('total_score', 0)
-
-            # 仓位分级
-            if confidence >= 70:
-                position_pct = 0.05   # S级：5%仓位
-            elif confidence >= 60:
-                position_pct = 0.03   # A级：3%仓位
-            else:
-                position_pct = 0.02   # B级：2%仓位
-
-            # C_BUY（一买）特殊：不超过2%
-            if entry_signal == 'C_BUY':
-                position_pct = min(position_pct, 0.02)
-
-            # 使用分级后的仓位计算实际买入金额
-            adjusted_cash = available_cash * position_pct / max(len(top_n), 1)
-
-            qty = int(adjusted_cash / buy_price)
+            qty = int(per_stock_cash / buy_price)
             qty = (qty // 100) * 100  # 整手（A股最小100股）
             if qty < 100:
                 continue  # 买不了1手，跳过
@@ -343,12 +291,12 @@ class BasePortfolio:
                 'action': 'buy',
                 'price': round(buy_price, 2),
                 'qty': qty,
-                'reason': f"SCORE={row.get('score', 0):.4f}|CONFIDENCE={confidence:.0f}|POS={position_pct:.0%}",
+                'reason': f"SCORE={row.get('score', 0):.4f}",
                 'cost': round(cost, 2),
                 'entry_sma20_le_sma55': entry_sma20_le_sma55,
             }
             buy_trades.append(trade)
-            self._open_position(sym, row, qty, buy_price, date, entry_sma20_le_sma55, position_pct)
+            self._open_position(sym, row, qty, buy_price, date, entry_sma20_le_sma55)
 
         return buy_trades
 
@@ -360,7 +308,6 @@ class BasePortfolio:
         price: float,
         date: str,
         entry_sma20_le_sma55: bool,
-        position_pct: float = 0.02,
     ):
         """
         记录新持仓
@@ -372,13 +319,10 @@ class BasePortfolio:
             price: 买入价格
             date: 买入日期
             entry_sma20_le_sma55: 入场时 sma20 <= sma55（用于 MA死叉出场）
-            position_pct: 目标仓位比例（用于分批建仓）
         """
         cost = qty * price
         self.cash -= cost
 
-        # ========== 改动5: 分批建仓标记 ==========
-        # 记录加仓标记：首仓完成后，等待确认信号加满到 target_pct
         self.positions[symbol] = {
             'qty': qty,
             'avg_cost': price,
@@ -391,13 +335,6 @@ class BasePortfolio:
             'money_flow_trend': row.get('money_flow_trend', None),
             # 入场买点类型（用于分类出场逻辑）
             'entry_signal': row.get('signal_type', ''),
-            # 分批建仓追踪
-            'awaiting_add': True,          # 等待确认后加仓
-            'target_pct': position_pct,    # 目标仓位
-            'first_buy_price': price,      # 首仓价格（用于判断是否确认）
-            'first_buy_qty': qty,          # 首仓数量
-            # 持仓期间最高价追踪（用于移动止盈）
-            'high_since_entry': price,
         }
         logger.debug(
             f"[{self.name}] 买入 {symbol} x{qty} @{price:.2f} "

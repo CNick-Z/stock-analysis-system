@@ -1,0 +1,748 @@
+# strategies/wavechan/v3_l2_cache/wavechan_strategy.py
+# =============================================================
+"""
+WaveChan V3 策略 - 统一框架适配层
+=============================================================
+
+实现 BasePortfolio 所需的 3 个标准接口：
+  - filter_buy(daily_df)  → 候选股票
+  - score(candidates)     → 评分排序
+  - should_sell(row, pos, market) → 出场判断（含连续3天出场逻辑）
+
+入场信号：W2_BUY / W4_BUY / C_BUY（has_signal=True, total_score >= THRESHOLD）
+出场逻辑：止损 / 止盈 / 时间止损 / 波浪信号出场 / 连续3天 wave_trend==down
+"""
+# =============================================================
+
+import os
+import sys
+import logging
+from pathlib import Path
+from typing import Tuple, List, Any, Dict, Optional
+from dataclasses import dataclass, field
+from collections import defaultdict
+
+import pandas as pd
+import numpy as np
+
+PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from strategies.wavechan.v3_l2_cache.strategy import (
+    WaveEngine, SymbolWaveCache, WaveCounterV3, BiRecord,
+    aggregate_daily_to_weekly, WaveSnapshot,
+)
+
+logger = logging.getLogger(__name__)
+
+# ================================================================
+# W1 确认状态跟踪
+# ================================================================
+
+@dataclass
+class W1TrackingState:
+    """跟踪C_BUY入场后的W1确认状态"""
+    entry_date: str
+    entry_price: float
+    # c_low: float  # C浪低点（已废弃，未使用）
+    confirmed: bool = False
+    failed: bool = False
+    confirm_deadline: str = None  # 5个交易日后
+    daily_lows: list = field(default_factory=list)  # 记录每日最低价
+
+# ================================================================
+# 配置
+# ================================================================
+L2_CACHE_DIR = "/data/warehouse/wavechan/wavechan_cache"
+THRESHOLD = 15          # 买入阈值（L1 cache: has_signal行 mean=29.6/median=25, THRESHOLD=50时仅12.7%通过导致0交易，调至15通过93.8%）
+STOP_LOSS_PCT = 0.08     # 8% 止损
+TAKE_PROFIT_PCT = 0.20  # 20% 止盈
+MAX_HOLD_DAYS = 20      # 最大持仓天数
+MAX_POSITIONS = 5        # 最大持仓数
+
+
+# ================================================================
+# WaveChanStrategy - 统一框架适配层
+# ================================================================
+
+class WaveChanStrategy:
+    """
+    WaveChan V3 策略（统一框架版）
+
+    实现 BasePortfolio 所需的 3 个标准接口：
+      filter_buy(daily_df) → 返回有买入信号的候选股票 DataFrame
+      score(candidates)   → 返回评分排序后的 DataFrame（含 score 列）
+      should_sell(row, pos, market) → (是否出场, 出场原因)
+
+    出场优先级：止损 > 止盈 > 时间止损 > 波浪信号出场 > 连续3天空头
+    """
+
+    def __init__(
+        self,
+        l2_cache_dir: str = L2_CACHE_DIR,
+        threshold: int = THRESHOLD,
+        stop_loss_pct: float = 0.05,   # 5%止损（旧V3盈利参数）
+        take_profit_pct: float = TAKE_PROFIT_PCT,
+        max_hold_days: int = MAX_HOLD_DAYS,
+        max_positions: int = MAX_POSITIONS,
+        position_size: float = 0.20,
+        use_weekly_filter: bool = True,  # 是否启用周线过滤
+        stock_list: list = None,        # 限定股票列表（None=全部）
+    ):
+        self.l2_cache_dir = l2_cache_dir
+        self.threshold = threshold
+        self.stop_loss_pct = stop_loss_pct  # 5%（旧V3参数）
+        self.take_profit_pct = take_profit_pct
+        self.max_hold_days = max_hold_days
+        self.max_positions = max_positions
+        self.position_size = position_size
+        self.use_weekly_filter = use_weekly_filter
+        self._stock_list = set(stock_list) if stock_list else None
+
+        # 引擎缓存（symbol → WaveEngine）
+        self._engines: dict = {}
+
+        # 周线方向缓存（symbol → {date: direction}）
+        # 在 prepare() 时预计算，避免在 filter_buy 中重复计算
+        self._weekly_dir_cache: Dict[str, Dict[str, str]] = defaultdict(dict)
+        # 周线波浪阶段缓存（symbol → {date: impulse_state}）
+        # impulse_state: W3_in_progress | W5_in_progress | W4_in_progress | W1_or_W2 | W5_done
+        self._weekly_state_cache: Dict[str, Dict[str, str]] = defaultdict(dict)
+        self._weekly_counter_cache: Dict[str, WaveCounterV3] = {}
+
+        # 策略数据接口
+        self.name = "WaveChanStrategy"
+        # 波浪缠论信号列，需要从 L2 cache 加载
+        self.REQUIRED_COLUMNS = [
+            'has_signal', 'total_score', 'signal_type', 'signal_status',
+            'wave_trend', 'wave_state', 'stop_loss',
+        ]
+
+    def prepare(self, dates: list, loader):
+        """
+        加载波浪缠论 L2 cache 数据，并预计算周线方向
+
+        Args:
+            dates: 交易日列表 [start_date, ..., end_date]
+            loader: DataFrame（当年完整数据，用于计算周线方向）
+        """
+        self._extra_data = {}
+        from utils.data_loader import load_wavechan_signals
+        if len(dates) < 2:
+            dates = [dates[0], dates[0]]
+        self._wave_cache = load_wavechan_signals(dates[0], dates[-1])
+
+        # ── 保存完整历史数据并预计算周线方向（向量化，O(n)）─────────────
+        if loader is not None and hasattr(loader, 'empty') and not loader.empty:
+            self._full_df = loader.copy()
+        else:
+            self._full_df = pd.DataFrame()
+
+        # ── 向量化预计算所有 symbol-date 的周线方向 ────────────────────
+        self._precompute_weekly_dirs_vectorized(dates)
+
+        return self._wave_cache
+
+    def _precompute_weekly_dirs_vectorized(self, dates: list):
+        """
+        向量化预计算所有 symbol-date 的周线方向
+
+        使用 20 日滚动窗口：
+          bullish_count = sum(wave_state in {w3_formed, w4_formed}) over rolling 20 days
+          correction_count = sum(wave_state in {w2_formed, w4_in_progress}) over rolling 20 days
+          weekly_dir = 'bullish' if bullish_count > correction_count else 'neutral'
+
+        存入 self._weekly_dir_cache[symbol][date_str] = direction
+        """
+        if self._full_df.empty or 'wave_state' not in self._full_df.columns:
+            return
+
+        df = self._full_df.copy()
+        # 确保按 symbol-date 排序
+        df = df.sort_values(['symbol', 'date']).reset_index(drop=True)
+
+        # 为每个 symbol 计算 rolling counts
+        # bullish = w3_formed or w4_formed
+        df['_is_bullish'] = df['wave_state'].isin(['w3_formed', 'w4_formed']).astype(int)
+        # correction = w2_formed or w4_in_progress
+        df['_is_correction'] = df['wave_state'].isin(['w2_formed', 'w4_in_progress']).astype(int)
+
+        # 按 symbol 分组，滚动 20 日
+        n = 20
+        df['_bullish_sum'] = df.groupby('symbol')['_is_bullish'].transform(
+            lambda x: x.rolling(window=n, min_periods=10).sum()
+        )
+        df['_correction_sum'] = df.groupby('symbol')['_is_correction'].transform(
+            lambda x: x.rolling(window=n, min_periods=10).sum()
+        )
+        df['_weekly_dir'] = np.where(
+            df['_bullish_sum'] > df['_correction_sum'],
+            'bullish',
+            'neutral'
+        )
+
+        # 存入缓存
+        self._weekly_dir_cache.clear()
+        for sym, grp in df.groupby('symbol'):
+            self._weekly_dir_cache[sym] = dict(zip(grp['date'].astype(str), grp['_weekly_dir']))
+
+        logger.info(f"[WeeklyFilter] 周线方向预计算完成: {len(self._weekly_dir_cache)} 只股票")
+
+        # ── 同时预计算周线波浪阶段 ────────────────────────────────────
+        self._weekly_state_cache.clear()
+        for sym, grp in df.groupby('symbol'):
+            # 用当日 wave_state 作为周线波浪阶段的代理
+            state_map = {}
+            for _, row in grp.iterrows():
+                d = str(row['date'])
+                ws = str(row.get('wave_state', 'initial'))
+                state_map[d] = self._wave_state_to_impulse_state(ws)
+            self._weekly_state_cache[sym] = state_map
+
+        logger.info(f"[WeeklyFilter] 周线波浪阶段预计算完成: {len(self._weekly_state_cache)} 只股票")
+
+    # ------------------------------------------------------------------
+    # 周线波浪阶段推断
+    # ------------------------------------------------------------------
+
+    # 推动浪（冲动）阶段：允许 BUY
+    ALLOWED_WAVE_STATES = {'W3_in_progress', 'W5_in_progress'}
+
+    def _wave_state_to_impulse_state(self, wave_state: str) -> str:
+        """
+        将 wave_state 映射为周线波浪阶段（impulse_state）
+
+        逻辑（基于波浪缠论 wave缠论 状态约定）：
+          w3_formed  → W3_in_progress（W3完成，W4调整开始前，趋势延续）
+          w4_formed  → W5_in_progress（W4完成，W5推动浪进行中或即将开始）
+          w2_formed  → W4_in_progress（W2完成，W4调整进行中）
+          w4_in_progress → W4_in_progress（W4调整进行中）
+          w5_formed  → W5_done（5浪完成，新周期酝酿）
+          其他/initial → W1_or_W2（早期阶段，趋势不明）
+
+        BUY 允许状态：W3_in_progress、W5_in_progress（推动/冲动浪）
+        BUY 拒绝状态：W4_in_progress（调整浪，不追高）、W1_or_W2（趋势不明）、W5_done（新周期）
+        """
+        mapping = {
+            'w3_formed':         'W3_in_progress',
+            'w4_formed':         'W5_in_progress',
+            'w2_formed':         'W4_in_progress',
+            'w4_in_progress':   'W4_in_progress',
+            'w5_formed':         'W5_done',
+        }
+        return mapping.get(str(wave_state), 'W1_or_W2')
+
+    def get_weekly_impulse_state(self, symbol: str, date_str: str) -> str:
+        """
+        获取某只股票在指定日期的周线波浪阶段
+
+        优先使用预计算缓存，缓存未命中时实时计算。
+
+        Returns:
+            'W3_in_progress'  → W3 推动浪进行中，允许 BUY
+            'W5_in_progress'  → W5 推动浪进行中，允许 BUY
+            'W4_in_progress'  → W4 调整浪，拒绝 BUY（不追高）
+            'W1_or_W2'        → 早期阶段，趋势不明，拒绝 BUY
+            'W5_done'         → 5浪完成，新周期酝酿，拒绝 BUY
+        """
+        date_str = str(date_str)
+        if symbol in self._weekly_state_cache and date_str in self._weekly_state_cache[symbol]:
+            return self._weekly_state_cache[symbol][date_str]
+        # 实时计算
+        ws = 'initial'
+        if hasattr(self, '_full_df') and not self._full_df.empty:
+            row = self._full_df[
+                (self._full_df['symbol'] == symbol) &
+                (self._full_df['date'].astype(str) == date_str)
+            ]
+            if not row.empty:
+                ws = str(row.iloc[0].get('wave_state', 'initial'))
+        state = self._wave_state_to_impulse_state(ws)
+        # 回填缓存
+        self._weekly_state_cache[symbol][date_str] = state
+        return state
+
+    # ------------------------------------------------------------------
+    # 框架接口
+    # ------------------------------------------------------------------
+
+    def filter_buy(self, daily_df: pd.DataFrame, date: str = None) -> pd.DataFrame:
+        """
+        过滤候选股票（含周线过滤）
+
+        Args:
+            daily_df: 当日候选股票数据（包含 has_signal/signal_type/wave_trend 等列）
+            date: 当前日期（框架传入）
+
+        条件（优先级）：
+          1. has_signal == True
+          2. signal_type in (W2_BUY, W4_BUY, C_BUY)
+          3. total_score >= self.threshold
+          4. wave_trend in (long, neutral, '')  # 日线方向
+          5. signal_status == 'confirmed'
+          6. 【周线过滤】周线 bullish（W1/W3/W4 调整完成）OR（周线 neutral AND 日线上升趋势）
+
+        周线过滤逻辑（解决"接飞刀"问题）：
+          - bullish: w1_formed / w3_formed / w4_formed（调整完成，趋势延续或新趋势）→ 接受所有买入
+          - neutral: w2_formed（W2调整中）/ w4_in_progress（W4进行中）/ w5_formed / initial
+                    → 只有日线上升趋势 (wave_trend='long') 才接受买入
+          - 效果: 下跌趋势中（周线W2/W4调整）不再"接飞刀"
+        """
+        if daily_df.empty:
+            return pd.DataFrame()
+
+        df = daily_df.copy()
+        current_date = date or (df['date'].iloc[0] if 'date' in df.columns else None)
+
+        # ── Step 1: 日线基础过滤 ───────────────────────────────────────
+        _false = pd.Series(False, index=df.index)
+        _zero = pd.Series(0, index=df.index)
+        _empty = pd.Series('', index=df.columns)
+        has_signal = df['has_signal'] if 'has_signal' in df.columns else _false
+        total_score = df['total_score'] if 'total_score' in df.columns else _zero
+        wave_trend = df['wave_trend'] if 'wave_trend' in df.columns else _empty
+
+        mask = (
+            has_signal.eq(True) &
+            total_score.ge(self.threshold) &
+            wave_trend.isin(['long', 'neutral', ''])
+        )
+
+        buy_signals = {'W2_BUY', 'W4_BUY', 'C_BUY', 'W4_BUY_ALERT', 'W4_BUY_CONFIRMED'}
+        if 'signal_type' in df.columns:
+            mask &= df['signal_type'].isin(buy_signals)
+
+        if 'signal_status' in df.columns:
+            mask &= df['signal_status'].eq('confirmed')
+
+        candidates = df[mask].copy()
+        if candidates.empty:
+            return candidates
+
+        # ── Step 1.5: 股票列表过滤 ─────────────────────────────────────
+        if self._stock_list is not None:
+            candidates = candidates[candidates['symbol'].isin(self._stock_list)].copy()
+            if candidates.empty:
+                return candidates
+
+        # ── Step 2: 周线过滤 ───────────────────────────────────────────
+        if self.use_weekly_filter:
+            weekly_mask = pd.Series(True, index=candidates.index)
+
+            for idx, row in candidates.iterrows():
+                sym = row.get('symbol', '')
+                row_date = str(row.get('date', current_date or ''))
+
+                weekly_dir = self._get_weekly_direction(sym, row_date)
+                daily_dir = str(row.get('wave_trend', 'neutral'))
+
+                # 周线 bullish（w1/w3/w4完成）→ 接受所有买入
+                # 周线 neutral（W2调整/W4进行中/W5/无趋势）→ 只有日线上升趋势才买
+                if weekly_dir == 'neutral':
+                    if daily_dir != 'long':
+                        weekly_mask[idx] = False
+                        logger.debug(f"[WeeklyFilter] {sym}@{row_date} 拒绝: 周线={weekly_dir}, 日线={daily_dir}")
+                # weekly_dir == 'bullish': 全部接受（默认 True）
+
+            filtered = candidates[weekly_mask].copy()
+            n_rejected = len(candidates) - len(filtered)
+            if n_rejected > 0:
+                logger.info(f"[WeeklyFilter] {current_date} 周线过滤拒绝 {n_rejected}/{len(candidates)} 个候选")
+        else:
+            # 不启用周线过滤（仅用日线条件）
+            logger.debug(f"[WeeklyFilter] DISABLED - 跳过周线过滤")
+            filtered = candidates
+
+        # ── Step 3: 周线波浪数过滤（激进版）──────────────────────────────
+        # 只在 W3/W5 冲动（推动）浪中允许 BUY
+        # W4 调整浪 / 早期 W1/W2 / W5 完成 → 全部拒绝
+        if not filtered.empty:
+            wave_state_mask = pd.Series(True, index=filtered.index)
+            for idx, row in filtered.iterrows():
+                sym = str(row.get('symbol', ''))
+                row_date = str(row.get('date', current_date or ''))
+                weekly_state = self.get_weekly_impulse_state(sym, row_date)
+                if weekly_state not in self.ALLOWED_WAVE_STATES:
+                    wave_state_mask[idx] = False
+                    logger.debug(f"[WaveNumFilter] {sym}@{row_date} 拒绝: 周线波浪={weekly_state}")
+
+            filtered = filtered[wave_state_mask].copy()
+            n_rejected_state = (~wave_state_mask).sum()
+            if n_rejected_state > 0:
+                logger.info(f"[WaveNumFilter] {current_date} 波浪数过滤拒绝 {n_rejected_state} 个候选")
+
+        return filtered
+
+    def _get_weekly_direction(self, symbol: str, date_str: str) -> str:
+        """
+        获取某只股票在指定日期的周线方向
+
+        使用过去4周的日线 wave_state 众数作为周线状态代理：
+          - bullish: 过去4周内，驱动浪（w3/w4_formed）天数 > 调整浪（w2/w4_in_progress）天数
+          - neutral: 调整浪主导或其他情况
+
+        解决了"接飞刀"问题：下跌趋势中（周线W2/W4调整）日线反弹不买。
+
+        Returns:
+            'bullish': 周线处于 W1/W3 驱动浪（整体上升）
+            'neutral': 周线处于 W2/W4 调整或无趋势
+        """
+        date_str = str(date_str)
+
+        # 缓存命中
+        if symbol in self._weekly_dir_cache and date_str in self._weekly_dir_cache[symbol]:
+            return self._weekly_dir_cache[symbol][date_str]
+
+        # 缓存未命中：实时计算
+        direction = self._compute_weekly_dir_from_daily(symbol, date_str)
+
+        # 回填缓存
+        self._weekly_dir_cache[symbol][date_str] = direction
+        return direction
+
+    def _compute_weekly_dir_from_daily(self, symbol: str, date_str: str) -> str:
+        """
+        基于过去4周日线 wave_state 统计判断周线方向
+
+        逻辑：
+          - 驱动浪主导（w3/w4_formed 天数 > w2/w4_in_progress 天数）→ bullish
+          - 调整浪主导或无趋势 → neutral
+
+        由于波浪是分形的，日线的 w3/w4_formed 通常对应周线的 W1/W3 驱动浪。
+        """
+        if not hasattr(self, '_full_df') or self._full_df is None or self._full_df.empty:
+            return 'neutral'
+
+        sym_df = self._full_df[self._full_df['symbol'] == symbol].copy()
+        if sym_df.empty:
+            return 'neutral'
+
+        sym_df['dt'] = pd.to_datetime(sym_df['date'])
+        cutoff = pd.to_datetime(date_str)
+
+        # 取过去4周（约20个交易日）的数据
+        four_weeks_ago = cutoff - pd.Timedelta(days=28)
+        hist = sym_df[(sym_df['dt'] >= four_weeks_ago) & (sym_df['dt'] <= cutoff)].sort_values('dt')
+
+        if len(hist) < 10:
+            return 'neutral'
+
+        wave_state = hist.get('wave_state', pd.Series(dtype=str))
+        if wave_state.empty or wave_state.isna().all():
+            return 'neutral'
+
+        # 驱动浪天数
+        bullish_count = int((wave_state.isin(['w3_formed', 'w4_formed'])).sum())
+        # 调整浪天数
+        correction_count = int((wave_state.isin(['w2_formed', 'w4_in_progress'])).sum())
+
+        # 调整浪主导：neutral（接飞刀风险高）
+        if correction_count > bullish_count:
+            return 'neutral'
+        # 驱动浪主导或均衡：bullish
+        return 'bullish'
+
+    def _aggregate_to_weekly(self, daily_df: pd.DataFrame) -> list:
+        """
+        将日线 DataFrame 聚合为周线 OHLCV 列表
+        """
+        if daily_df.empty or len(daily_df) < 5:
+            return []
+
+        df = daily_df.copy()
+        df['dt'] = pd.to_datetime(df['date'])
+        df['year_week'] = df['dt'].dt.isocalendar().year.astype(str) + '_' + df['dt'].dt.isocalendar().week.astype(str).str.zfill(2)
+
+        weekly = df.groupby('year_week').agg({
+            'date': 'last',
+            'open': 'first',
+            'high': 'max',
+            'low': 'min',
+            'close': 'last',
+            'volume': 'sum',
+            'symbol': 'first',
+        }).reset_index(drop=True)
+
+        return weekly.to_dict('records')
+
+    def _weekly_bar_to_bi(self, wb: dict, seq: int):
+        """
+        将一根周线 OHLCV bar 转换为一个 BiRecord（周线笔）
+        如果与上一根bar方向相反或幅度太小，返回 None
+        """
+        if wb.get('close') is None or wb.get('open') is None:
+            return None
+
+        direction = 'up' if wb['close'] >= wb['open'] else 'down'
+
+        return BiRecord(
+            seq=seq,
+            direction=direction,
+            start_price=float(wb['open']),
+            end_price=float(wb['close']),
+            start_date=str(wb['date'])[:10] if wb.get('date') else '',
+            end_date=str(wb['date'])[:10] if wb.get('date') else '',
+            volume=float(wb.get('volume', 0)),
+        )
+
+    def _calc_trading_days(self, start_date: str, n: int) -> str:
+        """
+        计算 n 个交易日后的日期字符串
+        简化实现：每个日历日算一个（交易日概念由回测框架保证）
+        """
+        from datetime import datetime, timedelta
+        try:
+            start = pd.to_datetime(start_date)
+            # TODO: 实盘需替换为真实交易日历（考虑节假日）
+            end = start + timedelta(days=n * 2)
+            return end.strftime('%Y-%m-%d')
+        except:
+            return start_date
+
+    def _check_w1_failure(self, date: str, price: float, pos: dict) -> tuple:
+        """检查W1是否失败，返回 (failed, reason)"""
+        if 'w1_state' not in pos:
+            return False, None
+
+        w1 = pos['w1_state']
+        if w1.confirmed or w1.failed:
+            # 价格跌破C浪低点 = C_BUY失败（C浪还在延伸）
+            if price < w1.c_low:
+                w1.failed = True
+                return True, f"C_BUY_FAILED(broke_c_low {w1.c_low:.2f})"
+            if w1.confirmed and self.wave_trend == 'down':
+                # W1确认后，趋势转空仍然要止损
+                w1.failed = True
+                return True, "W1_TREND_BREAK"
+            return w1.failed, "W1_CONFIRMED" if w1.confirmed else "W1_FAILED"
+
+        # 记录每日低点
+        w1.daily_lows.append(price)
+
+        # 检查是否超过确认deadline
+        if date > w1.confirm_deadline:
+            # 5天后：不创新低 → W1确认
+            entry_low = min(w1.daily_lows)
+            if entry_low > 0 and price >= entry_low * 0.95:  # 不创新低（5%容差）
+                w1.confirmed = True
+                logger.debug(f"[W1] W1确认: date={date}, entry_low={entry_low:.2f}")
+                return False, "W1_CONFIRMED"
+            else:
+                w1.failed = True
+                logger.debug(f"[W1] W1失败: date={date}, price={price:.2f}, entry_low={entry_low:.2f}")
+                return True, "W1_FAILED"
+
+        # 检查趋势破坏（立即失败）
+        wave_trend = pos.get('_last_wave_trend', '')
+        if wave_trend == 'down':
+            w1.failed = True
+            logger.debug(f"[W1] W1失败(趋势破坏): date={date}")
+            return True, "W1_FAILED"
+
+        return False, None
+
+    def score(self, candidates: pd.DataFrame) -> pd.DataFrame:
+        """
+        评分排序
+
+        直接使用 total_score 作为评分，降序排列
+        """
+        if candidates.empty:
+            return pd.DataFrame()
+
+        df = candidates.copy()
+        df['score'] = df.get('total_score', 0)
+        df = df.sort_values('score', ascending=False)
+        return df
+
+    def should_sell(
+        self,
+        row: pd.Series,
+        pos: dict,
+        market: dict = None
+    ) -> Tuple[bool, str]:
+        """
+        判断是否出场（分类出场逻辑）
+
+        出场条件（优先级）：
+          1. 止损：next_open < 入场价 * (1 - stop_loss)
+          2. 止盈：next_open > 入场价 * (1 + take_profit)
+          3. 时间止损（分类）：W2_BUY=35天 / W4_BUY=25天 / C_BUY=15天
+          4. 波浪出场：signal in (W5_SELL, SELL)
+          5. W5失败浪出场（W4 BUY专用）：wave_state='w5_formed' + wave_trend='down'
+          6. B浪见顶出场（C BUY专用）：wave_state='w5_formed'
+          7. 波浪空头出场（W2/W4 BUY）：wave_trend='down' + consecutive_bad >= 1
+
+        Args:
+            row: 当日行情（含 next_open, close, wave_trend, wave_state, signal_type 等）
+            pos: 持仓信息（avg_cost, entry_date, entry_signal, consecutive_bad_days, days_held 等）
+
+        Returns:
+            (should_sell: bool, reason: str)
+        """
+        row_dict = row.to_dict() if hasattr(row, 'to_dict') else dict(row)
+
+        entry_price = pos.get('avg_cost', 0)
+        if entry_price <= 0:
+            return False, "INVALID_POSITION"
+
+        # 实际卖出价格
+        next_open = row_dict.get('next_open')
+        if pd.isna(next_open) or next_open <= 0:
+            next_open = row_dict.get('close', entry_price)
+
+        # ---------- 1. 止损（优先用信号自带的W2动态止损位，其次用固定百分比） ----------
+        dyn_stop = row_dict.get('stop_loss', 0)
+        if dyn_stop and dyn_stop > 0:
+            stop_price = dyn_stop
+            stop_label = f"W2止损@{dyn_stop:.2f}"
+        else:
+            stop_price = entry_price * (1 - self.stop_loss_pct)
+            stop_label = f"固定止损@{stop_price:.2f}"
+
+        if next_open < stop_price:
+            return True, f"STOP_LOSS @{next_open:.2f}({stop_label})"
+
+        # ---------- 1b. W1 失败检查（C_BUY 专用） ----------
+        # C_BUY 入场后，5天内不创新低则W1确认（继续持有）；趋势破坏则立即失败
+        current_date = row_dict.get('date', '')
+        w1_failed, w1_reason = self._check_w1_failure(current_date, next_open, pos)
+        if w1_failed:
+            return True, f"W1_EXIT({w1_reason})"
+
+        # ---------- 2. 止盈（固定20%） ----------
+        profit_price = entry_price * (1 + self.take_profit_pct)
+        if next_open >= profit_price:
+            return True, f"TAKE_PROFIT @{next_open:.2f}"
+
+        # ---------- 2b. 移动止盈（追踪高点回撤8%） ----------
+        # 当已有持仓高点且超过20%目标时，启动移动止盈
+        high_since_entry = pos.get('high_since_entry', 0)
+        current_close = row_dict.get('close', next_open)
+        if high_since_entry > 0 and entry_price > 0:
+            trailing_stop = high_since_entry * 0.92
+            # 只有超过20%目标后才启用移动止盈
+            if trailing_stop > profit_price:
+                if next_open <= trailing_stop:
+                    drawdown = (1 - next_open / high_since_entry) * 100
+                    return True, f"TRAILING_STOP({high_since_entry:.2f}→{next_open:.2f},-{drawdown:.1f}%)"
+
+        # ---------- 3. 时间止损（分类出场） ----------
+        # V3 卖点信号研究：不同买点类型使用不同时间止损
+        # W2_BUY: 无时间止损（给足够时间走出W5）
+        # W4_BUY: 25天（调整浪，正常幅度）
+        # C_BUY:  15天（反弹浪，快速结束）
+        signal_type = pos.get('entry_signal', 'W2_BUY')
+        max_days_map = {'W4_BUY': 25, 'C_BUY': 15}
+        max_days = max_days_map.get(signal_type, 20)
+        if signal_type == 'W2_BUY':
+            max_days = 99999  # 无时间止损，用极大值替代
+        # W1确认后：延长C_BUY的"耐心"时间，不因短期震荡而触发时间止损
+        if signal_type == 'C_BUY' and 'w1_state' in pos:
+            w1_state = pos['w1_state']
+            if w1_state.confirmed:
+                max_days = 99999  # W1确认后无时间止损
+                logger.debug(f"[W1] C_BUY W1已确认，延长持仓时间限制")
+        days_held = pos.get('days_held', 0)
+        if days_held >= max_days:
+            return True, f"TIME_EXIT({days_held}天,{signal_type})"
+
+        # ---------- 4. 波浪出场信号 ----------
+        row_signal_type = row_dict.get('signal_type', '')
+        if row_signal_type in ('W5_SELL', 'SELL'):
+            return True, f"WAVE_SIGNAL({row_signal_type})"
+
+        # ---------- 5. W5失败浪出场（W4 BUY专用） ----------
+        # W5 < W3 = 推动结构失败，说明W4_BUY的假设错误，立即出场
+        # 检测方式：wave_state='w5_formed' + wave_trend='down'（W5未能突破W3高点）
+        if signal_type == 'W4_BUY':
+            wave_state = row_dict.get('wave_state', '')
+            wave_trend = row_dict.get('wave_trend', '')
+            if wave_state == 'w5_formed' and wave_trend == 'down':
+                return True, "W5_FAILED_EXIT"
+
+        # ---------- 5b. W5终结出场（改动3：W5未能突破W3高点，触发即出场） ----------
+        # W5_FAILED_EXIT_V2：wave_state='w5_formed'（W5已形成）
+        # W5未能有效突破W3高点（wave_trend='down'确认推动失败）
+        if signal_type in ('W2_BUY', 'W4_BUY'):
+            wave_state = row_dict.get('wave_state', '')
+            wave_trend = row_dict.get('wave_trend', '')
+            # W5终结确认：W5已形成 + 趋势转空头
+            if wave_state == 'w5_formed' and wave_trend == 'down':
+                return True, "W5_END_EXIT"
+
+        # ---------- 6. B浪见顶出场（C BUY专用） ----------
+        # C_BUY 入场后，等待B浪反弹结束（即 wave_state='w5_formed'，新一轮下跌开始）
+        # 此时 wave_trend='down' 确认B浪反弹已结束，应离场
+        if signal_type == 'C_BUY':
+            wave_state = row_dict.get('wave_state', '')
+            wave_trend = row_dict.get('wave_trend', '')
+            if wave_state == 'w5_formed' and wave_trend == 'down':
+                return True, "B_WAVE_TOP_EXIT"
+
+        # ---------- 7. 波浪空头出场（W2/W4 BUY） ----------
+        # wave_trend 变空头时出场，不再等3天
+        consecutive_bad = pos.get('consecutive_bad_days', 0)
+        wave_trend = row_dict.get('wave_trend', '')
+        if wave_trend == 'down' and consecutive_bad >= 1:
+            return True, f"WAVE_TREND_EXIT({consecutive_bad}天)"
+
+        return False, ""
+
+    def on_tick(self, row: pd.Series, pos: dict):
+        """
+        每日 tick 回调（框架调用）
+        用于更新连续空头计数器、持仓天数、最高价追踪
+        """
+        row_dict = row.to_dict() if hasattr(row, 'to_dict') else dict(row)
+        date = row_dict.get('date', '')
+        low = row_dict.get('low', 0)
+
+        # 更新持仓天数
+        pos['days_held'] = pos.get('days_held', 0) + 1
+
+        # 更新连续空头计数器
+        wave_trend = row_dict.get('wave_trend', '')
+        if wave_trend == 'down':
+            pos['consecutive_bad_days'] = pos.get('consecutive_bad_days', 0) + 1
+        else:
+            pos['consecutive_bad_days'] = 0
+        # 记录当日 wave_trend 供 W1 检查使用
+        pos['_last_wave_trend'] = wave_trend
+
+        # 追踪持仓期间最高价（用于移动止盈）
+        high = row_dict.get('high', 0)
+        if high and high > 0:
+            pos['high_since_entry'] = max(pos.get('high_since_entry', 0), high)
+
+        # C_BUY 入场时初始化 W1 跟踪状态
+        entry_signal = pos.get('entry_signal', '')
+        if entry_signal == 'C_BUY' and 'w1_state' not in pos:
+            pos['w1_state'] = W1TrackingState(
+                entry_date=date,
+                entry_price=pos.get('avg_cost', 0),
+                c_low=low if low > 0 else pos.get('avg_cost', 0),
+                confirm_deadline=self._calc_trading_days(date, 5)
+            )
+            logger.debug(f"[W1] C_BUY 入场初始化 W1 跟踪: date={date}, deadline={pos['w1_state'].confirm_deadline}")
+
+    # ------------------------------------------------------------------
+    # 辅助方法
+    # ------------------------------------------------------------------
+
+    def get_entry_conditions(self) -> dict:
+        """返回当前入场条件（用于日志/报告）"""
+        return {
+            "signal": "W2_BUY / W4_BUY / C_BUY",
+            "threshold": f"total_score >= {self.threshold}",
+            "trend": "wave_trend in (up, neutral)",
+        }
+
+    def __repr__(self) -> str:
+        return (
+            f"<WaveChanStrategy "
+            f"threshold={self.threshold} "
+            f"stop_loss={self.stop_loss_pct:.0%} "
+            f"take_profit={self.take_profit_pct:.0%} "
+            f"max_hold={self.max_hold_days}天>"
+        )

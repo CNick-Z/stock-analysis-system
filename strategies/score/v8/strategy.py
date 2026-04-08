@@ -316,6 +316,21 @@ class ScoreV8Strategy:
         df = full_df.copy()
         g = df.groupby('symbol', sort=False)
 
+        # ── 0. 修复 turnover_rate（如 parquet 全为0则从量价计算）──
+        # 两个 parquet（tech/daily）合并后产生 turnover_rate_x/y，且值全为0
+        # 从 amount（元）和 volume（股）重建：
+        #   turnover_rate = volume * 100（股→手） / (amount / close) * 100
+        # = volume * close * 100 / amount
+        if 'turnover_rate_y' in df.columns:
+            df['turnover_rate'] = df['turnover_rate_y']
+        elif 'turnover_rate_x' in df.columns:
+            df['turnover_rate'] = df['turnover_rate_x']
+        if df['turnover_rate'].sum() == 0 and 'amount' in df.columns:
+            df['turnover_rate'] = (
+                df['volume'] * 100 * df['close'] / df['amount'].replace(0, float('nan'))
+            ).fillna(0).clip(0, 30)
+            logger.info("  turnover_rate 已从量价重建（parquet 原值全为0）")
+
         # ── 1. 原始条件列（中间结果，不缓存，只给后续步骤用）──
         df['growth'] = (df['close'] - df['open']) / df['open'] * 100
 
@@ -429,13 +444,18 @@ class ScoreV8Strategy:
 
         # 缓存 merge（缓存已按 symbol 建索引）
         daily = daily[daily['symbol'].isin(cached_syms)].copy()
-        daily = daily.set_index('symbol')
-        daily = daily.join(
-            cached.loc[cached_syms, ['_ic_buy', 'ic_bonus', '_sma10_change',
-                                      '_ma_cond', '_macd_cond', '_vol_cond', '_macd_jc', 'growth']],
-            how='left'
-        )
-        daily = daily.reset_index()   # 恢复 symbol 列
+        cache_cols = ['_ic_buy', 'ic_bonus', '_sma10_change',
+                      '_ma_cond', '_macd_cond', '_vol_cond', '_macd_jc', 'growth']
+        available = [c for c in cache_cols if c in cached.columns]
+        if available:
+            # 删除已存在的同名列（避免 join 时 overlap）
+            daily = daily.drop(columns=[c for c in available if c in daily.columns])
+            daily = daily.set_index('symbol')
+            daily = daily.join(cached.loc[cached_syms, available], how='left')
+            daily = daily.reset_index()   # 恢复 symbol 列
+        else:
+            # 缓存为空时，直接从 daily 的同名列读取
+            daily = daily.set_index('symbol')
 
         # ── 3. IC 买入过滤 ──────────────────────────────────────────
         result = daily[daily['_ic_buy'] == True]

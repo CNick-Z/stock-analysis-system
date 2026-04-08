@@ -138,6 +138,10 @@ class WaveSignal:
     验证条件遵循老板的"分型辅助判断规则"：
     - W4终点 → 底分型确认
     - 验证：价格不跌破W4起点（W4进行中的低点）
+
+    V3 仓位调整（2026-04-08）：
+    - bearish + W1<5浪 → B浪反弹，仓位30-50%
+    - bullish + W1推动 → W2回调，仓位50-70%
     """
     signal: str                    # 信号类型: W4_BUY, W2_BUY, etc.
     status: str                   # ALERT / CONFIRMED / INVALID
@@ -152,6 +156,11 @@ class WaveSignal:
     invalidated_reason: str = ""   # 失效原因（INVALID时填写）
     action: str = ""               # 操作指令："持仓待涨" / "止损出场" / "止盈离场" / "观望"
     exit_price: float = 0         # 实际出场价格（止损/止盈触发时记录）
+    wave_structure_valid: bool = True   # 结构验证是否通过（2026-04-07新增）
+    large_trend: str = "neutral"        # 大级别趋势：bullish/bearish/neutral（2026-04-07新增）
+    # V3 新增字段（2026-04-08）
+    is_b_wave_rebound: bool = False  # 是否为B浪反弹（仅在bearish+W1<5时为True）
+    position_size_ratio: float = 1.0  # 仓位比例 0.0~1.0，默认1.0表示满仓
 
     def to_dict(self) -> dict:
         return {k: v for k, v in asdict(self).items()}
@@ -274,6 +283,65 @@ class WaveCounterV3:
             self.snapshot.last_fx_mark = mark_str
         self.snapshot.last_fx_price = float(last_fx.fx)
         self.snapshot.last_fx_date = last_fx.dt.strftime('%Y-%m-%d') if hasattr(last_fx.dt, 'strftime') else str(last_fx.dt)[:10]
+
+    def _get_major_swing_points(self) -> List[Dict]:
+        """
+        获取大级别Swing拐点（只保留极值转折点）
+        
+        参考wave_simple.py的find_major_swing_points算法：
+        - 从_turning_points()获取所有转折点
+        - 只保留极值（running_high/running_low更新时才保留）
+        - 高低交替
+        """
+        turning = self._get_turning_points()
+        if not turning:
+            return []
+        
+        all_points = []
+        for i, p in enumerate(turning):
+            all_points.append({
+                'idx': i,
+                'date': p['date'],
+                'price': p['price'],
+                'type': p['type'],
+            })
+        
+        if not all_points:
+            return []
+        
+        running_high = all_points[0]['price']
+        running_low = all_points[0]['price']
+        all_points[0]['extreme'] = all_points[0]['type']
+        
+        for p in all_points[1:]:
+            if p['type'] == 'high':
+                if p['price'] >= running_high:
+                    running_high = p['price']
+                    p['extreme'] = 'high'
+                else:
+                    p['extreme'] = None
+            else:
+                if p['price'] <= running_low:
+                    running_low = p['price']
+                    p['extreme'] = 'low'
+                else:
+                    p['extreme'] = None
+        
+        result = []
+        for p in all_points:
+            if not p.get('extreme'):
+                continue
+            if not result:
+                result.append(p)
+            elif result[-1]['extreme'] != p['extreme']:
+                result.append(p)
+            else:
+                result[-1] = p
+        
+        if all_points[-1] not in result:
+            result.append(all_points[-1])
+        
+        return result
 
     def _get_turning_points(self) -> List[Dict]:
         """
@@ -637,6 +705,253 @@ class WaveCounterV3:
     # Phase 1.1: 浪终结信号检测
     # =====================================================================
 
+    # =====================================================================
+    # 波浪结构验证（基于wave_simple.py实战经验，2026-04-07新增）
+    # =====================================================================
+
+    def _validate_wave_structure(self, wave_result: Dict) -> Dict:
+        """
+        验证波浪结构合法性（新增，2026-04-07，V3修改 2026-04-08）
+
+        结合wave_simple.py的算法：
+        1. W1内部结构检查：推动浪W1内部须是5浪结构
+        2. 大级别趋势检查：down_bis/up_bis比率判断趋势方向
+        3. W2自身结构检查：调整浪W2内部须是3浪结构
+        4. 三条铁律验证：W2不能跌破W1起点（已在现有代码中实现）
+
+        V3 仓位调整（2026-04-08）：
+        - bearish + W1<5浪 → B浪反弹，仓位30-50%
+        - bullish + W1推动 → W2回调，仓位50-70%
+        - 不再过滤B浪，而是打标签+降仓参与
+
+        Args:
+            wave_result: _find_wave_structure 的返回值
+
+        Returns:
+            {
+                'valid': bool,                    # 结构是否合法
+                'filter_reason': str,            # 如果无效，原因是什么
+                'w1_is_impulse': bool,           # W1是否为推动浪（5浪）
+                'w2_is_correction': bool,        # W2是否为调整浪（3浪）
+                'large_trend': str,              # 大级别趋势 bullish/bearish/neutral
+                'w1_internal_segments': int,     # W1内部上涨子浪数
+                'w2_internal_segments': int,     # W2内部下跌子浪数
+                'is_b_wave_rebound': bool,       # V3新增：是否为B浪反弹
+                'position_size_ratio': float,     # V3新增：仓位比例 0.3~1.0
+            }
+        """
+        waves = wave_result.get('waves', {})
+        if 'W1' not in waves or 'W2' not in waves:
+            return {'valid': True, 'filter_reason': '', 'large_trend': 'neutral',
+                    'w1_is_impulse': False, 'w2_is_correction': False,
+                    'w1_internal_segments': 0, 'w2_internal_segments': 0,
+                    'is_b_wave_rebound': False, 'position_size_ratio': 1.0}
+
+        w1_start = waves['W1']['start']
+        w1_end = waves['W1']['end']
+        w2_end = waves['W2']['end']
+
+        result = {
+            'valid': True,
+            'filter_reason': '',
+            'large_trend': 'neutral',
+            'w1_is_impulse': False,
+            'w2_is_correction': False,
+            'w1_internal_segments': 0,
+            'w2_internal_segments': 0,
+            'is_b_wave_rebound': False,    # V3新增
+            'position_size_ratio': 1.0,     # V3新增
+        }
+
+        # === 1. 大级别趋势检查（wave_simple.py的BI判断逻辑）===
+        large_trend = self._get_large_trend()
+        result['large_trend'] = large_trend
+
+        # === 2. W1内部结构检查 ===
+        # 推动浪W1内部须有5个上涨子浪（1-2-3-4-5）
+        w1_up_segments = self._count_wave_segments(w1_start, w1_end, 'up')
+        result['w1_internal_segments'] = w1_up_segments
+        result['w1_is_impulse'] = w1_up_segments >= 5
+
+        # === 3. W2内部结构检查 ===
+        # 调整浪W2内部是3浪（a-b-c）
+        w2_down_segments = self._count_wave_segments(w1_end, w2_end, 'down')
+        result['w2_internal_segments'] = w2_down_segments
+        result['w2_is_correction'] = (2 <= w2_down_segments <= 4)
+
+        # === V3 B浪判断逻辑（2026-04-08）===
+        # bearish + W1<5浪 → B浪反弹，降仓30-50%
+        # bullish + W1推动 → W2回调，正常仓位50-70%
+        if large_trend == 'bearish':
+            if not result['w1_is_impulse']:
+                # 大级别下跌趋势中，W1<5浪 = B浪反弹
+                result['is_b_wave_rebound'] = True
+                # Fix 5 (评审): W2结构校验 - 加 w2_down_segments==3 双条件确认B浪
+                # B浪（W2反弹）应该是3浪结构（a-b-c），若不是3浪则不视为有效B浪
+                if not (2 <= w2_down_segments <= 4):
+                    result['filter_reason'] = (
+                        f"大级别下跌趋势中，W1只有{w1_up_segments}个上涨子浪，"
+                        f"疑似B浪但W2内部结构为{w2_down_segments}浪（非3浪），"
+                        f"不满足B浪反弹条件"
+                    )
+                    result['valid'] = False
+                    return result
+                # W1子浪数越少，B浪特征越明显，仓位统一降为10%
+                # 3浪以下 → 10%，4浪 → 10%，不足5浪但接近 → 10%
+                result['position_size_ratio'] = 0.10
+                result['filter_reason'] = (
+                    f"大级别下跌趋势中，W1只有{w1_up_segments}个上涨子浪（非5浪推动），"
+                    f"W2内部{w2_down_segments}浪结构确认，B浪反弹仓位{result['position_size_ratio']*100:.0f}%"
+                )
+                # V3: 不再过滤B浪，valid仍然为True，只是打标签+降仓
+                return result
+            # Fix 4 (评审): bearish + W1推动 → 下跌1浪独立分支（不是B浪）
+            # 大级别下跌趋势中，W1走出5浪推动 = 下跌1浪，等待W2反弹后做空
+            if result['w1_is_impulse']:
+                result['is_b_wave_rebound'] = False
+                result['position_size_ratio'] = 0.10
+                result['filter_reason'] = (
+                    f"大级别下跌趋势，W1有{w1_up_segments}个上涨子浪（5浪推动），"
+                    f"判定为下跌1浪，降仓10%参与"
+                )
+                return result
+
+        # === Fix 1 (评审): neutral趋势处理 ===
+        if large_trend == 'neutral':
+            if result['w1_is_impulse']:
+                # 中性趋势中，W1为推动浪 → W2回调，降仓至40%
+                result['position_size_ratio'] = 0.40
+                result['filter_reason'] = (
+                    f"大级别趋势中性，W1有{w1_up_segments}个上涨子浪，"
+                    f"判定为W2回调，仓位40%"
+                )
+            else:
+                # W1非推动，降低至50%
+                result['position_size_ratio'] = 0.50
+                result['filter_reason'] = (
+                    f"大级别趋势中性，W1只有{w1_up_segments}个子浪（非5浪），"
+                    f"降低仓位至50%参与"
+                )
+            return result
+
+        # === bullish + W1推动 → W2回调，仓位50-70% ===
+        if large_trend == 'bullish' and result['w1_is_impulse']:
+            # W2回撤越深，潜在机会越大，仓位可适当提高
+            w1_len = w1_end - w1_start
+            if w1_len > 0:
+                retracement = (w1_end - w2_end) / w1_len
+                # 回撤38.2%-50% → 70%（强势回撤）
+                # 回撤50%-61.8% → 60%（正常）
+                # 回撤61.8%-78.6% → 50%（深幅回撤）
+                if retracement <= 0.50:
+                    result['position_size_ratio'] = 0.70
+                elif retracement <= 0.618:
+                    result['position_size_ratio'] = 0.60
+                else:
+                    result['position_size_ratio'] = 0.50
+            else:
+                result['position_size_ratio'] = 0.60
+            return result
+
+        # === W1不是推动浪结构 → 可能是调整浪的一部分 ===
+        # V3: 不再过滤，只降仓到50%
+        if not result['w1_is_impulse']:
+            result['filter_reason'] = (
+                f"W1内部只有{w1_up_segments}个子浪（非5浪），"
+                f"降低仓位至50%参与"
+            )
+            result['position_size_ratio'] = 0.50
+            return result
+
+        return result
+
+    def _get_large_trend(self) -> str:
+        """
+        判断大级别趋势（用高低点同向变化，老板教的方法）
+
+        趋势定义：
+        - 上涨趋势 = 更高的高点 AND 更高的低点（同向向上）
+        - 下跌趋势 = 更低的高点 AND 更低的低点（同向向下）
+        - 其他 = neutral（震荡）
+
+        使用 _get_major_swing_points() 获取大级别转折点序列判断
+        """
+        turning_points = self._get_major_swing_points()
+
+        if len(turning_points) < 4:
+            return 'neutral'
+
+        # 分离高点和低点
+        highs = [p for p in turning_points if p['type'] == 'high']
+        lows = [p for p in turning_points if p['type'] == 'low']
+
+        if len(highs) < 2 or len(lows) < 2:
+            return 'neutral'
+
+        # 取最近的两个高点和两个低点
+        recent_highs = highs[-2:]
+        recent_lows = lows[-2:]
+
+        # 判断高低点变化方向
+        higher_high = recent_highs[-1]['price'] > recent_highs[-2]['price']
+        higher_low = recent_lows[-1]['price'] > recent_lows[-2]['price']
+        lower_high = recent_highs[-1]['price'] < recent_highs[-2]['price']
+        lower_low = recent_lows[-1]['price'] < recent_lows[-2]['price']
+
+        # 同向向上 = 上涨趋势
+        if higher_high and higher_low:
+            return 'bullish'
+        # 同向向下 = 下跌趋势
+        elif lower_high and lower_low:
+            return 'bearish'
+        else:
+            return 'neutral'
+
+    def _count_wave_segments(self, start_price: float, end_price: float,
+                               direction: str) -> int:
+        """
+        统计从start_price到end_price区间内，指定方向笔的连续段数
+
+        参考wave_simple.py的find_internal_segments：
+        - 一个"段"由连续同向笔组成
+        - UP方向的段 = 连续向上笔的终点
+        - DOWN方向的段 = 连续向下笔的终点
+
+        Args:
+            start_price: 区间起始价（通常是一个浪的起点）
+            end_price: 区间结束价（通常是一个浪的终点）
+            direction: 'up' 或 'down'
+
+        Returns:
+            区间内指定方向的段数量
+
+        示例：
+        - W1(4.69→5.87)区间内，向上的连续段数 = W1内部上涨子浪数
+        """
+        # 找在这个价格区间内的笔
+        in_range = []
+        for bi in self.bis:
+            # 检查笔是否与区间相交
+            if bi.start_price <= end_price and bi.end_price >= start_price:
+                in_range.append(bi)
+
+        # 统计连续同向笔段数
+        segments = 0
+        i = 0
+        while i < len(in_range):
+            # 跳过反向笔
+            while i < len(in_range) and in_range[i].direction != direction:
+                i += 1
+            # 统计连续同向笔
+            count = 0
+            while i < len(in_range) and in_range[i].direction == direction:
+                count += 1
+                i += 1
+            if count > 0:
+                segments += 1
+
+        return segments
+
     def _detect_wave_end(self, wave_result: Dict):
         """
         检测浪终结信号（Phase 1.1）
@@ -819,26 +1134,55 @@ class WaveCounterV3:
                     w1_vol = self._get_wave_volume('W1')
                     if w2_vol > 0 and w1_vol > 0 and w2_vol < w1_vol * 0.6:
                         if s.last_fx_mark == 'D':
-                            s.wave_end_signal = 'W2_END'
-                            s.wave_end_confidence = 0.75
+                            # === 新增：波浪结构验证（2026-04-07）===
+                            struct_check = self._validate_wave_structure(wave_result)
 
-                            # 新信号体系：W2底分型出现 → W2_BUY ALERT
-                            existing_w2_signals = [sig for sig in self.active_signals
-                                                   if sig.signal == 'W2_BUY' and sig.status == SignalStatus.ALERT]
-                            if not existing_w2_signals:
-                                new_signal = WaveSignal(
-                                    signal='W2_BUY',
-                                    status=SignalStatus.ALERT,
-                                    price=w2_end,
-                                    stop_loss=round(w2_end * 0.97, 2),
-                                    verify_conditions=['price_holds_w2_low', 'upward_momentum'],
-                                    verified_conditions=[],
-                                    reason=f"W2回撤{w2_end:.2f}，底分型确认",
-                                    confidence=0.65,
-                                    created_date=last_bi.end_date if last_bi else '',
-                                    wave_type='W2'
+                            if not struct_check['valid']:
+                                # 结构验证失败，过滤此W2信号
+                                logger.debug(
+                                    f"[WaveFilter] W2信号被过滤: "
+                                    f"{struct_check['filter_reason']}"
                                 )
-                                self.active_signals.append(new_signal)
+                            else:
+                                # 结构验证通过，发行W2_END信号
+                                s.wave_end_signal = 'W2_END'
+                                s.wave_end_confidence = 0.75
+
+                                # 新信号体系：W2底分型出现 → W2_BUY ALERT
+                                existing_w2_signals = [sig for sig in self.active_signals
+                                                       if sig.signal == 'W2_BUY' and sig.status == SignalStatus.ALERT]
+                                if not existing_w2_signals:
+                                    # V3: 注入仓位参数（2026-04-08）
+                                    position_ratio = struct_check.get('position_size_ratio', 1.0)
+                                    is_b_rebound = struct_check.get('is_b_wave_rebound', False)
+                                    
+                                    # B浪反弹说明
+                                    b_rebound_note = " [B浪降仓]" if is_b_rebound else ""
+                                    
+                                    # Fix 2 (评审): B浪止损收紧到2%（原3%偏宽）
+                                    # is_b_rebound=True 时用 w2_end*0.98 (2%)，其他用 w2_end*0.97 (3%)
+                                    if is_b_rebound:
+                                        sl = round(w2_end * 0.98, 2)
+                                    else:
+                                        sl = round(w2_end * 0.97, 2)
+                                    
+                                    new_signal = WaveSignal(
+                                        signal='W2_BUY',
+                                        status=SignalStatus.ALERT,
+                                        price=w2_end,
+                                        stop_loss=sl,
+                                        verify_conditions=['price_holds_w2_low', 'upward_momentum'],
+                                        verified_conditions=[],
+                                        reason=f"W2回撤{w2_end:.2f}，底分型确认，结构验证通过，仓位{int(position_ratio*100)}%{b_rebound_note}",
+                                        confidence=0.65,
+                                        created_date=last_bi.end_date if last_bi else '',
+                                        wave_type='W2',
+                                        wave_structure_valid=True,
+                                        large_trend=struct_check['large_trend'],
+                                        is_b_wave_rebound=is_b_rebound,
+                                        position_size_ratio=position_ratio,
+                                    )
+                                    self.active_signals.append(new_signal)
 
     def _determine_exit_action(self, sig: WaveSignal, current_price: float, reason: str):
         """
@@ -1433,6 +1777,7 @@ class PositionManager:
         基于固定风险比例计算买入股数：
         - 每笔交易风险敞口 = 账户余额 × risk_ratio（默认2%）
         - 股数 = 风险敞口 / 单股止损距离
+        - Fix 3 (评审): 再乘以 position_size_ratio（V3波浪仓位比例）
 
         Args:
             account_balance: 账户余额
@@ -1445,6 +1790,8 @@ class PositionManager:
             return 0
         entry_price = self.position["entry_price"]
         stop_loss = self.position["stop_loss"]
+        # Fix 3 (评审): 接入波浪结构仓位比例
+        position_size_ratio = self.position.get("position_size_ratio", 1.0)
 
         if stop_loss >= entry_price:
             return 0  # 止损价设置错误
@@ -1455,8 +1802,10 @@ class PositionManager:
 
         # 风险金额
         risk_amount = account_balance * risk_ratio
-        # 可买入股数
+        # 可买入股数（基准）
         shares = risk_amount / stop_distance
+        # Fix 3 (评审): 乘以波浪仓位比例
+        shares = shares * position_size_ratio
 
         # 整百取整（A股最少100股）
         shares = int(shares // 100 * 100)

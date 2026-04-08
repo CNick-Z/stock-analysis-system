@@ -1,0 +1,272 @@
+# strategies/wavechan/v3_l2_cache/wavechan_strategy.py
+# =============================================================
+"""
+WaveChan V3 策略 - 统一框架适配层
+=============================================================
+
+实现 BasePortfolio 所需的 3 个标准接口：
+  - filter_buy(daily_df)  → 候选股票
+  - score(candidates)     → 评分排序
+  - should_sell(row, pos, market) → 出场判断（含连续3天出场逻辑）
+
+入场信号：W2_BUY / W4_BUY / C_BUY（has_signal=True, total_score >= THRESHOLD）
+出场逻辑：止损 / 止盈 / 时间止损 / 波浪信号出场 / 连续3天 wave_trend==down
+"""
+# =============================================================
+
+import os
+import sys
+from pathlib import Path
+from typing import Tuple, List, Any
+
+import pandas as pd
+
+PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from strategies.wavechan.v3_l2_cache.strategy import WaveEngine, SymbolWaveCache
+
+# ================================================================
+# 配置
+# ================================================================
+L2_CACHE_DIR = "/data/warehouse/wavechan/wavechan_cache"
+THRESHOLD = 50          # 买入阈值
+STOP_LOSS_PCT = 0.08     # 8% 止损
+TAKE_PROFIT_PCT = 0.20  # 20% 止盈
+MAX_HOLD_DAYS = 20      # 最大持仓天数
+MAX_POSITIONS = 5        # 最大持仓数
+
+
+# ================================================================
+# WaveChanStrategy - 统一框架适配层
+# ================================================================
+
+class WaveChanStrategy:
+    """
+    WaveChan V3 策略（统一框架版）
+
+    实现 BasePortfolio 所需的 3 个标准接口：
+      filter_buy(daily_df) → 返回有买入信号的候选股票 DataFrame
+      score(candidates)   → 返回评分排序后的 DataFrame（含 score 列）
+      should_sell(row, pos, market) → (是否出场, 出场原因)
+
+    出场优先级：止损 > 止盈 > 时间止损 > 波浪信号出场 > 连续3天空头
+    """
+
+    def __init__(
+        self,
+        l2_cache_dir: str = L2_CACHE_DIR,
+        threshold: int = THRESHOLD,
+        stop_loss_pct: float = 0.05,   # 5%止损（旧V3盈利参数）
+        take_profit_pct: float = TAKE_PROFIT_PCT,
+        max_hold_days: int = MAX_HOLD_DAYS,
+        max_positions: int = MAX_POSITIONS,
+        position_size: float = 0.20,
+    ):
+        self.l2_cache_dir = l2_cache_dir
+        self.threshold = threshold
+        self.stop_loss_pct = stop_loss_pct  # 5%（旧V3参数）
+        self.take_profit_pct = take_profit_pct
+        self.max_hold_days = max_hold_days
+        self.max_positions = max_positions
+        self.position_size = position_size
+
+        # 引擎缓存（symbol → WaveEngine）
+        self._engines: dict = {}
+
+        # 策略数据接口
+        self.name = "WaveChanStrategy"
+        # 波浪缠论信号列，需要从 L2 cache 加载
+        self.REQUIRED_COLUMNS = [
+            'has_signal', 'total_score', 'signal_type', 'signal_status',
+            'wave_trend', 'wave_state', 'stop_loss',
+        ]
+
+    def prepare(self, dates: list, loader):
+        """
+        加载波浪缠论 L2 cache 数据
+
+        Args:
+            dates: 交易日列表 [start_date, ..., end_date]
+            loader: 数据加载器（DataLoader 实例，备用）
+        """
+        self._extra_data = {}
+        from utils.data_loader import load_wavechan_signals
+        if len(dates) < 2:
+            dates = [dates[0], dates[0]]
+        self._wave_cache = load_wavechan_signals(dates[0], dates[-1])
+        # 返回要合并的 DataFrame
+        return self._wave_cache
+
+    # ------------------------------------------------------------------
+    # 框架接口
+    # ------------------------------------------------------------------
+
+    def filter_buy(self, daily_df: pd.DataFrame, date: str = None) -> pd.DataFrame:
+        """
+        过滤候选股票
+
+        Args:
+            daily_df: 当日候选股票数据（包含 has_signal/signal_type/wave_trend 等列）
+            date: 日期参数（框架调用时传入，本函数内部不使用，日期已嵌入数据中）
+
+        条件：
+          - has_signal == True
+          - signal_type in (W2_BUY, W4_BUY, C_BUY)
+          - total_score >= self.threshold
+          - wave_trend in (up, neutral)  # 排除下降趋势
+          - signal_status == 'confirmed'   # 只买已确认的（排除 alert/invalid）
+        """
+        if daily_df.empty:
+            return pd.DataFrame()
+
+        df = daily_df.copy()
+
+        # wave_trend 含义：'neutral'=中性横盘, 'long'=上升趋势(牛市)
+        # 入场条件：接受上升趋势(long)和中性横盘(neutral)
+        # 注意：列不存在时创建与 df 同 index 的 Series，避免 bool mask index 不对齐
+        _false = pd.Series(False, index=df.index)
+        _zero = pd.Series(0, index=df.index)
+        _empty = pd.Series('', index=df.index)
+        has_signal = df['has_signal'] if 'has_signal' in df.columns else _false
+        total_score = df['total_score'] if 'total_score' in df.columns else _zero
+        wave_trend = df['wave_trend'] if 'wave_trend' in df.columns else _empty
+        mask = (
+            has_signal.eq(True) &
+            total_score.ge(self.threshold) &
+            wave_trend.isin(['long', 'neutral', ''])
+        )
+
+        buy_signals = {'W2_BUY', 'W4_BUY', 'C_BUY', 'W4_BUY_ALERT', 'W4_BUY_CONFIRMED'}
+        if 'signal_type' in df.columns:
+            mask &= df['signal_type'].isin(buy_signals)
+
+        # ── signal_status 过滤：只买已确认的信号 ──────────────────────
+        # alert（等确认）和 invalid（已失败）不买，只买 confirmed
+        if 'signal_status' in df.columns:
+            mask &= df['signal_status'].eq('confirmed')
+
+        return df[mask].copy()
+
+    def score(self, candidates: pd.DataFrame) -> pd.DataFrame:
+        """
+        评分排序
+
+        直接使用 total_score 作为评分，降序排列
+        """
+        if candidates.empty:
+            return pd.DataFrame()
+
+        df = candidates.copy()
+        df['score'] = df.get('total_score', 0)
+        df = df.sort_values('score', ascending=False)
+        return df
+
+    def should_sell(
+        self,
+        row: pd.Series,
+        pos: dict,
+        market: dict = None
+    ) -> Tuple[bool, str]:
+        """
+        判断是否出场
+
+        出场条件（优先级）：
+          1. 止损：next_open < 入场价 * (1 - stop_loss)
+          2. 止盈：next_open > 入场价 * (1 + take_profit)
+          3. 时间止损：持仓天数 > max_hold_days
+          4. 波浪出场：signal in (W5_SELL, SELL)
+          5. 连续3天空头：consecutive_bad_days >= 3
+                   （坏条件 = wave_trend == 'down'）
+
+        Args:
+            row: 当日行情（含 next_open, close, wave_trend, signal_type 等）
+            pos: 持仓信息（avg_cost, entry_date, consecutive_bad_days, days_held 等）
+
+        Returns:
+            (should_sell: bool, reason: str)
+        """
+        row_dict = row.to_dict() if hasattr(row, 'to_dict') else dict(row)
+
+        entry_price = pos.get('avg_cost', 0)
+        if entry_price <= 0:
+            return False, "INVALID_POSITION"
+
+        # 实际卖出价格
+        next_open = row_dict.get('next_open')
+        if pd.isna(next_open) or next_open <= 0:
+            next_open = row_dict.get('close', entry_price)
+
+        # ---------- 1. 止损（优先用信号自带的W2动态止损位，其次用固定百分比） ----------
+        # 旧V3盈利策略：stop_loss 来自波浪W2低点，是动态的
+        dyn_stop = row_dict.get('stop_loss', 0)
+        if dyn_stop and dyn_stop > 0:
+            stop_price = dyn_stop
+            stop_label = f"W2止损@{dyn_stop:.2f}"
+        else:
+            stop_price = entry_price * (1 - self.stop_loss_pct)
+            stop_label = f"固定止损@{stop_price:.2f}"
+
+        if next_open < stop_price:
+            return True, f"STOP_LOSS @{next_open:.2f}({stop_label})"
+
+        # ---------- 2. 止盈 ----------
+        profit_price = entry_price * (1 + self.take_profit_pct)
+        if next_open >= profit_price:
+            return True, f"TAKE_PROFIT @{next_open:.2f}"
+
+        # ---------- 3. 时间止损 ----------
+        days_held = pos.get('days_held', 0)
+        if days_held >= self.max_hold_days:
+            return True, f"TIME_EXIT({days_held}天)"
+
+        # ---------- 4. 波浪出场信号 ----------
+        signal_type = row_dict.get('signal_type', '')
+        if signal_type in ('W5_SELL', 'SELL'):
+            return True, f"WAVE_SIGNAL({signal_type})"
+
+        # ---------- 5. 连续3天空头 ----------
+        consecutive_bad = pos.get('consecutive_bad_days', 0)
+        wave_trend = row_dict.get('wave_trend', '')
+        if wave_trend == 'down' and consecutive_bad >= 3:
+            return True, f"WAVE_DOWN_EXIT({consecutive_bad}天)"
+
+        return False, ""
+
+    def on_tick(self, row: pd.Series, pos: dict):
+        """
+        每日 tick 回调（框架调用）
+        用于更新连续空头计数器和持仓天数
+        """
+        row_dict = row.to_dict() if hasattr(row, 'to_dict') else dict(row)
+
+        # 更新持仓天数
+        pos['days_held'] = pos.get('days_held', 0) + 1
+
+        # 更新连续空头计数器
+        wave_trend = row_dict.get('wave_trend', '')
+        if wave_trend == 'down':
+            pos['consecutive_bad_days'] = pos.get('consecutive_bad_days', 0) + 1
+        else:
+            pos['consecutive_bad_days'] = 0
+
+    # ------------------------------------------------------------------
+    # 辅助方法
+    # ------------------------------------------------------------------
+
+    def get_entry_conditions(self) -> dict:
+        """返回当前入场条件（用于日志/报告）"""
+        return {
+            "signal": "W2_BUY / W4_BUY / C_BUY",
+            "threshold": f"total_score >= {self.threshold}",
+            "trend": "wave_trend in (up, neutral)",
+        }
+
+    def __repr__(self) -> str:
+        return (
+            f"<WaveChanStrategy "
+            f"threshold={self.threshold} "
+            f"stop_loss={self.stop_loss_pct:.0%} "
+            f"take_profit={self.take_profit_pct:.0%} "
+            f"max_hold={self.max_hold_days}天>"
+        )

@@ -1,0 +1,123 @@
+{
+  "V4": [
+    {
+      "year": 2024,
+      "strategy": "V4",
+      "initial_cash": 1000000,
+      "final_value": 987568.0,
+      "cash": 987568.0,
+      "total_return": -1.24,
+      "total_return_pct": "-1.24%",
+      "n_positions": 0,
+      "n_trades": 5,
+      "win_rate": 0.0,
+      "total_pnl": -12432.0,
+      "max_drawdown": 14086.0,
+      "max_drawdown_pct": "+1.41%",
+      "sharpe_ratio": -4.37,
+      "annualized_return": -0.0129,
+      "annualized_return_pct": "-1.29%",
+      "n_trading_days": 242,
+      "positions": []
+    },
+    {
+      "year": 2025,
+      "strategy": "V4",
+      "initial_cash": 1000000,
+      "final_value": 979278.0,
+      "cash": 979278.0,
+      "total_return": -2.07,
+      "total_return_pct": "-2.07%",
+      "n_positions": 0,
+      "n_trades": 2,
+      "win_rate": 0.0,
+      "total_pnl": -20722.0,
+      "max_drawdown": 22537.0,
+      "max_drawdown_pct": "+2.25%",
+      "sharpe_ratio": -2.75,
+      "annualized_return": -0.0215,
+      "annualized_return_pct": "-2.15%",
+      "n_trading_days": 243,
+      "positions": []
+    }
+  ],
+  "V8": [
+    {
+      "year": 2024,
+      "strategy": "V8",
+      "initial_cash": 1000000,
+      "final_value": 995844.0,
+      "cash": 797879.0,
+      "total_return": -0.42,
+      "total_return_pct": "-0.42%",
+      "n_positions": 1,
+      "n_trades": 15,
+      "win_rate": 40.0,
+      "total_pnl": -4156.0,
+      "max_drawdown": 37012.0,
+      "max_drawdown_pct": "+3.69%",
+      "sharpe_ratio": -0.99,
+      "annualized_return": -0.006,
+      "annualized_return_pct": "-0.60%",
+      "n_trading_days": 242,
+      "positions": [
+        {
+          "symbol": "601058",
+          "qty": 13700,
+          "avg_cost": 14.45,
+          "entry_date": "2024-12-30",
+          "entry_sma20_le_sma55": true
+        }
+      ]
+    },
+    {
+      "year": 2025,
+      "strategy": "V8",
+      "initial_cash": 1000000,
+      "final_value": 1040345.0,
+      "cash": 657432.0,
+      "total_return": 4.03,
+      "total_return_pct": "+4.03%",
+      "n_positions": 4,
+      "n_trades": 55,
+      "win_rate": 58.18,
+      "total_pnl": 40345.0,
+      "max_drawdown": 68647.0,
+      "max_drawdown_pct": "+6.30%",
+      "sharpe_ratio": 0.11,
+      "annualized_return": 0.0361,
+      "annualized_return_pct": "+3.61%",
+      "n_trading_days": 243,
+      "positions": [
+        {
+          "symbol": "002112",
+          "qty": 5600,
+          "avg_cost": 13.59,
+          "entry_date": "2025-12-12",
+          "entry_sma20_le_sma55": true
+        },
+        {
+          "symbol": "002106",
+          "qty": 7300,
+          "avg_cost": 11.02,
+          "entry_date": "2025-12-25",
+          "entry_sma20_le_sma55": true
+        },
+        {
+          "symbol": "603339",
+          "qty": 6100,
+          "avg_cost": 13.18,
+          "entry_date": "2025-12-25",
+          "entry_sma20_le_sma55": true
+        },
+        {
+          "symbol": "600292",
+          "qty": 11100,
+          "avg_cost": 13.15,
+          "entry_date": "2025-12-29",
+          "entry_sma20_le_sma55": true
+        }
+      ]
+    }
+  ]
+}

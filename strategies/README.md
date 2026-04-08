@@ -76,3 +76,19 @@ Stage 1 研究 → Stage 2 回测 → Stage 3 模拟盘 → Stage 4 实盘 → S
 | V8策略代码 | `strategies/score/v8/strategy.py` |
 | 历史版本存档 | `versions/` |
 | 数据仓库 | `/data/warehouse/` |
+
+## 2026-04-02 V8 MarketRegimeFilter 参数更新
+
+### 默认值变更
+- `neutral_position`: 0.60 → **0.70**
+- `bear_position`: 0.20 → **0.30**
+- `confirm_days`: 2 → **1**
+
+### 验证依据
+离线模拟（v8_offline_sim.py）35组参数回测：
+- 最优：neutral=0.70, bear=0.10, confirm=1 → 年化3.13%, MaxDD=-5.33%, 夏普+0.04
+- 建议配置：neutral=0.70, bear=0.30, confirm=1 → 年化1.99%, MaxDD=-7.48%（稳健）
+
+### 文件变更
+- simulator/market_regime.py（默认值）
+- backtest.py（新增 --filter-neutral --filter-bear 参数）

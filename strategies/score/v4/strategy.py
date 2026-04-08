@@ -79,7 +79,17 @@ def _compute_conditions(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     # 角度条件（V4独有）：SMA10角度 > 30°
-    df['angle_condition'] = df['angle_ma_10'] > 30
+    # 兼容 angle_ma_10 列不存在的情况（用 sma_10 变化率近似计算）
+    if 'angle_ma_10' in df.columns:
+        df['angle_condition'] = df['angle_ma_10'] > 30
+    elif 'sma_10' in df.columns:
+        # 近似角度：sma_10 日变化率 * 10 * (180/pi)，取 > 30°
+        _change = (df['sma_10'] / df['sma_10'].shift(1) - 1).abs().clip(0, 0.1)
+        df['angle_condition'] = (_change * 10 * (180 / np.pi)) > 30
+        logger.warning("angle_ma_10 不在数据中，使用 sma_10 变化率近似计算 angle_condition")
+    else:
+        df['angle_condition'] = True
+        logger.warning("sma_10 也不在数据中，跳过 angle_condition")
 
     # 趋势条件：SMA20 < SMA55 且 SMA55 > SMA240
     df['trend_condition'] = (df['sma_20'] < df['sma_55']) & (df['sma_55'] > df['sma_240'])

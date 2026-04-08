@@ -330,22 +330,23 @@ class ParameterTuner:
 
                 # 每组参数独立实例 + 独立框架
                 strategy = _make_parametric_strategy(self.strategy_class, params)
-                framework = self._create_framework(params)
+                framework = self._create_framework(params, strategy)
 
-                # ── 逐年 prepare + 回测 ────────────────────────────────
+                # ── prepare（一次性prepare所有年份，避免逐年被覆盖）──────
+                all_year_dates = []
+                for year in range(y_start, y_end + 1):
+                    all_year_dates.extend(dates_by_year.get(year, []))
+                if all_year_dates and hasattr(strategy, "prepare"):
+                    try:
+                        strategy.prepare(sorted(all_year_dates), df)
+                    except Exception as prep_err:
+                        logger.warning(f"  prepare() 失败: {prep_err}")
+
+                # ── 逐年回测（使用本组合 prepare 后的缓存）─────────────
                 for year in range(y_start, y_end + 1):
                     year_dates = dates_by_year.get(year, [])
                     if not year_dates:
                         continue
-
-                    # prepare：只缓存当年日期（按 symbol 分组 shift/rolling 在 full_df 上）
-                    if hasattr(strategy, "prepare"):
-                        try:
-                            strategy.prepare(year_dates, df)
-                        except Exception as prep_err:
-                            logger.warning(
-                                f"  prepare() 失败 [{year}]: {prep_err}"
-                            )
 
                     # 逐日回测（直接调用 _on_day，保持现金/持仓跨年连续）
                     for day_idx, date in enumerate(year_dates):
@@ -407,13 +408,14 @@ class ParameterTuner:
     # 辅助方法
     # ------------------------------------------------------------------
 
-    def _create_framework(self, params: Dict[str, Any]) -> BaseFramework:
+    def _create_framework(self, params: Dict[str, Any], strategy) -> BaseFramework:
         """根据参数创建回测框架"""
         fw = BaseFramework(
             initial_cash=self.initial_cash,
             max_positions=params.get("max_positions", 5),
             position_size=params.get("position_size", 0.20),
         )
+        fw._strategy = strategy
         return fw
 
     def _summarize(self):

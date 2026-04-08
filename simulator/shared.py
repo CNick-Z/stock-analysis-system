@@ -28,6 +28,10 @@ STRATEGY_REGISTRY = {
         "class": "WaveChanStrategy",
         "path": "strategies.wavechan.v3_l2_cache.wavechan_strategy",
     },
+    "wavechan_v3": {
+        "class": "WaveChanStrategy",
+        "path": "strategies.wavechan.v3_l2_cache.wavechan_strategy",
+    },
 }
 
 # ── 波浪 L2 cache 路径 ─────────────────────────────────

@@ -18,10 +18,13 @@
 
 import logging
 import math
-from typing import Callable, Dict, List, Optional, Any, Tuple
+from typing import Callable, Dict, List, Optional, Any, Tuple, Sequence
 import pandas as pd
 
 from .base_portfolio import BasePortfolio
+
+# 默认数据加载器（统一数据层，含资金流+财务数据）
+DEFAULT_DATA_LOADER: Optional[Callable[[str, str], pd.DataFrame]] = None  # 延迟导入避免循环
 
 logger = logging.getLogger(__name__)
 
@@ -86,8 +89,8 @@ class MultiSimulator:
         cfg = {
             'stop_loss': 0.05,
             'take_profit': 0.15,
-            'max_positions': 5,
-            'position_size': 0.20,
+            'max_positions': 10,
+            'position_size': 0.10,
             **(config or {}),
         }
 
@@ -115,13 +118,15 @@ class MultiSimulator:
         daily_data: Optional[pd.DataFrame] = None,
         date_column: str = 'date',
         symbol_column: str = 'symbol',
+        years: Optional[Sequence[int]] = None,
     ):
         """
         运行多策略模拟
 
-        两种数据提供方式（任选其一）：
-          1. data_loader: Callable[[start, end] -> pd.DataFrame]
-          2. daily_data: pd.DataFrame（直接传入完整数据）
+        三种数据提供方式（优先级从高到低）：
+          1. daily_data: pd.DataFrame（直接传入完整数据）
+          2. data_loader: Callable[[start, end] -> pd.DataFrame]（自定义加载器）
+          3. years: List[int]（从统一数据仓库加载，含资金流+财务数据）
 
         每日调度逻辑：
           1. 按 date_column 遍历每个交易日
@@ -135,9 +140,10 @@ class MultiSimulator:
             daily_data: 日线数据 DataFrame（可选，与 data_loader 二选一）
             date_column: 日期列名（默认 'date'）
             symbol_column: 股票代码列名（默认 'symbol'）
+            years: 年份列表，如 [2024, 2025]（可选，自动加载统一数据集）
 
         Raises:
-            ValueError: 既无 data_loader 也无 daily_data
+            ValueError: 既无数据来源
         """
         self._start_date = start_date
         self._end_date = end_date
@@ -150,9 +156,15 @@ class MultiSimulator:
             logger.info(f"[MultiSimulator] 加载数据 {start_date} ~ {end_date} ...")
             df = data_loader(start_date, end_date)
             logger.info(f"[MultiSimulator] 加载完成，共 {len(df)} 条记录")
+        elif years is not None:
+            # 使用统一数据加载器（含资金流+财务数据）
+            from utils.data_loader import load_strategy_data
+            logger.info(f"[MultiSimulator] 使用统一数据加载器 years={list(years)} ...")
+            df = load_strategy_data(years=list(years))
+            logger.info(f"[MultiSimulator] 统一数据加载完成，共 {len(df):,} 条记录")
         else:
             raise ValueError(
-                "必须提供 data_loader 或 daily_data 之一"
+                "必须提供 daily_data、data_loader 或 years 之一"
             )
 
         if df.empty:
@@ -194,10 +206,8 @@ class MultiSimulator:
                     )
 
             # ---- 记录每日权益曲线 ----
-            # 构建当日收盘价映射（用于计算持仓市值）
-            close_prices = {}
-            for _, r in daily_df.iterrows():
-                close_prices[r[symbol_column]] = r['close']
+            # 构建当日收盘价映射（用于计算持仓市值）- 用向量化操作替代iterrows
+            close_prices = daily_df.set_index(symbol_column)['close'].to_dict()
 
             for name, portfolio in self.portfolios.items():
                 if name not in self._daily_values:
