@@ -53,12 +53,13 @@ def load_data_for_date(name: str, target_date: str) -> tuple:
     year_df = load_strategy_data(years=[year], add_money_flow=True)
     logger.info(f"原始数据: {len(year_df):,} 行  [{year_df['date'].min()} ~ {year_df['date'].max()}]")
 
-    # 过滤到目标日期
+    # 先加 next_open（必须在过滤前，否则 groupby shift(-1) 找不到下一行）
+    year_df = add_next_open(year_df)
+
+    # 再过滤到目标日期
     df = year_df[year_df["date"] == target_date].copy()
     if df.empty:
         raise ValueError(f"目标日期 {target_date} 无数据，请检查数据是否已构建")
-
-    df = add_next_open(df)
 
     if name == "wavechan":
         wave_df = load_wavechan_cache([year])

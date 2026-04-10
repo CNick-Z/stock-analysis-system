@@ -316,20 +316,23 @@ class ScoreV8Strategy:
         df = full_df.copy()
         g = df.groupby('symbol', sort=False)
 
-        # ── 0. 修复 turnover_rate（如 parquet 全为0则从量价计算）──
-        # 两个 parquet（tech/daily）合并后产生 turnover_rate_x/y，且值全为0
-        # 从 amount（元）和 volume（股）重建：
-        #   turnover_rate = volume * 100（股→手） / (amount / close) * 100
-        # = volume * close * 100 / amount
+        # ── 0. 修复 turnover_rate（如 parquet 全为0则从 total_shares 计算）──
+        # 正确公式：换手率 = 成交量(股) / 总股本(股) * 100
+        # 注意：不能用 volume*100*close/amount，因为 amount=volume*close（该数据集的 amount 就是成交额）
         if 'turnover_rate_y' in df.columns:
             df['turnover_rate'] = df['turnover_rate_y']
         elif 'turnover_rate_x' in df.columns:
             df['turnover_rate'] = df['turnover_rate_x']
-        if df['turnover_rate'].sum() == 0 and 'amount' in df.columns:
+        # 用 total_shares 正确计算换手率
+        if df['turnover_rate'].sum() == 0 and 'total_shares' in df.columns:
             df['turnover_rate'] = (
-                df['volume'] * 100 * df['close'] / df['amount'].replace(0, float('nan'))
+                df['volume'] / df['total_shares'].replace(0, float('nan')) * 100
             ).fillna(0).clip(0, 30)
-            logger.info("  turnover_rate 已从量价重建（parquet 原值全为0）")
+            logger.info("  turnover_rate 已从 total_shares 重建（parquet 原值全为0）")
+        elif df['turnover_rate'].sum() == 0:
+            # 如果没有 total_shares，换手率设为 0（不做排除）
+            df['turnover_rate'] = 0.0
+            logger.info("  turnover_rate 设为 0（无 total_shares 数据）")
 
         # ── 1. 原始条件列（中间结果，不缓存，只给后续步骤用）──
         df['growth'] = (df['close'] - df['open']) / df['open'] * 100

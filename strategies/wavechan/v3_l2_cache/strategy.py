@@ -2568,11 +2568,7 @@ class BatchWaveBuilder:
         """从Parquet仓库加载所有股票代码"""
         import glob
         # 尝试多个可能的数据目录
-        possible_dirs = [
-            self.data_dir,
-            '/data/warehouse',
-            '/root/.openclaw/workspace/data',
-        ]
+        possible_dirs = ['/root/.openclaw/workspace/data/warehouse']  # 优化：直接定位
 
         symbols = set()
         for data_dir in possible_dirs:
@@ -2632,11 +2628,7 @@ class BatchWaveBuilder:
         all_bars = []
 
         # 尝试多个可能的数据目录
-        possible_dirs = [
-            self.data_dir,
-            '/data/warehouse',
-            '/root/.openclaw/workspace/data',
-        ]
+        possible_dirs = ['/root/.openclaw/workspace/data/warehouse']  # 优化：直接定位
 
         for data_dir in possible_dirs:
             if not os.path.exists(data_dir):
@@ -2762,11 +2754,7 @@ class BatchWaveBuilder:
 
         # 找出该日期有数据的股票
         symbols_with_data = set()
-        possible_dirs = [
-            self.data_dir,
-            '/data/warehouse',
-            '/root/.openclaw/workspace/data',
-        ]
+        possible_dirs = ['/root/.openclaw/workspace/data/warehouse']  # 优化：直接定位
 
         for data_dir in possible_dirs:
             if not os.path.exists(data_dir):

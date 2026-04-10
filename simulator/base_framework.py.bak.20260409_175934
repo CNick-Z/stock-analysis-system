@@ -390,9 +390,7 @@ class BaseFramework:
         if not self.load_state():
             self.reset()
 
-        # 传入完整日期列表，以便计算 next_date
-        all_dates = sorted(df["date"].unique())
-        self._on_day(target_date, df, dates=all_dates)
+        self._on_day(target_date, df, dates=[target_date])
         self.save_state()
 
         total_value = self._calc_total_value(df, target_date)
@@ -424,13 +422,6 @@ class BaseFramework:
             idx = dates.index(date) if date in dates else -1
             if 0 <= idx < len(dates) - 1:
                 next_date = dates[idx + 1]
-        else:
-            # 如果没有传入 dates，从 df 中获取所有日期并计算 next_date
-            all_dates = sorted(df["date"].unique())
-            if date in all_dates:
-                idx = all_dates.index(date)
-                if idx < len(all_dates) - 1:
-                    next_date = all_dates[idx + 1]
 
         market = {
             "date": date,
