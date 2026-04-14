@@ -59,8 +59,8 @@ def load_data_for_strategy(name: str, start_date: str, end_date: str) -> pd.Data
     # next_open
     df = add_next_open(df)
 
-    # WaveChan 额外加载波浪信号（包含 wavechan 和 wavechan_v3）
-    if "wavechan" in name:
+    # WaveChan 额外加载波浪信号（包含 wavechan 和 wavechan_v3_strict）
+    if "wavechan_v3_strict" in name:
         wave_df = load_wavechan_cache(years)
         if not wave_df.empty:
             # 删除可能冲突的列（保留原数据的技术指标，只覆盖波浪字段）
@@ -406,8 +406,8 @@ def _make_summary(framework: BaseFramework, strat_name: str, start: str, end: st
 def main():
     parser = argparse.ArgumentParser(description="统一回测入口")
     parser.add_argument("--strategy", required=True,
-                        choices=["v8", "wavechan", "wavechan_v3", "all"],
-                        help="选择策略: v8, wavechan, wavechan_v3, all（多个）")
+                        choices=["v8", "wavechan_v3_strict", "all"],
+                        help="选择策略: v8, wavechan_v3_strict（铁律过滤）, all")
     parser.add_argument("--start", required=True, help="回测开始日期 YYYY-MM-DD")
     parser.add_argument("--end", required=True, help="回测结束日期 YYYY-MM-DD")
     parser.add_argument("--output-state", help="可选：保存最终状态到文件")
