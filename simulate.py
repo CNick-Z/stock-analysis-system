@@ -61,7 +61,7 @@ def load_data_for_date(name: str, target_date: str) -> tuple:
     if df.empty:
         raise ValueError(f"目标日期 {target_date} 无数据，请检查数据是否已构建")
 
-    if name == "wavechan":
+    if name == "wavechan_v3_strict":
         wave_df = load_wavechan_cache([year])
         if not wave_df.empty:
             for col in [c for c in wave_df.columns if c not in ("date", "symbol")]:
@@ -104,7 +104,11 @@ def show_state(framework: BaseFramework, strategy_name: str, format: str = "text
     if format == "markdown":
         # ---- Markdown 格式 ----
         lines = []
-        lines.append(f"**V8模拟盘状态**  |  {strategy_name}")
+        strategy_display = {
+            "v8": "V8模拟盘", "wavechan_v3_strict": "WaveChanV3铁律模拟盘"
+        }
+        display_name = strategy_display.get(strategy_name, f"{strategy_name}模拟盘")
+        lines.append(f"**{display_name}状态**  |  {strategy_name}")
         lines.append(f"初始 **{framework.initial_cash:,.0f}** | 现金 **{framework.cash:,.0f}** | 持仓 **{position_value:,.0f}**")
         lines.append(f"总价值 **{final_value:,.0f}** ({total_return:+.2f}%) | {len(framework.positions)} 只 | 胜率 {win_rate:.0f}%")
         lines.append("")
@@ -155,8 +159,12 @@ def show_state(framework: BaseFramework, strategy_name: str, format: str = "text
         return
 
     # ---- 纯文本格式 ----
+    _display_map = {
+        "v8": "V8模拟盘", "wavechan_v3_strict": "WaveChanV3铁律模拟盘"
+    }
+    _dname = _display_map.get(strategy_name, f"{strategy_name}模拟盘")
     print(f"\n{'=' * 50}")
-    print(f"  模拟盘状态  |  策略: {strategy_name}")
+    print(f"  {_dname}状态  |  {strategy_name}")
     print(f"{'=' * 50}")
     print(f"  初始资金: {framework.initial_cash:>14,.0f}")
     print(f"  当前现金: {framework.cash:>14,.0f}")
@@ -312,8 +320,9 @@ def show_candidates(framework: BaseFramework, strategy_name: str, date: str = No
 
 def main():
     parser = argparse.ArgumentParser(description="统一模拟盘入口")
-    parser.add_argument("--strategy", required=True, choices=["v8", "wavechan"],
-                        help="选择策略: v8 / wavechan")
+    parser.add_argument("--strategy", required=True,
+                        choices=["v8", "wavechan_v3_strict"],
+                        help="选择策略: v8 / wavechan_v3_strict（铁律过滤）")
     parser.add_argument("--date", default=None,
                         help="运行日期 YYYY-MM-DD（默认今天）")
     parser.add_argument("--reset", action="store_true",
@@ -344,6 +353,12 @@ def main():
     default_state = f"/tmp/simulate_{strategy_name}.json"
     state_file = args.state_file or default_state
 
+    # 显示名称映射
+    strategy_display = {
+        "v8": "V8模拟盘", "wavechan_v3_strict": "WaveChanV3铁律模拟盘"
+    }
+    display_name = strategy_display.get(strategy_name, f"{strategy_name}模拟盘")
+
     # 初始化框架
     framework = BaseFramework(
         initial_cash=args.initial_cash,
@@ -371,7 +386,7 @@ def main():
         return
 
     # 正常模拟盘运行
-    logger.info(f"\n{'='*50}\n  模拟盘运行: {strategy_name}  日期: {target_date}\n{'='*50}")
+    logger.info(f"\n{'='*50}\n  {display_name}  日期: {target_date}\n{'='*50}")
 
     try:
         strategy = load_strategy(strategy_name)
@@ -435,10 +450,13 @@ def main():
         logger.info("  MarketRegimeFilter: 已禁用（全天候固定仓位）")
 
     try:
+        # 注意：传入 year_df（全年）用于计算 next_date，不要传单日 df
+        all_dates = sorted(year_df["date"].unique().tolist())
         framework.run_simulate(
             strategy=strategy,
             df=df,
             target_date=target_date,
+            dates=all_dates,
         )
     except Exception as e:
         logger.error(f"模拟盘运行失败: {e}")

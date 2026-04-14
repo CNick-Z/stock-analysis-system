@@ -24,13 +24,15 @@ STRATEGY_REGISTRY = {
         "class": "ScoreV8Strategy",
         "path": "strategies.score.v8.strategy",
     },
-    "wavechan": {
+    "wavechan_v3_strict": {
         "class": "WaveChanStrategy",
         "path": "strategies.wavechan.v3_l2_cache.wavechan_strategy",
-    },
-    "wavechan_v3": {
-        "class": "WaveChanStrategy",
-        "path": "strategies.wavechan.v3_l2_cache.wavechan_strategy",
+        "params": {
+            "min_market_cap": 10,
+            "min_pe": 0,
+            "min_listing_days": 365,
+            "iron_laws_strict": True,
+        },
     },
 }
 
@@ -44,7 +46,8 @@ def load_strategy(name: str):
         raise ValueError(f"未知策略: {name}. 可用: {list(STRATEGY_REGISTRY.keys())}")
     cfg = STRATEGY_REGISTRY[name]
     mod = __import__(cfg["path"], fromlist=[cfg["class"]])
-    return getattr(mod, cfg["class"])()
+    params = cfg.get("params", {})
+    return getattr(mod, cfg["class"])(**params)
 
 
 def add_next_open(df: pd.DataFrame) -> pd.DataFrame:
@@ -98,6 +101,10 @@ def load_wavechan_cache(years: List[int]) -> pd.DataFrame:
         "date", "symbol", "has_signal", "total_score",
         "signal_type", "signal_status", "wave_trend",
         "wave_state", "stop_loss",
+        # 铁律验证字段（wave_recognizer）
+        "iron_law_1", "iron_law_2", "iron_law_3",
+        "all_verified", "divergence_confirmed",
+        "confidence", "weekly_wave",
     ]
     existing = [c for c in cols if c in cache_df.columns]
     cache_df = cache_df[existing].drop_duplicates(["date", "symbol"])

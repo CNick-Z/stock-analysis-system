@@ -375,6 +375,7 @@ class BaseFramework:
         strategy: Strategy,
         df: pd.DataFrame,
         target_date: str,
+        dates: list = None,
     ):
         """
         运行单日模拟盘（从状态文件恢复，继续交易）
@@ -383,6 +384,7 @@ class BaseFramework:
             strategy: 策略实例
             df: 预加载数据
             target_date: 目标日期
+            dates: 完整交易日列表（用于计算 next_date）
         """
         self._strategy = strategy
 
@@ -391,8 +393,9 @@ class BaseFramework:
             self.reset()
 
         # 传入完整日期列表，以便计算 next_date
-        all_dates = sorted(df["date"].unique())
-        self._on_day(target_date, df, dates=all_dates)
+        if dates is None:
+            dates = sorted(df["date"].unique())
+        self._on_day(target_date, df, dates=dates)
         self.save_state()
 
         total_value = self._calc_total_value(df, target_date)

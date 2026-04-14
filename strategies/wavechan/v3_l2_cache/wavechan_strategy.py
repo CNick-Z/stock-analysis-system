@@ -32,6 +32,9 @@ from strategies.wavechan.v3_l2_cache.strategy import (
     WaveEngine, SymbolWaveCache, WaveCounterV3, BiRecord,
     aggregate_daily_to_weekly, WaveSnapshot,
 )
+from strategies.wavechan.v3_l2_cache.wave_backtrack_corrector import (
+    WaveBacktrackCorrector,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +91,11 @@ class WaveChanStrategy:
         position_size: float = 0.20,
         use_weekly_filter: bool = True,  # 是否启用周线过滤
         stock_list: list = None,        # 限定股票列表（None=全部）
+        # 基本面过滤参数
+        min_market_cap: float = 0,     # 最小市值(亿)，0=不过滤
+        min_pe: float = 0,             # 最小PE，0=不过滤
+        min_listing_days: int = 0,     # 最短上市天数，0=不过滤
+        iron_laws_strict: bool = False,  # 是否要求铁律验证通过（wave_recognizer all_verified）
     ):
         self.l2_cache_dir = l2_cache_dir
         self.threshold = threshold
@@ -98,6 +106,12 @@ class WaveChanStrategy:
         self.position_size = position_size
         self.use_weekly_filter = use_weekly_filter
         self._stock_list = set(stock_list) if stock_list else None
+        # 基本面过滤
+        self.min_market_cap = min_market_cap
+        self.min_pe = min_pe
+        self.min_listing_days = min_listing_days
+        self._fundamental_filter_enabled = min_market_cap > 0 or min_pe > 0 or min_listing_days > 0
+        self.iron_laws_strict = iron_laws_strict
 
         # 引擎缓存（symbol → WaveEngine）
         self._engines: dict = {}
@@ -109,6 +123,71 @@ class WaveChanStrategy:
         # impulse_state: W3_in_progress | W5_in_progress | W4_in_progress | W1_or_W2 | W5_done
         self._weekly_state_cache: Dict[str, Dict[str, str]] = defaultdict(dict)
         self._weekly_counter_cache: Dict[str, WaveCounterV3] = {}
+
+        # ── 回溯修正 v2.0 ─────────────────────────────────────────────
+        # 大级别缓存（symbol → large_degree）
+        self._large_degree_cache: Dict[str, str] = {}
+        # 修正后 wave_state 缓存（symbol → {date: corrected_state}）
+        self._corrected_wave_state_cache: Dict[str, Dict[str, str]] = defaultdict(dict)
+        self._backtrack_enabled: bool = True   # 可通过参数关闭
+
+        # ── L1 Fallback 缓存（每个交易日只算一次每个 symbol）────────────
+        # _l1_date: 当前缓存对应的交易日
+        # _l1_cache: symbol → L1信号dict
+        self._l1_date: str = ''
+
+    def _write_l1_signals_to_cache(self, df: pd.DataFrame, current_date: str):
+        """
+        将 L1 fallback 计算的信号写回 L2 缓存目录，格式：
+        /data/warehouse/wavechan/wavechan_cache/l2_hot_year=YYYY_month=MM/data.parquet
+
+        这样做的好处：第一次用 L1 fallback 计算后，下次再跑相同月份就有现成的 L2 数据了。
+        """
+        import pandas as pd
+        from pathlib import Path
+
+        sig_rows = df[df.get('has_signal', False) == True]
+        if sig_rows.empty:
+            return
+
+        year = current_date[:4]
+        month = current_date[5:7]
+        cache_path = Path(f'/data/warehouse/wavechan/wavechan_cache/l2_hot_year={year}_month={month}/data.parquet')
+
+        # 读取现有数据（如果有）
+        if cache_path.exists():
+            try:
+                existing = pd.read_parquet(cache_path)
+                # 删除当前日期的旧数据
+                existing = existing[existing['date'] != current_date]
+                # 合并新数据
+                sig_to_write = sig_rows[['date', 'symbol', 'has_signal', 'signal_type',
+                                          'signal_status', 'total_score', 'wave_trend',
+                                          'wave_state', 'stop_loss']].copy()
+                sig_to_write = sig_to_write.astype({
+                    'has_signal': 'bool',
+                    'total_score': 'float64',
+                    'stop_loss': 'float64',
+                })
+                result = pd.concat([existing, sig_to_write], ignore_index=True)
+            except Exception:
+                # 读取失败则只写新数据
+                result = sig_rows[['date', 'symbol', 'has_signal', 'signal_type',
+                                    'signal_status', 'total_score', 'wave_trend',
+                                    'wave_state', 'stop_loss']].copy()
+        else:
+            # 不存在则创建目录
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            result = sig_rows[['date', 'symbol', 'has_signal', 'signal_type',
+                               'signal_status', 'total_score', 'wave_trend',
+                               'wave_state', 'stop_loss']].copy()
+
+        try:
+            result.to_parquet(cache_path, index=False)
+            logger.info(f"[L1Fallback→L2] {current_date} 写入 {len(sig_rows)} 条信号到缓存 {cache_path.name}")
+        except Exception as e:
+            logger.warning(f"[L1Fallback→L2] {current_date} 写入缓存失败: {e}")
+        self._l1_cache: Dict[str, dict] = {}
 
         # 策略数据接口
         self.name = "WaveChanStrategy"
@@ -130,7 +209,32 @@ class WaveChanStrategy:
         from utils.data_loader import load_wavechan_signals
         if len(dates) < 2:
             dates = [dates[0], dates[0]]
-        self._wave_cache = load_wavechan_signals(dates[0], dates[-1])
+        new_cache = load_wavechan_signals(dates[0], dates[-1])
+        if not hasattr(self, '_wave_cache') or self._wave_cache.empty:
+            self._wave_cache = new_cache
+        elif not new_cache.empty:
+            # 追加合并（只追加有数据的月份，空月份不覆盖已有数据）
+            self._wave_cache = pd.concat([self._wave_cache, new_cache], ignore_index=True)
+            self._wave_cache = self._wave_cache.drop_duplicates(subset=['date', 'symbol'], keep='last')
+
+        # ── L1 Fallback 预计算信号加载 ───────────────────────────────
+        # 从预计算的 Parquet 加载（scripts/build_l1_signals_2026.py 生成）
+        # 比逐股票实时计算快 100 倍
+        self._l1_signals: pd.DataFrame = pd.DataFrame()
+        year = int(dates[0][:4]) if dates else None
+        if year:
+            l1_path = Path(f'/data/warehouse/wavechan_l1_signals/year={year}/data.parquet')
+            if l1_path.exists():
+                self._l1_signals = pd.read_parquet(l1_path)
+                self._l1_signals_by_symbol = (
+                    self._l1_signals.groupby('symbol')
+                    .apply(lambda g: g.iloc[0].to_dict())
+                    .to_dict()
+                )
+                logger.info(f"[L1Fallback] 已加载预计算信号: {len(self._l1_signals)} 只股票 → {l1_path}")
+            else:
+                logger.info(f"[L1Fallback] 预计算信号不存在（{l1_path}），将使用实时计算")
+                self._l1_signals_by_symbol = {}
 
         # ── 保存完整历史数据并预计算周线方向（向量化，O(n)）─────────────
         if loader is not None and hasattr(loader, 'empty') and not loader.empty:
@@ -138,10 +242,142 @@ class WaveChanStrategy:
         else:
             self._full_df = pd.DataFrame()
 
+        # ── 基本面数据加载（在 _full_df 之后）────────────────────────
+        if self._fundamental_filter_enabled:
+            self._load_fundamental_data(dates)
+
+        # ── v2.0 回溯修正 ───────────────────────────────────────────
+        # 将 wave_state 从 wave_cache 合并到 _full_df，然后修正
+        self._apply_backtrack_correction(dates)
+
         # ── 向量化预计算所有 symbol-date 的周线方向 ────────────────────
         self._precompute_weekly_dirs_vectorized(dates)
 
         return self._wave_cache
+
+    def _load_fundamental_data(self, dates: list):
+        """加载基本面数据并构建有效股票集合"""
+        import pandas as pd
+        from pathlib import Path
+        
+        DATA_DIR = Path('/root/.openclaw/workspace/data/warehouse')
+        
+        # 加载股票基本信息
+        basic = pd.read_parquet(DATA_DIR / 'stock_basic_info.parquet')
+        basic['listing_date'] = pd.to_datetime(basic['listing_date'])
+        
+        # 计算上市天数
+        end_date = pd.Timestamp(dates[-1]) if dates else pd.Timestamp('2025-12-31')
+        basic['listing_days'] = (end_date - basic['listing_date']).dt.days
+        
+        # 计算市值(亿) - 使用最新收盘价 × 总股本
+        # 先获取每只股票的最新收盘价
+        if hasattr(self, '_full_df') and not self._full_df.empty:
+            latest_prices = self._full_df.groupby('symbol')['close'].last().reset_index()
+            basic = basic.merge(latest_prices, on='symbol', how='left')
+            basic['market_cap_yi'] = basic['total_shares'] * basic['close'] / 1e8
+        else:
+            basic['market_cap_yi'] = 0
+        
+        # 加载财务数据(PE)
+        fin = pd.read_parquet(DATA_DIR / 'financial_summary.parquet')
+        # 取最新的PE
+        latest_fin = fin.sort_values('date').groupby('symbol').last().reset_index()
+        basic = basic.merge(latest_fin[['symbol', 'pe_ratio']], on='symbol', how='left')
+        
+        # 构建有效股票集合
+        mask = pd.Series(True, index=basic.index)
+        if self.min_market_cap > 0:
+            mask &= basic['market_cap_yi'].fillna(0) >= self.min_market_cap
+        if self.min_pe > 0:
+            mask &= basic['pe_ratio'].fillna(0) >= self.min_pe
+        if self.min_listing_days > 0:
+            mask &= basic['listing_days'].fillna(0) >= self.min_listing_days
+        
+        self._valid_symbols = set(basic[mask]['symbol'])
+        logger.info(f"[FundamentalFilter] 市值>{self.min_market_cap}亿 PE>{self.min_pe} 上市>{self.min_listing_days}天 → {len(self._valid_symbols)} 只股票")
+
+    def _apply_backtrack_correction(self, dates: list):
+        """
+        v2.0 回溯修正主入口。
+
+        将 wave_state 合并到 _full_df，然后对每只股票执行三层架构修正：
+          Layer 3: 周线大级别判定
+          Layer 2: 子浪合法性约束
+          Layer 1: Viterbi 回溯重标注
+
+        修正结果存入 self._corrected_wave_state_cache 和 self._large_degree_cache。
+        """
+        if not self._backtrack_enabled:
+            logger.info("[Backtrack] 已禁用，跳过修正")
+            return
+
+        if self._full_df.empty:
+            logger.warning("[Backtrack] _full_df 为空，跳过修正")
+            return
+
+        # 检查 wave_state 列是否存在
+        if 'wave_state' not in self._full_df.columns:
+            logger.warning("[Backtrack] _full_df 缺少 wave_state 列，跳过修正")
+            return
+
+        # 只取有信号的数据进行修正（减少计算量）
+        # wave_cache 中 has_signal==True 的行才是实际使用的
+        if not self._wave_cache.empty and 'wave_state' in self._wave_cache.columns:
+            # 取 date 范围内的 wave_cache 数据
+            start_date = dates[0] if dates else None
+            end_date = dates[-1] if dates else None
+            wave_df = self._wave_cache.copy()
+            if start_date and end_date:
+                wave_df = wave_df[
+                    (wave_df['date'] >= start_date) &
+                    (wave_df['date'] <= end_date)
+                ]
+            # 合并 wave_state 到 _full_df（有信号的行）
+            wave_merge = wave_df[['date', 'symbol', 'wave_state']].drop_duplicates(
+                ['date', 'symbol']
+            )
+            full_df = self._full_df.merge(
+                wave_merge, on=['date', 'symbol'], how='left', suffixes=('', '_ws')
+            )
+            if 'wave_state_ws' in full_df.columns:
+                full_df['wave_state'] = full_df['wave_state_ws'].fillna(full_df['wave_state'])
+                full_df.drop(columns=['wave_state_ws'], inplace=True)
+        else:
+            full_df = self._full_df.copy()
+
+        # 过滤必要的列
+        required_cols = ['date', 'symbol', 'wave_state', 'close']
+        for col in ['high', 'low']:
+            if col in full_df.columns:
+                required_cols.append(col)
+
+        available = [c for c in required_cols if c in full_df.columns]
+        work_df = full_df[available].dropna(subset=['date', 'symbol'])
+
+        if work_df.empty:
+            logger.warning("[Backtrack] 无可用数据，跳过修正")
+            return
+
+        # 执行回溯修正
+        corrector = WaveBacktrackCorrector(reversal_threshold=-0.02, lookback=20)
+        corrected_df = corrector.correct(work_df)
+
+        # 填入缓存
+        self._large_degree_cache.clear()
+        self._corrected_wave_state_cache.clear()
+
+        for symbol, grp in corrected_df.groupby('symbol'):
+            # 大级别（v1.0 corrector 不提供，设为 UNKNOWN）
+            large_deg = grp['large_degree'].iloc[0] if 'large_degree' in grp.columns and len(grp) > 0 else 'UNKNOWN'
+            self._large_degree_cache[symbol] = large_deg
+            # 修正后 wave_state
+            self._corrected_wave_state_cache[symbol] = dict(
+                zip(grp['date'].astype(str), grp['wave_state_corrected'])
+            )
+
+        n = len(self._corrected_wave_state_cache)
+        logger.info(f"[Backtrack v1.0] 修正完成: {n} 只股票的大级别和波浪状态已缓存")
 
     def _precompute_weekly_dirs_vectorized(self, dates: list):
         """
@@ -189,14 +425,17 @@ class WaveChanStrategy:
         logger.info(f"[WeeklyFilter] 周线方向预计算完成: {len(self._weekly_dir_cache)} 只股票")
 
         # ── 同时预计算周线波浪阶段 ────────────────────────────────────
+        # v2.0: 使用修正后的 wave_state 和大级别上下文
         self._weekly_state_cache.clear()
         for sym, grp in df.groupby('symbol'):
-            # 用当日 wave_state 作为周线波浪阶段的代理
             state_map = {}
+            large_deg = self._large_degree_cache.get(sym, 'UNKNOWN')
+            corrected = self._corrected_wave_state_cache.get(sym, {})
             for _, row in grp.iterrows():
                 d = str(row['date'])
-                ws = str(row.get('wave_state', 'initial'))
-                state_map[d] = self._wave_state_to_impulse_state(ws)
+                # 优先使用修正后的 wave_state，否则用原始
+                ws = corrected.get(d, str(row.get('wave_state', 'initial')))
+                state_map[d] = self._wave_state_to_impulse_state(ws, large_deg)
             self._weekly_state_cache[sym] = state_map
 
         logger.info(f"[WeeklyFilter] 周线波浪阶段预计算完成: {len(self._weekly_state_cache)} 只股票")
@@ -210,44 +449,60 @@ class WaveChanStrategy:
     # W5_in_progress = w4_formed（W4完成，当前W5推动）
     ALLOWED_WAVE_STATES = {'W3_in_progress', 'W5_in_progress'}
 
-    def _wave_state_to_impulse_state(self, wave_state: str) -> str:
+    def _wave_state_to_impulse_state(self, wave_state: str, large_degree: str = None) -> str:
         """
         将 wave_state 映射为周线波浪阶段（impulse_state）
 
-        逻辑（P0 Fix 2026-04-07 修正）：
-          w1_formed  → W2_correction（W1完成，W2调整中）
-          w2_formed  → W3_in_progress（W2完成，W3推动浪进行中） ✅
-          w3_formed  → W4_correction（W3完成，W4调整中） ❌ 不买
-          w4_formed  → W5_in_progress（W4完成，W5推动浪进行中） ✅
-          w4_in_progress → W4_correction（W4调整进行中） ❌ 不买
-          w5_formed  → W5_done（5浪完成，新周期酝酿）
-          其他/initial → W1_or_W2（早期阶段，趋势不明）
+        v2.0 改进（Oracle 2026-04-11）：
+          - 引入大级别上下文（large_degree）
+          - 大级别决定子浪转移的合法性
+          - w3/w4/w5 → w1 在特定大级别下是合法的（子序列重置），不再强制修正
+
+        大级别 → BUY 允许规则：
+          - W3_in_progress（w2_formed）：大浪3推动中 ✅
+          - W5_in_progress（w4_formed）：大浪5推动中 ✅
+          - 大级别为 WAVE4/WAVEA/WAVEC（调整浪）时：
+              子浪 w2_formed/w4_formed 可能对应调整浪内部，不买
+              只买 C_BUY 熊市反转信号
 
         BUY 允许状态：W3_in_progress（w2_formed）、W5_in_progress（w4_formed）
-        BUY 拒绝状态：W4_correction（w3_formed/w4_in_progress）、W2_correction（w1_formed）、W5_done（新周期）
+        BUY 拒绝状态：W4_correction、W2_correction、W5_done、W1_or_W2
         """
-        # 关键修正（2026-04-07 P0 Bug Fix）：
-        # w1_formed: W1完成 → 当前W2调整中 → 调整浪
-        # w2_formed: W2完成 → 当前W3推动中 → 推动浪 ✅
-        # w3_formed: W3完成 → 当前W4调整中 → 调整浪（之前错误地把w3当成推动！）
-        # w4_formed: W4完成 → 当前W5推动中 → 推动浪 ✅
-        # w4_in_progress: W4调整进行中 → 调整浪
-        # w5_formed: W5完成 → 新周期酝酿
+        ws = str(wave_state)
+        large = large_degree or 'UNKNOWN'
+
+        # 基础映射（v2.0 不变）
         mapping = {
-            'w1_formed':         'W2_correction',
-            'w2_formed':         'W3_in_progress',   # W2完成=W3推动，可以买
-            'w3_formed':         'W4_correction',   # W3完成=W4调整，不买
-            'w4_formed':         'W5_in_progress',  # W4完成=W5推动，可以买
-            'w4_in_progress':   'W4_correction',   # W4调整中，不买
-            'w5_formed':         'W5_done',
+            'w1_formed':        'W2_correction',
+            'w2_formed':        'W3_in_progress',
+            'w3_formed':        'W4_correction',
+            'w4_formed':        'W5_in_progress',
+            'w4_in_progress':  'W4_correction',
+            'w5_formed':        'W5_done',
         }
-        return mapping.get(str(wave_state), 'W1_or_W2')
+        base = mapping.get(ws, 'W1_or_W2')
+
+        # v2.0 大级别上下文调整
+        # 调整浪大级别（WAVE4/WAVEA/WAVEB/WAVEC）中，子浪推动不等于大浪推动
+        # 大级别为调整浪时：
+        #   - w2_formed 可能只是反弹中的2浪，不是大级别推动
+        #   - 只有在 large_trend='bullish' 时才认为 w2_formed = W3_in_progress
+        if large in ('WAVE4_DOWN', 'WAVEA_DOWN', 'WAVEC_DOWN', 'WAVEB_UP'):
+            # 大级别调整/反弹中：严格控制 BUY
+            # C浪/W4/A浪/B浪中的子浪不算大级别推动
+            if ws == 'w2_formed':
+                return 'W1_or_W2'   # 调整浪中的反弹，不买
+            if ws == 'w4_formed':
+                return 'W4_correction'  # 调整浪中的子浪4，不买
+
+        return base
 
     def get_weekly_impulse_state(self, symbol: str, date_str: str) -> str:
         """
-        获取某只股票在指定日期的周线波浪阶段
+        获取某只股票在指定日期的周线波浪阶段（v2.0）
 
         优先使用预计算缓存，缓存未命中时实时计算。
+        实时计算时使用修正后的 wave_state 和大级别上下文。
 
         Returns:
             'W3_in_progress'   → W2完成，W3推动浪进行中，允许 BUY ✅
@@ -255,23 +510,163 @@ class WaveChanStrategy:
             'W4_correction'   → W3完成或W4进行中，调整浪，拒绝 BUY ❌
             'W2_correction'   → W1完成，W2调整中，趋势不明，拒绝 BUY ❌
             'W5_done'          → 5浪完成，新周期酝酿，拒绝 BUY ❌
+            'W1_or_W2'         → 大级别调整浪中子浪重置，拒绝 BUY ❌
         """
         date_str = str(date_str)
         if symbol in self._weekly_state_cache and date_str in self._weekly_state_cache[symbol]:
             return self._weekly_state_cache[symbol][date_str]
-        # 实时计算
+
+        # 实时计算（使用修正后的 wave_state 和大级别）
         ws = 'initial'
-        if hasattr(self, '_full_df') and not self._full_df.empty:
+        large_deg = self._large_degree_cache.get(symbol, 'UNKNOWN')
+
+        # 优先使用修正后的 wave_state
+        if symbol in self._corrected_wave_state_cache:
+            ws = self._corrected_wave_state_cache[symbol].get(date_str, 'initial')
+        elif hasattr(self, '_full_df') and not self._full_df.empty:
             row = self._full_df[
                 (self._full_df['symbol'] == symbol) &
                 (self._full_df['date'].astype(str) == date_str)
             ]
             if not row.empty:
                 ws = str(row.iloc[0].get('wave_state', 'initial'))
-        state = self._wave_state_to_impulse_state(ws)
+
+        state = self._wave_state_to_impulse_state(ws, large_deg)
         # 回填缓存
         self._weekly_state_cache[symbol][date_str] = state
         return state
+
+    # ------------------------------------------------------------------
+    # L1 Fallback：L2无数据时从L1实时计算V3波浪信号
+    # ------------------------------------------------------------------
+
+    def _compute_l1_signal(self, symbol: str, current_date: str) -> Optional[dict]:
+        """
+        当L2缓存无数据时，从L1极值实时计算V3波浪信号
+
+        使用 wave_recognizer 的 weekly 波浪分析：
+          - identify_wave_stage: 获取趋势和波浪序列
+          - label_wave_stage: 获取艾略特标签和铁律验证
+
+        每天只计算一次每个 symbol，结果缓存到 self._l1_cache。
+        缓存以 year 为粒度（同一年的信号通常不变）。
+
+        Returns:
+            dict with keys: has_signal, signal_type, total_score, wave_trend,
+                           signal_status, wave_state, stop_loss
+            or None if computation fails
+        """
+        # ── 优先使用预计算信号（prepare 时从 Parquet 加载）───────────────
+        if hasattr(self, '_l1_signals_by_symbol') and self._l1_signals_by_symbol:
+            if symbol in self._l1_signals_by_symbol:
+                return self._l1_signals_by_symbol[symbol]
+
+        # ── 内存缓存命中检查 ───────────────────────────────────────────
+        # 波浪阶段随市场动态变化，不做日期级别的缓存（memoization 会阻止自动修正）
+        # 注意：identify_wave_stage 每次都用最新数据（year-1 + year），无需手动刷新
+
+        try:
+            import datetime
+            year = int(current_date[:4]) if current_date else datetime.datetime.now().year
+
+            # ── Step 1: identify_wave_stage → 趋势 + 波浪序列 ──────────────
+            # 注意：实际目录名是 stock-wave-recognition（含连字符），不是 stock_wave_recognition
+            _wr_path = str(PROJECT_ROOT.parent / 'stock-wave-recognition')
+            if _wr_path not in sys.path:
+                sys.path.insert(0, _wr_path)
+            from wave_recognizer import identify_wave_stage, label_wave_stage
+
+            weekly_trend, wave_seq = identify_wave_stage(
+                symbol, year, years=[year - 1, year]
+            )
+
+            # ── Step 2: label_wave_stage → 艾略特标签 + 铁律验证 ────────────
+            label_result = label_wave_stage(symbol, year)
+
+            labeled_waves = label_result.get('labeled_waves', [])
+            iron_law_passed = label_result.get('iron_law_passed', False)
+            cycle_type = label_result.get('cycle_type', 'unknown')
+
+            if not labeled_waves:
+                return None
+
+            # ── Step 3: 从最新标注的浪判断信号类型 ──────────────────────────
+            # 最新完成的浪（倒数第1或第2个，因为最后一个可能还在进行中）
+            completed = [w for w in labeled_waves if not w.get('in_progress', False)]
+            if not completed:
+                return None
+
+            latest = completed[-1]
+            # 注意：用 eliott_label 而不是 wave（numeric）
+            # eliott_label: 'W1','W2','W3','W4','W5','WA','WB','WC'
+            wave_label = str(latest.get('elliott_label', ''))
+
+            # 映射 elliott_label → V3 signal_type
+            # W2 完成 → 当前处于 W3 推动 → W2_BUY
+            # W4 完成 → 当前处于 W5 推动 → W4_BUY
+            # WA/WB/WC 完成 → C_BUY 熊市反弹/新推动起点
+            signal_map = {
+                'W2': 'W2_BUY',
+                'W4': 'W4_BUY',
+                'W1': 'C_BUY',
+                'WA': 'C_BUY',
+                'WB': 'C_BUY',
+                'WC': 'C_BUY',
+            }
+            signal_type = signal_map.get(wave_label, None)
+
+            if signal_type is None:
+                return None
+
+            # ── Step 4: 计算评分 ────────────────────────────────────────────
+            # 基于铁律验证 + 置信度
+            confidence = latest.get('confidence', 0.5)
+            iron_bonus = 20 if iron_law_passed else 0
+            wave_bonus = 10 if cycle_type == 'impulse' else 5
+            total_score = int(confidence * 60 + iron_bonus + wave_bonus)
+
+            # ── Step 5: 判断 wave_state ──────────────────────────────────────
+            ws_map = {
+                'W1': 'w1_formed', 'W2': 'w2_formed',
+                'W3': 'w3_formed', 'W4': 'w4_formed',
+                'W5': 'w5_formed',
+                'WA': 'w1_formed', 'WB': 'w2_formed', 'WC': 'w3_formed',
+            }
+            wave_state = ws_map.get(wave_label, 'initial')
+
+            # ── Step 6: wave_trend ───────────────────────────────────────────
+            wave_trend_map = {'up': 'long', 'down': 'down'}
+            wave_trend = wave_trend_map.get(weekly_trend, 'neutral')
+
+            # ── Step 7: signal_status ────────────────────────────────────────
+            # L1 fallback 直接 confirmed（铁律已体现在 total_score 中）
+            signal_status = 'confirmed'
+
+            # ── Step 8: stop_loss ────────────────────────────────────────────
+            # 从最近的低点计算：W2低点 × 0.97 或 W4低点 × 0.97
+            recent_low = latest.get('low_price') or latest.get('start_price') or latest.get('end_price')
+            if recent_low:
+                stop_loss = round(recent_low * 0.97, 2)
+            else:
+                stop_loss = 0.0
+
+            result = {
+                'has_signal': True,
+                'signal_type': signal_type,
+                'total_score': total_score,
+                'wave_trend': wave_trend,
+                'signal_status': signal_status,
+                'wave_state': wave_state,
+                'stop_loss': stop_loss,
+                '_weekly_dir': 'bullish' if weekly_trend == 'up' else 'neutral',
+                '_impulse_state': self._wave_state_to_impulse_state(wave_state),
+            }
+            # 不缓存（每次都重新计算，确保自动修正生效）
+            return result
+
+        except Exception as e:
+            logger.warning(f"[L1Fallback] {symbol}@{current_date} 计算失败: {e}")
+            return None
 
     # ------------------------------------------------------------------
     # 框架接口
@@ -305,6 +700,125 @@ class WaveChanStrategy:
         df = daily_df.copy()
         current_date = date or (df['date'].iloc[0] if 'date' in df.columns else None)
 
+        # ── 合并 L2 wave_cache 到每日数据 ────────────────────────────────
+        # wave_cache 在 prepare() 中加载（包含全年数据）
+        _wc_ok = (hasattr(self, '_wave_cache') and
+            not self._wave_cache.empty and
+            'date' in self._wave_cache.columns and
+            'symbol' in self._wave_cache.columns and
+            'has_signal' in self._wave_cache.columns)
+        if _wc_ok:
+            # 如果当前月份的 L2 数据不在缓存中，实时加载（支持 April 等后续月份）
+            if current_date and not self._wave_cache.empty:
+                cached_months = set(str(d)[:7] for d in self._wave_cache['date'].unique())
+                current_month = str(current_date)[:7]
+                if current_month not in cached_months:
+                    # 当前月份不在缓存，重新加载（包含已写入的 L1→L2 回补数据）
+                    from utils.data_loader import load_wavechan_signals
+                    reloaded = load_wavechan_signals(current_date, current_date)
+                    if not reloaded.empty:
+                        self._wave_cache = pd.concat([self._wave_cache, reloaded], ignore_index=True)
+                        logger.info(f"[WaveMerge] {current_date} 重新加载月份数据，当前缓存共 {len(self._wave_cache)} 行")
+
+            wave_cols = ['date', 'symbol', 'has_signal', 'signal_type', 'signal_status',
+                         'total_score', 'wave_trend', 'wave_state', 'stop_loss']
+            wave_cols = [c for c in wave_cols if c in self._wave_cache.columns]
+            # 只删除信号重叠列（不删 merge key: date, symbol）
+            sig_cols_to_replace = [c for c in wave_cols if c not in ('date', 'symbol') and c in df.columns]
+            if sig_cols_to_replace:
+                df = df.drop(columns=sig_cols_to_replace)
+            wave_sub = self._wave_cache[wave_cols].drop_duplicates(['date', 'symbol'])
+            # 筛选当日数据减少 merge 规模
+            if current_date:
+                wave_sub = wave_sub[wave_sub['date'] == str(current_date)[:10]]
+            n_sig = wave_sub['has_signal'].sum() if not wave_sub.empty and 'has_signal' in wave_sub.columns else 0
+            if not wave_sub.empty:
+                df = df.merge(wave_sub, on=['date', 'symbol'], how='left')
+            logger.info(f"[WaveMerge] {current_date} wave_sub={len(wave_sub)} signals={n_sig}")
+
+        # ── L2-only 模式：禁止 L1 fallback ─────────────────────────────────
+        # 检测 L2 当日是否有信号（必须在 wave merge 之后）
+        _force_l2_only = getattr(self, '_l2_only_mode', False)
+        l2_has_data = (
+            'has_signal' in df.columns and
+            df['has_signal'].eq(True).any()
+        )
+        if _force_l2_only:
+            self._l1_signals = pd.DataFrame()
+            self._l1_signals_by_symbol = {}
+            if not l2_has_data:
+                logger.info(f"[L2-Only] {current_date} L2无信号，返回空（不触发L1 fallback）")
+                return pd.DataFrame()
+
+        # ── L1 Fallback: L2无数据时从L1实时计算波浪信号 ────────────────────
+
+        if not l2_has_data:
+            # ── 矢量化的 L1 信号合并（快 100 倍）─────────────────────────
+            if hasattr(self, '_l1_signals') and not self._l1_signals.empty:
+                # 预计算 Parquet → 直接 merge
+                # 先从 df 删除 has_signal（避免 merge 时列名冲突：df.has_signal vs l1.has_signal）
+                if 'has_signal' in df.columns:
+                    df = df.drop(columns=['has_signal'])
+                l1 = self._l1_signals[['symbol', 'has_signal', 'signal_type', 'total_score',
+                                        'wave_trend', 'signal_status', 'wave_state', 'stop_loss',
+                                        '_weekly_dir', '_impulse_state']].copy()
+                l1 = l1.rename(columns={
+                    'signal_type': '_l1_signal_type',
+                    'total_score': '_l1_total_score',
+                    'wave_trend': '_l1_wave_trend',
+                    'signal_status': '_l1_signal_status',
+                    'wave_state': '_l1_wave_state',
+                    'stop_loss': '_l1_stop_loss',
+                    '_weekly_dir': '_l1_weekly_dir',
+                    '_impulse_state': '_l1_impulse_state',
+                })
+                df = df.merge(l1, on='symbol', how='left')
+                # 填充 has_signal=False 的行（L1 有信号则合并后 has_signal=True，否则 NaN）
+                if 'has_signal' not in df.columns:
+                    df['has_signal'] = False
+                else:
+                    df['has_signal'] = df['has_signal'].fillna(False)
+                # 直接用 L1 预计算值覆盖（原 df 通常没有这些列）
+                df['signal_type'] = df['_l1_signal_type']
+                df['total_score'] = df['_l1_total_score'].fillna(0).astype(float)
+                df['wave_trend'] = df['_l1_wave_trend'].fillna('')
+                df['signal_status'] = df['_l1_signal_status'].fillna('')
+                df['wave_state'] = df['_l1_wave_state'].fillna('')
+                df['stop_loss'] = df['_l1_stop_loss'].fillna(0.0).astype(float)
+                df['_weekly_dir'] = df['_l1_weekly_dir']
+                df['_impulse_state'] = df['_l1_impulse_state']
+                # 清理临时列
+                for c in ['_l1_signal_type', '_l1_total_score', '_l1_wave_trend',
+                          '_l1_signal_status', '_l1_wave_state', '_l1_stop_loss',
+                          '_l1_weekly_dir', '_l1_impulse_state']:
+                    if c in df.columns:
+                        df.drop(columns=[c], inplace=True)
+                computed = int(df['has_signal'].eq(True).sum())
+                logger.info(f"[L1Fallback] {current_date} 预计算信号合并完成: {computed}/{len(df)} 只有信号")
+                self._write_l1_signals_to_cache(df, current_date)
+            else:
+                # 无预计算 → 逐行实时计算（慢，只作后备）
+                logger.info(f"[L1Fallback] {current_date} L2无信号，执行实时计算 ({len(df)} 只候选)")
+                l1_signal_cols = [
+                    'has_signal', 'signal_type', 'total_score',
+                    'wave_trend', 'signal_status', 'wave_state', 'stop_loss'
+                ]
+                for col in l1_signal_cols:
+                    if col not in df.columns:
+                        df[col] = pd.NA
+
+                computed = 0
+                for idx, row in df.iterrows():
+                    sym = str(row.get('symbol', ''))
+                    sig = self._compute_l1_signal(sym, current_date)
+                    if sig:
+                        for col, val in sig.items():
+                            df.at[idx, col] = val
+                        computed += 1
+
+                logger.info(f"[L1Fallback] {current_date} 实时计算完成: {computed}/{len(df)} 只有效信号")
+                self._write_l1_signals_to_cache(df, current_date)
+
         # ── Step 1: 日线基础过滤 ───────────────────────────────────────
         _false = pd.Series(False, index=df.index)
         _zero = pd.Series(0, index=df.index)
@@ -324,7 +838,12 @@ class WaveChanStrategy:
             mask &= df['signal_type'].isin(buy_signals)
 
         if 'signal_status' in df.columns:
-            mask &= df['signal_status'].eq('confirmed')
+            # L1 fallback 信号已内置 signal_status='confirmed'，直接接受
+            # 非 L1 行 signal_status='' 会自然被筛掉
+            signal_ok = df['signal_status'].eq('confirmed')
+            # 如果全是空（无效数据），跳过此过滤
+            if signal_ok.any():
+                mask &= signal_ok
 
         candidates = df[mask].copy()
         if candidates.empty:
@@ -336,6 +855,27 @@ class WaveChanStrategy:
             if candidates.empty:
                 return candidates
 
+        # ── Step 1.6: 基本面过滤 ──────────────────────────────────────
+        if self._fundamental_filter_enabled and hasattr(self, '_valid_symbols'):
+            n_before = len(candidates)
+            candidates = candidates[candidates['symbol'].isin(self._valid_symbols)].copy()
+            n_rejected = n_before - len(candidates)
+            if n_rejected > 0:
+                logger.info(f"[FundamentalFilter] {current_date} 基本面过滤拒绝 {n_rejected}/{n_before} 个候选")
+            if candidates.empty:
+                return candidates
+
+        # ── Step 1.7: 铁律过滤（wave_recognizer）─────────────────────────
+        if self.iron_laws_strict and not candidates.empty:
+            if 'all_verified' in candidates.columns:
+                n_before = len(candidates)
+                candidates = candidates[candidates['all_verified'] == 1].copy()
+                n_rejected = n_before - len(candidates)
+                if n_rejected > 0:
+                    logger.info(f"[IronLawsFilter] {current_date} 铁律过滤拒绝 {n_rejected}/{n_before} 个候选")
+            else:
+                logger.warning(f"[IronLawsFilter] all_verified 字段不存在，跳过铁律过滤")
+
         # ── Step 2: 周线过滤 ───────────────────────────────────────────
         if self.use_weekly_filter:
             weekly_mask = pd.Series(True, index=candidates.index)
@@ -343,8 +883,19 @@ class WaveChanStrategy:
             for idx, row in candidates.iterrows():
                 sym = row.get('symbol', '')
                 row_date = str(row.get('date', current_date or ''))
+                signal_type = str(row.get('signal_type', ''))
 
-                weekly_dir = self._get_weekly_direction(sym, row_date)
+                # C_BUY 是熊市反转信号，跳过周线过滤
+                if signal_type == 'C_BUY':
+                    continue
+
+                # 优先使用 L1 fallback 计算的周线方向（_weekly_dir 列）
+                # 否则回退到缓存的 _get_weekly_direction
+                if '_weekly_dir' in row.index and pd.notna(row.get('_weekly_dir')):
+                    weekly_dir = str(row['_weekly_dir'])
+                else:
+                    weekly_dir = self._get_weekly_direction(sym, row_date)
+
                 daily_dir = str(row.get('wave_trend', 'neutral'))
 
                 # 周线 bullish（w1/w3/w4完成）→ 接受所有买入
@@ -371,8 +922,20 @@ class WaveChanStrategy:
             wave_state_mask = pd.Series(True, index=filtered.index)
             for idx, row in filtered.iterrows():
                 sym = str(row.get('symbol', ''))
+                signal_type = str(row.get('signal_type', ''))
+
+                # C_BUY 是熊市反转信号，跳过波浪数过滤
+                if signal_type == 'C_BUY':
+                    continue
+
                 row_date = str(row.get('date', current_date or ''))
-                weekly_state = self.get_weekly_impulse_state(sym, row_date)
+
+                # 优先使用 L1 fallback 计算的 impulse_state
+                if '_impulse_state' in row.index and pd.notna(row.get('_impulse_state')):
+                    weekly_state = str(row['_impulse_state'])
+                else:
+                    weekly_state = self.get_weekly_impulse_state(sym, row_date)
+
                 if weekly_state not in self.ALLOWED_WAVE_STATES:
                     wave_state_mask[idx] = False
                     logger.debug(f"[WaveNumFilter] {sym}@{row_date} 拒绝: 周线波浪={weekly_state}")
