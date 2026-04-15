@@ -682,7 +682,7 @@ class WaveChanStrategy:
 
         条件（优先级）：
           1. has_signal == True
-          2. signal_type in (W2_BUY, W4_BUY, C_BUY)
+          2. signal_type in (W2_BUY, W4_BUY)  # 【优化】禁用C_BUY（熊市反弹胜率仅22-36%，研究结论2026-04-15）
           3. total_score >= self.threshold
           4. wave_trend in (long, neutral, '')  # 日线方向
           5. signal_status == 'confirmed'
@@ -833,7 +833,7 @@ class WaveChanStrategy:
             wave_trend.isin(['long', 'neutral', ''])
         )
 
-        buy_signals = {'W2_BUY', 'W4_BUY', 'C_BUY', 'W4_BUY_ALERT', 'W4_BUY_CONFIRMED'}
+        buy_signals = {'W2_BUY', 'W4_BUY', 'W4_BUY_ALERT', 'W4_BUY_CONFIRMED'}  # 【优化】移除C_BUY
         if 'signal_type' in df.columns:
             mask &= df['signal_type'].isin(buy_signals)
 
@@ -944,6 +944,14 @@ class WaveChanStrategy:
             n_rejected_state = (~wave_state_mask).sum()
             if n_rejected_state > 0:
                 logger.info(f"[WaveNumFilter] {current_date} 波浪数过滤拒绝 {n_rejected_state} 个候选")
+
+        # ── Step 1.9: 记录信号日期 ─────────────────────────────────────
+        if current_date and not filtered.empty:
+            filtered['signal_date'] = current_date
+
+        # 记录信号日期
+        if current_date and not filtered.empty:
+            filtered['signal_date'] = current_date
 
         return filtered
 
