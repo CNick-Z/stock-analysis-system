@@ -921,16 +921,13 @@ class WaveChanStrategy:
                         chanlun_symbols = chanlun_new['symbol'].tolist()
                         chanlun_extra = df[df['symbol'].isin(chanlun_symbols)].copy()
                         if not chanlun_extra.empty:
-                            # 标记为缠论信号来源
+                            # 建立 symbol → chanlun 信号 的映射
+                            chanlun_map = chanlun_new.set_index('symbol')
+                            # 直接用缠论信号覆盖 wave 信号信息（不依赖 .where 的 NaN 逻辑）
                             chanlun_extra['_signal_source'] = 'chanlun'
-                            chanlun_extra['signal_type'] = chanlun_extra['signal_type'].where(
-                                chanlun_extra['signal_type'].notna(),
-                                chanlun_new.set_index('symbol')['signal_type'].get(chanlun_extra['symbol'], '')
-                            )
-                            chanlun_extra['total_score'] = chanlun_extra['total_score'].where(
-                                chanlun_extra['total_score'].notna(),
-                                (chanlun_new.set_index('symbol')['confidence'] * 100).get(chanlun_extra['symbol'], 0)
-                            )
+                            chanlun_extra['signal_type'] = chanlun_extra['symbol'].map(chanlun_map['signal_type'])
+                            chanlun_extra['total_score'] = (chanlun_extra['symbol'].map(chanlun_map['confidence']) * 100).fillna(0)
+                            chanlun_extra['signal_status'] = 'chanlun_confirmed'
                             candidates = pd.concat([candidates, chanlun_extra], ignore_index=True)
 
         if candidates.empty:
