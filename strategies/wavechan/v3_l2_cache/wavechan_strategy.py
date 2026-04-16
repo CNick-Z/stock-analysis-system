@@ -10,7 +10,7 @@ WaveChan V3 策略 - 统一框架适配层
   - should_sell(row, pos, market) → 出场判断（含连续3天出场逻辑）
 
 入场信号：Plan A双入口
-  波浪入口: W2_BUY(score≥50+RSI<52+momentum>6) / W4_BUY(score≥30+RSI<50)
+  波浪入口: W2_BUY(score≥50+RSI<52) / W4_BUY(score≥30+RSI<50)
   缠论入口: V1_BUY/V2_BUY(confidence≥0.7) 独立通过
 出场逻辑：止损 / 止盈 / 时间止损 / 波浪信号出场 / 连续3天 wave_trend==down
 禁止：C_BUY / w5_formed状态 / RSI>60
@@ -712,7 +712,6 @@ class WaveChanStrategy:
             - has_signal == True
             - total_score >= 50
             - rsi_14 < 52
-            - momentum_score > 6
             - wave_trend in (long, neutral, '')
             - signal_status == 'confirmed'
 
@@ -865,18 +864,17 @@ class WaveChanStrategy:
         total_score = df['total_score'] if 'total_score' in df.columns else _zero
         wave_trend = df['wave_trend'] if 'wave_trend' in df.columns else _empty
 
-        # 【优化2026-04-16】差异化阈值 + RSI/momentum过滤
-        # W2_BUY: score≥50 + RSI<52 + momentum>6
+        # 【优化2026-04-16】差异化阈值 + RSI过滤
+        # W2_BUY: score≥50 + RSI<52
         # W4_BUY: score≥30 + RSI<50
-        # w5_formed 状态：最危险，Step3的ALLOWED_WAVE_STATES已过滤
-        rsi = df['rsi_14'] if 'rsi_14' in df.columns else pd.Series(0, index=df.index)
-        momentum = df['momentum_score'] if 'momentum_score' in df.columns else pd.Series(0, index=df.index)
+        # w5_formed状态：最危险，Step3的ALLOWED_WAVE_STATES已过滤
+        # TODO: momentum_score>6过滤（列暂不存在，需要从价格数据计算）
+        rsi = df['rsi_14'].fillna(100) if 'rsi_14' in df.columns else pd.Series(100, index=df.index)
 
         w2_mask = (
             has_signal.eq(True) &
             total_score.ge(50) &
             rsi.lt(52) &
-            momentum.gt(6) &
             wave_trend.isin(['long', 'neutral', '']) &
             (df['signal_type'] == 'W2_BUY' if 'signal_type' in df.columns else pd.Series(False, index=df.index))
         )
@@ -909,8 +907,8 @@ class WaveChanStrategy:
                 (self._chanlun_cache['signal_type'].isin({'V1_BUY', 'V2_BUY'}))
             ].copy()
             if not chanlun_sub.empty:
-                # 只保留当日的缠论信号
-                chanlun_sub = chanlun_sub[chanlun_sub['date'] == str(current_date)[:10]]
+                # cache 已按 calc_date=今日 加载，date 列是信号产生日（可能早于今日）
+                # 缠论信号有滞后性，保留 cache 中所有高置信信号，不按 date 再过滤
                 if not chanlun_sub.empty:
                     # 排除已经在 candidates 里的股票
                     already_selected = set(candidates['symbol'].unique()) if not candidates.empty else set()
@@ -1007,7 +1005,13 @@ class WaveChanStrategy:
         # ── Step 3: 周线波浪数过滤（激进版）──────────────────────────────
         # 只在 W3/W5 冲动（推动）浪中允许 BUY
         # W4 调整浪 / 早期 W1/W2 / W5 完成 → 全部拒绝
-        if not filtered.empty:
+        #
+        # 【修复2026-04-16】L2 cache 没有 _impulse_state 列，WaveNumFilter
+        # 会错误地调用 get_weekly_impulse_state() 算出 W4_correction 导致全灭。
+        # 只有在 _impulse_state 列真实存在时（L1 fallback 数据）才执行此过滤。
+        # L2 模式的 V3 BUY 信号已带 wave_state（日线级别），本身已足够。
+        has_impulse_state = '_impulse_state' in filtered.columns
+        if not filtered.empty and has_impulse_state:
             wave_state_mask = pd.Series(True, index=filtered.index)
             for idx, row in filtered.iterrows():
                 sym = str(row.get('symbol', ''))
