@@ -146,3 +146,38 @@ def status() -> dict:
         }
 
     return info
+
+
+def read_weekly_l1_trend(symbol: str, year: int) -> Optional[str]:
+    """读取周线L1的最新trend"""
+    path = f'/data/warehouse/wavechan_l1/weekly_l1_year={year}/{symbol}.parquet'
+    if not os.path.exists(path):
+        return None
+    
+    try:
+        df = pd.read_parquet(path)
+        if len(df) == 0:
+            return None
+        return df.iloc[-1]['trend']
+    except:
+        return None
+
+
+def get_weekly_trend_before_date(symbol: str, year: int, target_date: str) -> str:
+    """
+    获取target_date之前的周线trend（用于回测过滤）
+    """
+    import pandas as pd
+    import os
+    
+    path = f'/data/warehouse/wavechan_l1/weekly_l1_year={year}/{symbol}.parquet'
+    if not os.path.exists(path):
+        return 'NEUTRAL'
+    
+    df = pd.read_parquet(path)
+    df = df[df['date'] < target_date]
+    
+    if len(df) == 0:
+        return 'NEUTRAL'
+    
+    return df.iloc[-1]['trend']

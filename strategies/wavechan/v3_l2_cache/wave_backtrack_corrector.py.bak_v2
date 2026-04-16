@@ -1,0 +1,716 @@
+# strategies/wavechan/v3_l2_cache/wave_backtrack_corrector.py
+# =============================================================
+"""
+波浪序列回溯修正器 v2.0
+======================
+
+三层架构（Oracle 2026-04-11 v2.0）：
+  Layer 3: 大级别判定（周线 MACD + 波浪计数）
+  Layer 2: 子浪合法性约束（根据大级别裁剪合法转移集）
+  Layer 1: 回溯重标注（Viterbi + 子序列重置检测）
+
+核心洞察（L2 是子浪，大级别决定合法性）：
+  w3/w4/w5 → w1 不一定是"错误"
+  可能是：子序列重置（大浪内部子浪重新从1开始）
+  判据：看价格方向是否反转
+    - 反转 → 合法，不修正
+    - 没反转 → 真正错误，Viterbi 回溯
+"""
+# =============================================================
+
+import logging
+from typing import List, Dict, Tuple, Optional, Set
+from dataclasses import dataclass
+
+import numpy as np
+import pandas as pd
+
+logger = logging.getLogger(__name__)
+
+# ============================================================
+# 常量
+# ============================================================
+
+# 波浪状态序号（用于序号比较）
+STATE_ID = {
+    'initial': 0,
+    'w1_formed': 1,
+    'w2_formed': 2,
+    'w3_formed': 3,
+    'w4_formed': 4,
+    'w4_in_progress': 4,   # w4_in_progress 与 w4_formed 同级
+    'w5_formed': 5,
+}
+
+# 反向映射
+ID_TO_STATE = {v: k for k, v in STATE_ID.items() if k != 'w4_in_progress'}
+ID_TO_STATE[4] = 'w4_formed'
+
+# Layer 2: 大级别上下文 → 子浪转移规则
+# key: 大级别状态
+# value: {
+#   'sub_must_follow': {prev_state: set of allowed next states},
+#   'sub_direction': 'UP' | 'DOWN',   # 子浪整体方向
+#   'sub_sequence_count': int,          # 最大子序列数（A+B+...）
+# }
+LARGE_DEGREE_CONTEXT: Dict[str, dict] = {
+    # 大级别上涨 1/3/5 浪：子浪方向向上
+    'WAVE1_UP': {
+        'sub_direction': 'UP',
+        'sub_must_follow': {
+            'w1_formed': {'w2_formed'},
+            'w2_formed': {'w3_formed'},
+            'w3_formed': {'w3_formed', 'w4_formed'},   # 允许延长
+            'w4_formed': {'w4_formed', 'w5_formed'},   # 允许延续
+            'w5_formed': {'w1_formed'},                 # 1浪未完，子5结束
+        },
+        'sub_sequence_count': 1,
+    },
+    'WAVE3_UP': {
+        'sub_direction': 'UP',
+        'sub_must_follow': {
+            'w1_formed': {'w2_formed'},
+            'w2_formed': {'w3_formed'},
+            'w3_formed': {'w3_formed', 'w4_formed'},   # 3浪延长
+            'w4_formed': {'w4_formed', 'w5_formed'},
+            'w5_formed': {'w1_formed'},                 # 子5完成，3浪继续
+        },
+        'sub_sequence_count': 1,
+    },
+    'WAVE5_UP': {
+        'sub_direction': 'UP',
+        'sub_must_follow': {
+            'w1_formed': {'w2_formed'},
+            'w2_formed': {'w3_formed'},
+            'w3_formed': {'w3_formed', 'w4_formed'},
+            'w4_formed': {'w4_formed', 'w5_formed'},
+            'w5_formed': {'w1_formed'},   # 子5完成 → 大5结束（可能是失败5浪）
+        },
+        'sub_sequence_count': 1,
+    },
+    # 大级别 Wave2 回调（子浪整体向上，但幅度小）
+    'WAVE2_DOWN': {
+        'sub_direction': 'UP',   # 子浪方向仍向上（调整浪中的反弹）
+        'sub_must_follow': {
+            'w1_formed': {'w2_formed'},
+            'w2_formed': {'w3_formed'},
+            'w3_formed': {'w4_formed'},
+            'w4_formed': {'w5_formed'},
+            'w5_formed': {'w1_formed'},
+        },
+        'sub_sequence_count': 1,
+    },
+    # 大级别 Wave4 调整（向下）
+    'WAVE4_DOWN': {
+        'sub_direction': 'DOWN',
+        'sub_must_follow': {
+            'w1_formed': {'w2_formed'},
+            'w2_formed': {'w3_formed'},
+            'w3_formed': {'w4_formed'},
+            'w4_formed': {'w5_formed'},
+            'w5_formed': {'w1_formed'},   # 子A5完成
+        },
+        'sub_sequence_count': 2,   # A浪 + B浪（子序列重置最可能发生处）
+    },
+    # 大级别 Wave5 之后的 A 浪下跌
+    'WAVEA_DOWN': {
+        'sub_direction': 'DOWN',
+        'sub_must_follow': {
+            'w1_formed': {'w2_formed'},
+            'w2_formed': {'w3_formed'},
+            'w3_formed': {'w4_formed'},
+            'w4_formed': {'w5_formed'},
+            'w5_formed': {'w1_formed'},
+        },
+        'sub_sequence_count': 1,
+    },
+    # B 浪反弹
+    'WAVEB_UP': {
+        'sub_direction': 'UP',
+        'sub_must_follow': {
+            'w1_formed': {'w2_formed'},
+            'w2_formed': {'w3_formed'},
+            'w3_formed': {'w4_formed'},
+            'w4_formed': {'w5_formed'},
+            'w5_formed': {'w1_formed'},
+        },
+        'sub_sequence_count': 1,
+    },
+    # C 浪末跌
+    'WAVEC_DOWN': {
+        'sub_direction': 'DOWN',
+        'sub_must_follow': {
+            'w1_formed': {'w2_formed'},
+            'w2_formed': {'w3_formed'},
+            'w3_formed': {'w4_formed'},
+            'w4_formed': {'w5_formed'},
+            'w5_formed': set(),   # C浪完成 = 大周期结束
+        },
+        'sub_sequence_count': 1,
+    },
+    # 无法判断大级别
+    'UNKNOWN': {
+        'sub_direction': 'UP',
+        'sub_must_follow': {
+            'w1_formed': {'w2_formed'},
+            'w2_formed': {'w3_formed'},
+            'w3_formed': {'w4_formed'},
+            'w4_formed': {'w5_formed'},
+            'w5_formed': {'w1_formed'},
+        },
+        'sub_sequence_count': 1,
+    },
+}
+
+
+# ============================================================
+# 数据结构
+# ============================================================
+
+@dataclass
+class SubSeqReset:
+    """子序列重置事件"""
+    idx: int           # 在股票 DataFrame 中的行索引
+    prev_state: str   # 重置前状态
+    curr_state: str   # 重置后状态（通常 w1_formed）
+    reset_type: str   # 'LEGAL_RESTART' | 'NEED_REVIEW'
+    price_reversal: bool  # 价格是否反转
+
+
+# ============================================================
+# WaveBacktrackCorrector
+# ============================================================
+
+class WaveBacktrackCorrector:
+    """
+    波浪序列回溯修正器 v2.0
+
+    使用三层架构对 L2 cache 中的 wave_state 进行回溯修正：
+      1. Layer 3: 识别周线大级别波浪上下文
+      2. Layer 2: 在已知大级别下判定子浪转移合法性
+      3. Layer 1: 对非法转移执行 Viterbi 回溯重标注
+
+    不再假设 L2 标注是"错误"，
+    而是承认子浪嵌套在大级别中，可能合法地从 w3/w4/w5 重置为 w1。
+    """
+
+    def __init__(self, enable_viterbi: bool = True, lookback: int = 20):
+        """
+        Args:
+            enable_viterbi: 是否启用 Viterbi 回溯（False=只做检测不修正）
+            lookback: 回溯最大窗口天数
+        """
+        self.enable_viterbi = enable_viterbi
+        self.lookback = lookback
+
+    # ============================================================
+    # 公开 API
+    # ============================================================
+
+    def correct(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        对 DataFrame 应用回溯修正。
+
+        修正整个 DataFrame（按 symbol 分组处理），
+        返回修正后的副本（不修改原始数据）。
+
+        Args:
+            df: 包含 date, symbol, wave_state, close, high, low 列的 DataFrame
+
+        Returns:
+            修正后的 DataFrame（新增 large_degree, wave_state_corrected, subseq_resets 列）
+        """
+        if df.empty:
+            return df
+
+        df = df.copy()
+        df = df.sort_values(['symbol', 'date']).reset_index(drop=True)
+
+        # 确保必要的列存在
+        required = ['date', 'symbol', 'wave_state', 'close']
+        missing = [c for c in required if c not in df.columns]
+        if missing:
+            logger.warning(f"[Backtrack] 缺少列 {missing}，跳过修正")
+            df['large_degree'] = 'UNKNOWN'
+            df['wave_state_corrected'] = df['wave_state']
+            return df
+
+        # 初始化输出列
+        df['large_degree'] = 'UNKNOWN'
+        df['wave_state_corrected'] = df['wave_state'].copy()
+        df['subseq_resets'] = ''
+
+        n_symbols = df['symbol'].nunique()
+        logger.info(f"[Backtrack v2.0] 开始修正: {n_symbols} 只股票, {len(df):,} 行")
+
+        results = []
+        for symbol, sym_df in df.groupby('symbol'):
+            sym_df = sym_df.reset_index(drop=True)
+
+            # Step 1: Layer 3 — 确定大级别
+            large_degree = self._identify_weekly_wave_context(sym_df)
+
+            # Step 2: Layer 1 — 识别子序列重置点
+            resets = self._identify_sub_sequence_resets(sym_df, large_degree)
+
+            # Step 3: Layer 1 — 对需要回溯的点执行 Viterbi 重标注
+            corrected = self._apply_corrections(sym_df, resets, large_degree)
+
+            # 填入结果
+            sym_df['large_degree'] = large_degree
+            sym_df['wave_state_corrected'] = corrected
+            sym_df['subseq_resets'] = str([(r.idx, r.reset_type, r.prev_state, r.curr_state)
+                                           for r in resets])
+
+            n_legal = sum(1 for r in resets if r.reset_type == 'LEGAL_RESTART')
+            n_review = sum(1 for r in resets if r.reset_type == 'NEED_REVIEW')
+            if n_review > 0:
+                logger.debug(f"[Backtrack] {symbol}: 大级={large_degree}, "
+                            f"合法重置={n_legal}, 需回溯={n_review}")
+
+            results.append(sym_df)
+
+        result_df = pd.concat(results, ignore_index=True)
+
+        n_total_resets = sum(1 for r in result_df['subseq_resets'] if r != '')
+        logger.info(f"[Backtrack v2.0] 修正完成: {n_total_resets} 个子序列重置事件")
+
+        return result_df
+
+    # ============================================================
+    # Layer 3: 大级别判定
+    # ============================================================
+
+    def _identify_weekly_wave_context(self, sym_df: pd.DataFrame) -> str:
+        """
+        识别单只股票的大级别波浪上下文（周线级别）。
+
+        使用简化版大级别判断（轻量级，无需额外数据）：
+        - 取最近 60 天价格结构
+        - 计算周线 MACD 趋势
+        - 结合波浪形态计数
+
+        Returns:
+            大级别状态字符串，见 LARGE_DEGREE_CONTEXT 的 key
+        """
+        sym_df = sym_df.sort_values('date').tail(60)   # 最近60天
+        if len(sym_df) < 20:
+            return 'UNKNOWN'
+
+        closes = sym_df['close'].values
+        highs = sym_df['high'].values if 'high' in sym_df.columns else closes
+        lows = sym_df['low'].values if 'low' in sym_df.columns else closes
+
+        # ---- 周线 MACD ----
+        macd_hist = self._weekly_macd(closes)
+        if macd_hist is None or len(macd_hist) < 5:
+            return 'UNKNOWN'
+
+        last_hist = macd_hist[-1]
+
+        # ---- 找高低点 ----
+        highs_idx = self._find_local_extrema(highs, mode='max')
+        lows_idx = self._find_local_extrema(lows, mode='min')
+
+        n_highs = len(highs_idx)
+        n_lows = len(lows_idx)
+
+        # ---- 波浪形态分类 ----
+        if last_hist > 0:
+            # 上涨趋势
+            if n_highs >= 5:
+                return 'WAVE5_UP'
+            elif n_highs >= 3:
+                return 'WAVE3_UP'
+            elif n_highs == 2 and n_lows >= 1:
+                return 'WAVE1_UP'
+            else:
+                return 'WAVE3_UP'  # 假设在3浪中
+        elif last_hist < 0:
+            # 下跌趋势
+            if n_lows >= 4:
+                return 'WAVEC_DOWN'
+            elif n_lows >= 3:
+                return 'WAVE4_DOWN'
+            elif n_lows == 2:
+                return 'WAVE2_DOWN'
+            else:
+                return 'WAVEC_DOWN'
+        else:
+            return 'UNKNOWN'
+
+    def _weekly_macd(self, prices: np.ndarray,
+                     fast: int = 12, slow: int = 26, signal: int = 9) -> Optional[np.ndarray]:
+        """计算 MACD histogram（简化版，不依赖 TA 库）"""
+        if len(prices) < slow + signal:
+            return None
+
+        try:
+            s = pd.Series(prices)
+            ema_fast = s.ewm(span=fast, adjust=False).mean().values
+            ema_slow = s.ewm(span=slow, adjust=False).mean().values
+            macd = ema_fast - ema_slow
+            sig = pd.Series(macd).ewm(span=signal, adjust=False).mean().values
+            hist = macd - sig
+            return hist
+        except Exception:
+            return None
+
+    @staticmethod
+    def _find_local_extrema(arr: np.ndarray, mode: str = 'max') -> List[int]:
+        """找局部极值点索引"""
+        result = []
+        for i in range(1, len(arr) - 1):
+            if mode == 'max' and arr[i] > arr[i-1] and arr[i] > arr[i+1]:
+                result.append(i)
+            elif mode == 'min' and arr[i] < arr[i-1] and arr[i] < arr[i+1]:
+                result.append(i)
+        return result
+
+    # ============================================================
+    # Layer 2: 子浪合法性判断
+    # ============================================================
+
+    def _is_legal_sub_transition(self, prev_raw: str, curr_raw: str,
+                                  large_degree: str) -> Tuple[bool, str]:
+        """
+        判断日线子浪转换在给定大级别下是否合法。
+
+        Returns:
+            (is_legal: bool, reason: str)
+        """
+        prev_id = STATE_ID.get(prev_raw, 0)
+        curr_id = STATE_ID.get(curr_raw, 0)
+
+        ctx = LARGE_DEGREE_CONTEXT.get(large_degree,
+                                        LARGE_DEGREE_CONTEXT['UNKNOWN'])
+        must_follow = ctx['sub_must_follow']
+
+        # 查表：prev 状态允许的后继
+        allowed = must_follow.get(prev_raw, set())
+
+        # ---- 特殊情况1: 子序列重置（w3/w4/w5 → w1）----
+        # 大级别 Wave4/A/B 中，子浪从 A→B 会重置为 w1
+        if curr_raw == 'w1_formed' and prev_raw in ('w3_formed', 'w4_formed', 'w5_formed'):
+            max_seqs = ctx.get('sub_sequence_count', 1)
+            if max_seqs >= 2:
+                return True, f'LEGAL_SUBSEQ_RESTART({prev_raw}→w1, large={large_degree})'
+            # 子序列重置在大级别 Wave4 中最可能发生
+            if large_degree == 'WAVE4_DOWN':
+                return True, f'LEGAL_SUBSEQ_RESTART({prev_raw}→w1, large=WAVE4)'
+
+        # ---- 特殊情况2: w5_formed → w1_formed（大浪5结束 / 子浪完成）----
+        if prev_raw == 'w5_formed' and curr_raw == 'w1_formed':
+            # 合法：大浪5完成进入A浪，或子浪5完成继续大浪
+            return True, f'LEGAL_W5_TO_W1(large={large_degree})'
+
+        # ---- 特殊情况3: w3_formed → w1_formed（深幅回撤）----
+        if prev_raw == 'w3_formed' and curr_raw == 'w1_formed':
+            # 可能是W4大幅回调（子浪3被打穿），但在大级别 Wave4 中是合法的
+            if large_degree in ('WAVE4_DOWN', 'WAVEA_DOWN', 'WAVEC_DOWN'):
+                return True, f'LEGAL_DEEP_CORRECTION({prev_raw}→{curr_raw}, large={large_degree})'
+
+        # ---- 正常转移 ----
+        if curr_raw in allowed:
+            return True, f'LEGAL({prev_raw}→{curr_raw})'
+
+        # ---- 序号递增型倒退（w2→w1, w3→w2 等）----
+        # 在 UNKNOWN 大级别下，只禁止序号递增型倒退
+        if large_degree == 'UNKNOWN':
+            if prev_id > curr_id:
+                return True, f'LEGAL_RETROGRESS({prev_raw}→{curr_raw})'
+            return False, f'ILLEGAL_FORWARD({prev_raw}→{curr_raw})'
+
+        # ---- 其他非法转移 ----
+        return False, f'ILLEGAL({prev_raw}→{curr_raw}, large={large_degree})'
+
+    # ============================================================
+    # Layer 1: 子序列重置识别 + 回溯重标注
+    # ============================================================
+
+    def _identify_sub_sequence_resets(
+        self, sym_df: pd.DataFrame, large_degree: str
+    ) -> List[SubSeqReset]:
+        """
+        识别子浪序列重置点。
+
+        关键特征：
+          w3/w4/w5 → w1
+        伴随价格方向改变 → 合法（子序列重置）
+        不伴随价格方向改变 → 需要回溯
+
+        Returns:
+            List of SubSeqReset
+        """
+        states = sym_df['wave_state'].tolist()
+        closes = sym_df['close'].values if 'close' in sym_df.columns else None
+
+        resets: List[SubSeqReset] = []
+        n = len(states)
+
+        for i in range(1, n):
+            prev = str(states[i-1])
+            curr = str(states[i])
+
+            # 只处理 w3/w4/w5 → w1 的跳变
+            if curr != 'w1_formed':
+                continue
+            if prev not in ('w3_formed', 'w4_formed', 'w5_formed'):
+                continue
+
+            # 检查价格方向是否反转
+            reversal = False
+            if closes is not None and i >= 5:
+                # 前5天整体趋势
+                prev_trend = closes[i-1] - closes[max(0, i-5)]
+                # 当日变化
+                curr_change = closes[i] - closes[i-1]
+                # 方向反转：乘积 < 0
+                reversal = (prev_trend * curr_change < 0)
+
+            # 判定是否需要回溯
+            is_legal, _ = self._is_legal_sub_transition(prev, curr, large_degree)
+            reset_type = 'LEGAL_RESTART' if (is_legal and reversal) else 'NEED_REVIEW'
+
+            resets.append(SubSeqReset(
+                idx=i,
+                prev_state=prev,
+                curr_state=curr,
+                reset_type=reset_type,
+                price_reversal=reversal,
+            ))
+
+        return resets
+
+    def _apply_corrections(
+        self, sym_df: pd.DataFrame, resets: List[SubSeqReset], large_degree: str
+    ) -> List[str]:
+        """
+        对整条序列应用修正。
+
+        对每个 NEED_REVIEW 的重置点：
+          1. 向前回溯 lookback 天（不含当前点，向前回看）
+          2. Viterbi 重打分
+          3. 替换 lookback 段（不修改当前点，因为它是合法的 w1_formed）
+
+        对 LEGAL_RESTART：
+          保持原样，不修正
+        """
+        corrected = sym_df['wave_state'].tolist()
+        need_review = [r for r in resets if r.reset_type == 'NEED_REVIEW']
+
+        if not need_review:
+            return corrected
+
+        for reset in need_review:
+            idx = reset.idx
+            lookback = min(self.lookback, idx)
+            start = idx - lookback
+            end = idx   # exclusive: [start, end) = lookback elements
+
+            segment_states = corrected[start:end]
+            segment_closes = (
+                sym_df['close'].values[start:end]
+                if 'close' in sym_df.columns else None
+            )
+
+            if self.enable_viterbi:
+                best_path = self._viterbi_backtrack(
+                    segment_states,
+                    segment_closes,
+                    large_degree,
+                    allow_restart=True,
+                )
+                # 只更新 lookback 段（不含 idx）
+                for k, new_state in enumerate(best_path):
+                    corrected[start + k] = new_state
+            else:
+                # 退化：序号递增修正
+                prev_state = 'w1_formed'
+                for j in range(start, end):
+                    s = corrected[j]
+                    sid = STATE_ID.get(s, 0)
+                    if sid <= STATE_ID.get(prev_state, 0):
+                        prev_state = s
+                for j in range(start, end):
+                    corrected[j] = prev_state
+
+        return corrected
+
+
+    # ============================================================
+    # Viterbi 回溯
+    # ============================================================
+
+    def _viterbi_backtrack(
+        self,
+        segment_states: List[str],
+        closes: np.ndarray,
+        large_degree: str,
+        allow_restart: bool = True,
+    ) -> List[str]:
+        """
+        Viterbi 重打分：给定大级别上下文，对一段子序列找最优波浪路径。
+
+        算法：
+          1. 构建转移矩阵（LARGE_DEGREE_CONTEXT）
+          2. 构建发射矩阵（价格变化方向）
+          3. Viterbi 前向传递
+          4. 回溯最优路径
+
+        V[i][s] = 观察到 segment_states[0..i] 时，以状态 s 结尾的最优概率
+        path[s] = 以状态 s 结尾的最优路径序列
+        """
+        ALL_STATES = ['w1_formed', 'w2_formed', 'w3_formed',
+                      'w4_formed', 'w5_formed']
+        n = len(segment_states)
+        if n == 0:
+            return segment_states
+
+        # 初始概率：假设从 w1_formed 开始
+        init_probs = {s: 0.0 for s in ALL_STATES}
+        init_probs['w1_formed'] = 1.0
+
+        # 转移矩阵
+        trans_mat = self._build_transition_matrix(large_degree, allow_restart)
+
+        # 发射矩阵（价格方向 → 状态概率）
+        emiss_mat = self._build_emission_matrix(closes, ALL_STATES)
+
+        # Viterbi DP 表：V[i][s] = prob
+        V = [{}]
+        path = {}
+
+        for i, obs in enumerate(segment_states):
+            V.append({})
+            new_path = {}
+
+            for curr_s in ALL_STATES:
+                emiss_prob = emiss_mat[i].get(curr_s, 0.001)
+
+                if i == 0:
+                    # 初始概率
+                    prob = init_probs.get(curr_s, 0.0) * emiss_prob
+                    V[1][curr_s] = prob
+                    new_path[curr_s] = [curr_s]
+                else:
+                    # 找前一个最优状态
+                    best_prob = 0.0
+                    best_prev = ALL_STATES[0]
+                    for prev_s in ALL_STATES:
+                        trans_prob = trans_mat.get(prev_s, {}).get(curr_s, 0.0)
+                        if trans_prob <= 0:
+                            continue
+                        p = V[i].get(prev_s, 0.0) * trans_prob * emiss_prob
+                        if p > best_prob:
+                            best_prob = p
+                            best_prev = prev_s
+                    V[i+1][curr_s] = best_prob
+                    new_path[curr_s] = path[best_prev] + [curr_s]
+
+            path = new_path
+
+        # 取最后一个位置概率最高的状态
+        best_final = max(V[-1], key=lambda s: V[-1][s])
+        return path[best_final]
+
+    def _build_transition_matrix(
+        self, large_degree: str, allow_restart: bool = True
+    ) -> Dict[str, Dict[str, float]]:
+        """
+        构建波浪状态转移矩阵（基于大级别上下文）。
+
+        Returns:
+            {prev_state: {curr_state: probability}}
+        """
+        ctx = LARGE_DEGREE_CONTEXT.get(large_degree, LARGE_DEGREE_CONTEXT['UNKNOWN'])
+        must_follow = ctx['sub_must_follow']
+        sub_dir = ctx.get('sub_direction', 'UP')
+
+        ALL_STATES = ['w1_formed', 'w2_formed', 'w3_formed',
+                      'w4_formed', 'w5_formed']
+
+        mat = {}
+        for prev_s in ALL_STATES:
+            mat[prev_s] = {}
+            allowed_next = must_follow.get(prev_s, set())
+
+            if not allowed_next:
+                # 终态：保持不变
+                mat[prev_s][prev_s] = 1.0
+                continue
+
+            # 正常转移
+            for next_s in ALL_STATES:
+                if next_s in allowed_next:
+                    mat[prev_s][next_s] = 0.8
+                elif allow_restart and next_s == 'w1_formed':
+                    # 允许子序列重置
+                    max_seqs = ctx.get('sub_sequence_count', 1)
+                    if max_seqs >= 2:
+                        mat[prev_s][next_s] = 0.2
+                    else:
+                        mat[prev_s][next_s] = 0.05
+                else:
+                    mat[prev_s][next_s] = 0.0
+
+            # 归一化
+            total = sum(mat[prev_s].values())
+            if total > 0:
+                for k in mat[prev_s]:
+                    mat[prev_s][k] /= total
+
+        return mat
+
+    @staticmethod
+    def _build_emission_matrix(
+        closes: np.ndarray, all_states: List[str]
+    ) -> List[Dict[str, float]]:
+        """
+        构建发射矩阵（基于价格变化方向）。
+
+        规则：
+          - 上涨日 → w1/w3/w5 (向上浪) 概率高
+          - 下跌日 → w2/w4 (向下回调) 概率高
+          - 震荡日 → 所有状态均衡
+        """
+        n = len(closes)
+        emiss = []
+
+        for i in range(n):
+            row = {}
+
+            if i == 0:
+                # 第一天：均匀分布
+                for s in all_states:
+                    row[s] = 1.0 / len(all_states)
+                emiss.append(row)
+                continue
+
+            # 价格变化
+            change = closes[i] - closes[i-1]
+            if abs(change) < 1e-9:
+                direction = 0   # 震荡
+            else:
+                direction = 1 if change > 0 else -1  # 1=上涨, -1=下跌
+
+            if direction == 1:
+                row['w1_formed'] = 0.35
+                row['w3_formed'] = 0.35
+                row['w5_formed'] = 0.20
+                row['w2_formed'] = 0.05
+                row['w4_formed'] = 0.05
+            elif direction == -1:
+                row['w2_formed'] = 0.35
+                row['w4_formed'] = 0.35
+                row['w1_formed'] = 0.10
+                row['w3_formed'] = 0.10
+                row['w5_formed'] = 0.10
+            else:
+                # 震荡：均匀
+                for s in all_states:
+                    row[s] = 1.0 / len(all_states)
+
+            emiss.append(row)
+
+        return emiss

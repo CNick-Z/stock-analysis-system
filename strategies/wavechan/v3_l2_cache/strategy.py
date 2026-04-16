@@ -438,14 +438,25 @@ class WaveCounterV3:
     def _get_large_trend(self) -> str:
         """
         判断大级别趋势（用高低点同向变化，老板教的方法）
-
-        趋势定义：
-        - 上涨趋势 = 更高的高点 AND 更高的低点（同向向上）
-        - 下跌趋势 = 更低的高点 AND 更低的低点（同向向下）
-        - 其他 = neutral（震荡）
-
-        使用 _get_major_swing_points() 获取大级别转折点序列判断
+        
+        优先从周线L1缓存读取trend，失败则用原方法逐根算
         """
+        # 尝试从周线L1缓存读取
+        try:
+            from utils.wavechan_l1.reader import read_weekly_l1_trend
+            cached_trend = read_weekly_l1_trend(self.symbol, self.year)
+            if cached_trend:
+                # 周线L1返回UP/DOWN/NEUTRAL → V3用bullish/bearish/neutral
+                if cached_trend == 'UP':
+                    return 'bullish'
+                elif cached_trend == 'DOWN':
+                    return 'bearish'
+                else:
+                    return 'neutral'
+        except:
+            pass
+        
+        # 缓存读取失败，用原方法逐根算
         turning_points = self._get_major_swing_points()
 
         if len(turning_points) < 4:
@@ -1057,21 +1068,23 @@ class WaveCounterV3:
                             )
 
                 # 发行新的W4_BUY ALERT
-                new_signal = WaveSignal(
-                    signal='W4_BUY',
-                    status=SignalStatus.ALERT,
-                    price=s.w4_candidate_low,
-                    stop_loss=round(s.fib_618, 2) if s.fib_618 else round(s.w4_candidate_low * 0.97, 2),
-                    verify_conditions=['price_holds_w4_start', 'upward_break'],
-                    verified_conditions=[],
-                    reason=f"W4底分型确认，候选低点{s.w4_candidate_low:.2f}",
-                    confidence=0.50,
-                    created_date=self.bis[-1].end_date if self.bis else '',
-                    wave_type='W4'
-                )
-                self.active_signals.append(new_signal)
-                s.wave_end_signal = 'W4_END'
-                s.wave_end_confidence = 0.50
+                # 嵌套验证：只有nested_verified=True时才发行信号
+                if self._nested_verify('W4'):
+                    new_signal = WaveSignal(
+                        signal='W4_BUY',
+                        status=SignalStatus.ALERT,
+                        price=s.w4_candidate_low,
+                        stop_loss=round(s.fib_618, 2) if s.fib_618 else round(s.w4_candidate_low * 0.97, 2),
+                        verify_conditions=['price_holds_w4_start', 'upward_break'],
+                        verified_conditions=[],
+                        reason=f"W4底分型确认，候选低点{s.w4_candidate_low:.2f}",
+                        confidence=0.50,
+                        created_date=self.bis[-1].end_date if self.bis else '',
+                        wave_type='W4'
+                    )
+                    self.active_signals.append(new_signal)
+                    s.wave_end_signal = 'W4_END'
+                    s.wave_end_confidence = 0.50
 
         # ----- 改动2: W4_BUY 备选激活路径（更宽松条件）-----
         # 路径1: 深度回撤（接近W3起点，W4低点靠近W3起点）
@@ -1085,42 +1098,46 @@ class WaveCounterV3:
                     proximity_to_w3 = abs(s.w4_candidate_low - w3_end) / w3_end
                     if proximity_to_w3 < 0.05:
                         # 深度回撤确认W4终结
+                        # 嵌套验证：只有nested_verified=True时才发行信号
+                        if self._nested_verify('W4'):
+                            new_signal = WaveSignal(
+                                signal='W4_BUY',
+                                status=SignalStatus.ALERT,
+                                price=s.w4_candidate_low,
+                                stop_loss=round(s.fib_618, 2) if s.fib_618 else round(s.w4_candidate_low * 0.97, 2),
+                                verify_conditions=['price_holds_w4_start'],
+                                verified_conditions=[],
+                                reason=f"W4深度回撤接近W3起点({proximity_to_w3:.1%})，候选低点{s.w4_candidate_low:.2f}",
+                                confidence=0.45,
+                                created_date=self.bis[-1].end_date if self.bis else '',
+                                wave_type='W4'
+                            )
+                            self.active_signals.append(new_signal)
+                            if not s.wave_end_signal:
+                                s.wave_end_signal = 'W4_END'
+                                s.wave_end_confidence = 0.45
+
+                # 路径2: a-b-c三浪形态（W4内部完成abc调整）
+                # 判断标准：W4经历3次明显的高低点摆动
+                if self._detect_abc_structure(waves):
+                    # 嵌套验证：只有nested_verified=True时才发行信号
+                    if self._nested_verify('W4'):
                         new_signal = WaveSignal(
                             signal='W4_BUY',
                             status=SignalStatus.ALERT,
                             price=s.w4_candidate_low,
                             stop_loss=round(s.fib_618, 2) if s.fib_618 else round(s.w4_candidate_low * 0.97, 2),
-                            verify_conditions=['price_holds_w4_start'],
+                            verify_conditions=['price_holds_w4_start', 'upward_break'],
                             verified_conditions=[],
-                            reason=f"W4深度回撤接近W3起点({proximity_to_w3:.1%})，候选低点{s.w4_candidate_low:.2f}",
-                            confidence=0.45,
+                            reason=f"W4 a-b-c三浪完成，候选低点{s.w4_candidate_low:.2f}",
+                            confidence=0.50,
                             created_date=self.bis[-1].end_date if self.bis else '',
                             wave_type='W4'
                         )
                         self.active_signals.append(new_signal)
                         if not s.wave_end_signal:
                             s.wave_end_signal = 'W4_END'
-                            s.wave_end_confidence = 0.45
-
-                # 路径2: a-b-c三浪形态（W4内部完成abc调整）
-                # 判断标准：W4经历3次明显的高低点摆动
-                if self._detect_abc_structure(waves):
-                    new_signal = WaveSignal(
-                        signal='W4_BUY',
-                        status=SignalStatus.ALERT,
-                        price=s.w4_candidate_low,
-                        stop_loss=round(s.fib_618, 2) if s.fib_618 else round(s.w4_candidate_low * 0.97, 2),
-                        verify_conditions=['price_holds_w4_start', 'upward_break'],
-                        verified_conditions=[],
-                        reason=f"W4 a-b-c三浪完成，候选低点{s.w4_candidate_low:.2f}",
-                        confidence=0.50,
-                        created_date=self.bis[-1].end_date if self.bis else '',
-                        wave_type='W4'
-                    )
-                    self.active_signals.append(new_signal)
-                    if not s.wave_end_signal:
-                        s.wave_end_signal = 'W4_END'
-                        s.wave_end_confidence = 0.50
+                            s.wave_end_confidence = 0.50
 
         # w4_formed状态的W4终结检测（旧逻辑保留，用于CONFIRMED）
         if state == 'w4_formed' and s.last_fx_mark == 'D':
@@ -1179,19 +1196,21 @@ class WaveCounterV3:
                             existing_w2_signals = [sig for sig in self.active_signals
                                                    if sig.signal == 'W2_BUY' and sig.status == SignalStatus.ALERT]
                             if not existing_w2_signals:
-                                new_signal = WaveSignal(
-                                    signal='W2_BUY',
-                                    status=SignalStatus.ALERT,
-                                    price=w2_end,
-                                    stop_loss=round(w2_end * 0.97, 2),
-                                    verify_conditions=['price_holds_w2_low', 'upward_momentum'],
-                                    verified_conditions=[],
-                                    reason=f"W2回撤{w2_end:.2f}，底分型确认",
-                                    confidence=0.65,
-                                    created_date=last_bi.end_date if last_bi else '',
-                                    wave_type='W2'
-                                )
-                                self.active_signals.append(new_signal)
+                                # 嵌套验证：只有nested_verified=True时才发行信号
+                                if self._nested_verify('W2'):
+                                    new_signal = WaveSignal(
+                                        signal='W2_BUY',
+                                        status=SignalStatus.ALERT,
+                                        price=w2_end,
+                                        stop_loss=round(w2_end * 0.97, 2),
+                                        verify_conditions=['price_holds_w2_low', 'upward_momentum'],
+                                        verified_conditions=[],
+                                        reason=f"W2回撤{w2_end:.2f}，底分型确认",
+                                        confidence=0.65,
+                                        created_date=last_bi.end_date if last_bi else '',
+                                        wave_type='W2'
+                                    )
+                                    self.active_signals.append(new_signal)
 
     def _determine_exit_action(self, sig: WaveSignal, current_price: float, reason: str):
         """
@@ -1286,19 +1305,21 @@ class WaveCounterV3:
                     )
 
                     # 发行新的W4_BUY ALERT at new low
-                    new_signal = WaveSignal(
-                        signal='W4_BUY',
-                        status=SignalStatus.ALERT,
-                        price=current_low,
-                        stop_loss=round(s.fib_618, 2) if s.fib_618 else round(current_low * 0.97, 2),
-                        verify_conditions=['price_holds_w4_start', 'upward_break'],
-                        verified_conditions=[],
-                        reason=f"W4新候选低点{current_low:.2f}",
-                        confidence=0.40,
-                        created_date=last_bi.end_date if last_bi else '',
-                        wave_type='W4'
-                    )
-                    self.active_signals.append(new_signal)
+                    # 嵌套验证：只有nested_verified=True时才发行信号
+                    if self._nested_verify('W4'):
+                        new_signal = WaveSignal(
+                            signal='W4_BUY',
+                            status=SignalStatus.ALERT,
+                            price=current_low,
+                            stop_loss=round(s.fib_618, 2) if s.fib_618 else round(current_low * 0.97, 2),
+                            verify_conditions=['price_holds_w4_start', 'upward_break'],
+                            verified_conditions=[],
+                            reason=f"W4新候选低点{current_low:.2f}",
+                            confidence=0.40,
+                            created_date=last_bi.end_date if last_bi else '',
+                            wave_type='W4'
+                        )
+                        self.active_signals.append(new_signal)
 
             # ===== W2_BUY 信号验证 =====
             elif sig.signal == 'W2_BUY':
@@ -1447,6 +1468,31 @@ class WaveCounterV3:
                 return False
 
         return True
+
+    def _nested_verify(self, wave_label: str) -> bool:
+        """
+        嵌套验证：通过wave_recognizer.label_wave_stage()检查波浪嵌套是否通过。
+        用于在发行W2_BUY/W4_BUY ALERT信号前进行增强过滤。
+
+        Args:
+            wave_label: 'W2' 或 'W4'
+
+        Returns:
+            True: 嵌套验证通过，或label_wave_stage调用失败（容错）
+            False: 嵌套验证未通过，应放弃该信号
+        """
+        try:
+            import datetime
+            from projects.stock_wave_recognition.wave_recognizer import label_wave_stage
+            current_year = datetime.datetime.now().year
+            label_result = label_wave_stage(self.symbol, current_year)
+            for lw in label_result.get('labeled_waves', []):
+                if lw.get('wave') == wave_label and lw.get('nested_verified', False):
+                    return True
+            return False
+        except Exception:
+            # 容错：识别失败时不过滤，避免因数据问题阻断正常信号
+            return True
 
     def _detect_abc_structure(self, waves: Dict) -> bool:
         """

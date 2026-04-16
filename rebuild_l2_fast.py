@@ -43,6 +43,14 @@ L2_COLUMNS = [
     'signal_score', 'structure_score', 'momentum_score', 'chan_score',
     'total_score', 'has_signal', 'signal_type', 'signal_status',
     'wave_state', 'wave_trend', 'wave_retracement',
+    # ✅ 新增：浪型起点信息（用于回溯修正）
+    'wave1_start_price', 'wave1_start_date',
+    'wave2_start_price', 'wave2_start_date',
+    'wave3_start_price', 'wave3_start_date',
+    'wave4_start_price', 'wave4_start_date',
+    'wave5_start_price', 'wave5_start_date',
+    'wave_last_end_price',
+    # 原有字段
     'rsi', 'macd_hist', 'divergence', 'volume_ratio', 'fractal',
     'stop_loss', 'close', 'open', 'high', 'low', 'volume'
 ]
@@ -142,6 +150,31 @@ def _map_signals(df: pd.DataFrame) -> pd.DataFrame:
             '': 'unknown'
         }
         df['wave_stage'] = df['wave_stage'].map(lambda x: stage_map.get(x, x)).fillna('unknown')
+
+    # ---- wave_retracement: 从 wave prices 估算 ----
+    if 'wave_retracement' not in df.columns:
+        retr = np.full(len(df), np.nan)
+        cond = (df['wave2_price'] > 0) & (df['wave2_start'] > 0) & (df['wave1_price'] > 0) & (df['wave1_start'] > 0)
+        w1_range = df.loc[cond, 'wave1_price'] - df.loc[cond, 'wave1_start']
+        w1_range = w1_range.replace(0, np.nan)
+        w2_drop = df.loc[cond, 'wave2_start'] - df.loc[cond, 'wave2_price']
+        retr[cond.values] = (w2_drop / w1_range).fillna(np.nan).values
+        df['wave_retracement'] = retr
+
+    # ---- ✅ 新增：浪型起点信息映射到 L2 格式 ----
+    # wave_state 已经由 wave_stage 映射
+    # 添加起点价格/日期字段
+    for i in [1, 2, 3, 4, 5]:
+        price_col = f'wave{i}_start_price'
+        date_col = f'wave{i}_start_date'
+        if price_col not in df.columns:
+            df[price_col] = df.get(f'wave{i}_start', 0.0)
+        if date_col not in df.columns:
+            df[date_col] = df.get(f'wave{i}_start_date', '')
+    
+    # wave_last_end_price: 上一个浪的终点价格
+    if 'wave_last_end_price' not in df.columns:
+        df['wave_last_end_price'] = df.get('wave_last_end_price', 0.0)
 
     # ---- wave_retracement: 从 wave prices 估算 ----
     if 'wave_retracement' not in df.columns:

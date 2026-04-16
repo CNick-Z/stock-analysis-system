@@ -9,7 +9,11 @@ WaveChan V3 策略 - 统一框架适配层
   - score(candidates)     → 评分排序
   - should_sell(row, pos, market) → 出场判断（含连续3天出场逻辑）
 
-入场信号：W2_BUY / W4_BUY / C_BUY（has_signal=True, total_score >= THRESHOLD）
+入场信号：Plan A双入口
+  波浪入口: W2_BUY(score≥50+RSI<52+momentum>6) / W4_BUY(score≥30+RSI<50)
+  缠论入口: V1_BUY/V2_BUY(confidence≥0.7) 独立通过
+出场逻辑：止损 / 止盈 / 时间止损 / 波浪信号出场 / 连续3天 wave_trend==down
+禁止：C_BUY / w5_formed状态 / RSI>60
 出场逻辑：止损 / 止盈 / 时间止损 / 波浪信号出场 / 连续3天 wave_trend==down
 """
 # =============================================================
@@ -57,7 +61,7 @@ class W1TrackingState:
 # 配置
 # ================================================================
 L2_CACHE_DIR = "/data/warehouse/wavechan/wavechan_cache"
-THRESHOLD = 15          # 买入阈值（L1 cache: has_signal行 mean=29.6/median=25, THRESHOLD=50时仅12.7%通过导致0交易，调至15通过93.8%）
+THRESHOLD = 50          # 买入阈值（研究结论：score≥50时20日胜率52.6%均幅+2.33%，score<20时46.5%均幅+0.75%）
 STOP_LOSS_PCT = 0.08     # 8% 止损
 TAKE_PROFIT_PCT = 0.20  # 20% 止盈
 MAX_HOLD_DAYS = 20      # 最大持仓天数
@@ -216,6 +220,26 @@ class WaveChanStrategy:
             # 追加合并（只追加有数据的月份，空月份不覆盖已有数据）
             self._wave_cache = pd.concat([self._wave_cache, new_cache], ignore_index=True)
             self._wave_cache = self._wave_cache.drop_duplicates(subset=['date', 'symbol'], keep='last')
+
+        # ── 缠论信号缓存加载（P1接入，2026-04-16）──────────────────────
+        # 从预计算的 Parquet 加载（scripts/compute_chanlun_batch.py 生成）
+        # Plan A: (wave信号 AND score≥阈值) OR (缠论V1/V2信号 AND confidence≥0.7)
+        self._chanlun_cache: pd.DataFrame = pd.DataFrame()
+        CHANLUN_CACHE_DIR = Path('/data/warehouse/chanlun/cache')
+        if dates and CHANLUN_CACHE_DIR.exists():
+            try:
+                # 加载最近日期的缓存（当日或前一交易日）
+                cache_files = sorted(CHANLUN_CACHE_DIR.glob('chanlun_*.parquet'), reverse=True)
+                if cache_files:
+                    latest_cache = cache_files[0]
+                    self._chanlun_cache = pd.read_parquet(latest_cache)
+                    n_high_conf = (self._chanlun_cache['confidence'] >= 0.7).sum() if not self._chanlun_cache.empty else 0
+                    logger.info(f"[ChanlunCache] 已加载: {latest_cache.name}, "
+                                f"总信号{len(self._chanlun_cache)}只, 高置信≥0.7: {n_high_conf}只")
+                else:
+                    logger.info("[ChanlunCache] 无缓存文件，跳过缠论信号")
+            except Exception as e:
+                logger.warning(f"[ChanlunCache] 加载失败: {e}")
 
         # ── L1 Fallback 预计算信号加载 ───────────────────────────────
         # 从预计算的 Parquet 加载（scripts/build_l1_signals_2026.py 生成）
@@ -674,25 +698,39 @@ class WaveChanStrategy:
 
     def filter_buy(self, daily_df: pd.DataFrame, date: str = None) -> pd.DataFrame:
         """
-        过滤候选股票（含周线过滤）
+        过滤候选股票（含周线过滤 + 缠论补充）
 
         Args:
             daily_df: 当日候选股票数据（包含 has_signal/signal_type/wave_trend 等列）
             date: 当前日期（框架传入）
 
-        条件（优先级）：
-          1. has_signal == True
-          2. signal_type in (W2_BUY, W4_BUY)  # 【优化】禁用C_BUY（熊市反弹胜率仅22-36%，研究结论2026-04-15）
-          3. total_score >= self.threshold
-          4. wave_trend in (long, neutral, '')  # 日线方向
-          5. signal_status == 'confirmed'
-          6. 【周线过滤】周线 bullish（W3/W5 推动浪中）OR（周线 neutral AND 日线上升趋势）
+        信号入口（Plan A - 并行双入口，2026-04-16）：
+          Wave入口: (wave信号 AND score≥阈值) OR (缠论V1/V2信号 AND confidence≥0.7)
 
-        周线过滤逻辑（解决"接飞刀"问题，P0 Fix 2026-04-07）：
-          - bullish: w2_formed（W3推动中）/ w4_formed（W5推动中）→ 接受所有买入 ✅
-          - neutral: w3_formed（W4调整中）/ w4_in_progress（W4进行中）/ w5_formed / w1_formed / initial
-                    → 只有日线上升趋势 (wave_trend='long') 才接受买入
-          - 效果: 下跌趋势中（周线W3/W4调整）不再"接飞刀"
+        波浪条件（2026-04-16研究优化）：
+          W2_BUY:
+            - has_signal == True
+            - total_score >= 50
+            - rsi_14 < 52
+            - momentum_score > 6
+            - wave_trend in (long, neutral, '')
+            - signal_status == 'confirmed'
+
+          W4_BUY:
+            - has_signal == True
+            - total_score >= 30
+            - rsi_14 < 50
+            - wave_trend in (long, neutral, '')
+            - signal_status == 'confirmed'
+
+          禁止: C_BUY / w5_formed状态 / RSI>60
+
+        缠论补充条件:
+          - signal_type in (V1_BUY, V2_BUY)
+          - confidence >= 0.7
+          - 独立于wave信号，不受周线过滤限制（缠论自带级别递归）
+
+        【周线过滤】：周线 bullish（W3/W5推动中）接受所有买入；neutral只有日线上升趋势才买。
         """
         if daily_df.empty:
             return pd.DataFrame()
@@ -827,15 +865,29 @@ class WaveChanStrategy:
         total_score = df['total_score'] if 'total_score' in df.columns else _zero
         wave_trend = df['wave_trend'] if 'wave_trend' in df.columns else _empty
 
-        mask = (
-            has_signal.eq(True) &
-            total_score.ge(self.threshold) &
-            wave_trend.isin(['long', 'neutral', ''])
-        )
+        # 【优化2026-04-16】差异化阈值 + RSI/momentum过滤
+        # W2_BUY: score≥50 + RSI<52 + momentum>6
+        # W4_BUY: score≥30 + RSI<50
+        # w5_formed 状态：最危险，Step3的ALLOWED_WAVE_STATES已过滤
+        rsi = df['rsi_14'] if 'rsi_14' in df.columns else pd.Series(0, index=df.index)
+        momentum = df['momentum_score'] if 'momentum_score' in df.columns else pd.Series(0, index=df.index)
 
-        buy_signals = {'W2_BUY', 'W4_BUY', 'W4_BUY_ALERT', 'W4_BUY_CONFIRMED'}  # 【优化】移除C_BUY
-        if 'signal_type' in df.columns:
-            mask &= df['signal_type'].isin(buy_signals)
+        w2_mask = (
+            has_signal.eq(True) &
+            total_score.ge(50) &
+            rsi.lt(52) &
+            momentum.gt(6) &
+            wave_trend.isin(['long', 'neutral', '']) &
+            (df['signal_type'] == 'W2_BUY' if 'signal_type' in df.columns else pd.Series(False, index=df.index))
+        )
+        w4_mask = (
+            has_signal.eq(True) &
+            total_score.ge(30) &
+            rsi.lt(50) &
+            wave_trend.isin(['long', 'neutral', '']) &
+            (df['signal_type'].isin({'W4_BUY', 'W4_BUY_ALERT', 'W4_BUY_CONFIRMED'}) if 'signal_type' in df.columns else pd.Series(False, index=df.index))
+        )
+        mask = w2_mask | w4_mask
 
         if 'signal_status' in df.columns:
             # L1 fallback 信号已内置 signal_status='confirmed'，直接接受
@@ -846,6 +898,43 @@ class WaveChanStrategy:
                 mask &= signal_ok
 
         candidates = df[mask].copy()
+
+        # ── Step 0.5: 缠论高置信信号补充（P1接入，Plan A 2026-04-16）──────
+        # (wave信号 AND score≥阈值) OR (缠论V1/V2信号 AND confidence≥0.7)
+        if (hasattr(self, '_chanlun_cache') and
+                not self._chanlun_cache.empty and
+                current_date):
+            chanlun_sub = self._chanlun_cache[
+                (self._chanlun_cache['confidence'] >= 0.7) &
+                (self._chanlun_cache['signal_type'].isin({'V1_BUY', 'V2_BUY'}))
+            ].copy()
+            if not chanlun_sub.empty:
+                # 只保留当日的缠论信号
+                chanlun_sub = chanlun_sub[chanlun_sub['date'] == str(current_date)[:10]]
+                if not chanlun_sub.empty:
+                    # 排除已经在 candidates 里的股票
+                    already_selected = set(candidates['symbol'].unique()) if not candidates.empty else set()
+                    chanlun_new = chanlun_sub[~chanlun_sub['symbol'].isin(already_selected)]
+                    if not chanlun_new.empty:
+                        logger.info(f"[ChanlunSupplement] {current_date} 缠论高置信补充 "
+                                    f"{len(chanlun_new)} 只（独立于wave信号）: "
+                                    f"{chanlun_new['symbol'].tolist()[:5]}{'...' if len(chanlun_new)>5 else ''}")
+                        # 从 df 中提取这些股票的完整数据
+                        chanlun_symbols = chanlun_new['symbol'].tolist()
+                        chanlun_extra = df[df['symbol'].isin(chanlun_symbols)].copy()
+                        if not chanlun_extra.empty:
+                            # 标记为缠论信号来源
+                            chanlun_extra['_signal_source'] = 'chanlun'
+                            chanlun_extra['signal_type'] = chanlun_extra['signal_type'].where(
+                                chanlun_extra['signal_type'].notna(),
+                                chanlun_new.set_index('symbol')['signal_type'].get(chanlun_extra['symbol'], '')
+                            )
+                            chanlun_extra['total_score'] = chanlun_extra['total_score'].where(
+                                chanlun_extra['total_score'].notna(),
+                                (chanlun_new.set_index('symbol')['confidence'] * 100).get(chanlun_extra['symbol'], 0)
+                            )
+                            candidates = pd.concat([candidates, chanlun_extra], ignore_index=True)
+
         if candidates.empty:
             return candidates
 
