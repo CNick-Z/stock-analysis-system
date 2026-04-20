@@ -23,6 +23,16 @@ STRATEGY_REGISTRY = {
     "v8": {
         "class": "ScoreV8Strategy",
         "path": "strategies.score.v8.strategy",
+        "params": {
+            # V8 回测最优参数（冻结，2026-04-01 tuner 验证）
+            # 对齐文档: strategies/score/v8/RESULT_V8_18YEAR_BACKTEST.md
+            "stop_loss": 0.04,
+            "take_profit": 0.20,
+            "rsi_filter_min": 50,
+            "rsi_filter_max": 65,
+            "max_positions": 3,
+            "position_size": 0.20,
+        },
     },
     "wavechan_v3_strict": {
         "class": "WaveChanStrategy",
@@ -41,13 +51,33 @@ WAVECHAN_L2_CACHE = Path("/data/warehouse/wavechan/wavechan_cache")
 
 
 def load_strategy(name: str):
-    """动态加载策略实例"""
+    """动态加载策略实例，自动适配两种初始化风格：
+    - config=dict：ScoreV8Strategy 等（接受统一配置字典）
+    - **kwargs：WaveChanStrategy 等（接受独立参数）
+    """
     if name not in STRATEGY_REGISTRY:
         raise ValueError(f"未知策略: {name}. 可用: {list(STRATEGY_REGISTRY.keys())}")
     cfg = STRATEGY_REGISTRY[name]
     mod = __import__(cfg["path"], fromlist=[cfg["class"]])
     params = cfg.get("params", {})
-    return getattr(mod, cfg["class"])(**params)
+    cls = getattr(mod, cfg["class"])
+    # 检查策略 __init__ 第一个参数名，自动适配调用风格
+    import inspect
+    try:
+        sig = inspect.signature(cls)
+        first_param = list(sig.parameters.keys())[0]
+        if first_param == "config":
+            # 接受 config dict 的策略（如 V8）
+            return cls(config=params)
+        else:
+            # 接受独立 kwargs 的策略（如 WaveChan）
+            return cls(**params)
+    except (ValueError, IndexError):
+        # fallback：优先尝试 config 风格
+        try:
+            return cls(config=params)
+        except TypeError:
+            return cls(**params)
 
 
 def add_next_open(df: pd.DataFrame) -> pd.DataFrame:

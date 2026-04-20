@@ -30,6 +30,8 @@ PROJECT_ROOT = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from simulator.base_framework import BaseFramework
+# 保留 v3_weekly_filter_compare 自己的佣金逻辑（万3固定，用于横向对比）
+_CORRECT_COMMISSION = 0.0003  # 原框架默认值，对比分析用
 from simulator.shared import load_wavechan_cache, add_next_open
 from utils.data_loader import load_strategy_data
 from strategies.wavechan.v3_l2_cache.wavechan_strategy import WaveChanStrategy
@@ -229,7 +231,7 @@ def run_backtest(strategy, df, initial_cash, label):
                 exec_price = exec_price * (1 - framework.slippage_pct)
                 pnl = (exec_price - pos['avg_cost']) * pos['qty']
                 pnl_pct = (exec_price - pos['avg_cost']) / pos['avg_cost'] * 100
-                sell_value = exec_price * pos['qty'] * (1 - framework.commission_pct)
+                sell_value = exec_price * pos['qty'] * (1 - _CORRECT_COMMISSION)
 
                 framework.cash += sell_value
                 framework.trades.append({
@@ -303,7 +305,7 @@ def run_backtest(strategy, df, initial_cash, label):
                                 if buy_qty < 100:
                                     continue
 
-                                cost = buy_qty * exec_price * (1 + framework.commission_pct)
+                                cost = buy_qty * exec_price * (1 + _CORRECT_COMMISSION)
                                 if cost > framework.cash:
                                     continue
 

@@ -48,9 +48,11 @@ def load_data_for_date(name: str, target_date: str) -> tuple:
     返回 (year_df, target_df)：全年数据 和 目标日期过滤后的数据。
     模拟盘需要全年数据用于 prepare，target_df 用于单日模拟。
     """
+    # V3策略不需要资金流指标（省10秒计算）
+    add_mf = name != "wavechan_v3_strict"
     year = int(target_date[:4])
-    logger.info(f"加载数据: year={year}")
-    year_df = load_strategy_data(years=[year], add_money_flow=True)
+    logger.info(f"加载数据: year={year} | 资金流: {'开启' if add_mf else '跳过（V3无需）'}")
+    year_df = load_strategy_data(years=[year], add_money_flow=add_mf)
     logger.info(f"原始数据: {len(year_df):,} 行  [{year_df['date'].min()} ~ {year_df['date'].max()}]")
 
     # 先加 next_open（必须在过滤前，否则 groupby shift(-1) 找不到下一行）
@@ -359,11 +361,35 @@ def main():
     }
     display_name = strategy_display.get(strategy_name, f"{strategy_name}模拟盘")
 
-    # 初始化框架
-    framework = BaseFramework(
-        initial_cash=args.initial_cash,
-        state_file=state_file,
-    )
+    # V3 波浪缠论配置（与 backtest.py 保持一致）
+    V3_MAX_POSITIONS = 10
+    V3_POSITION_SIZE = 0.10
+
+    # 初始化框架，根据策略读取对应配置
+    strategy_params = STRATEGY_REGISTRY.get(strategy_name, {})
+    params = strategy_params.get("params", {})
+
+    # V3 使用特殊配置（与 backtest.py 对齐）
+    if strategy_name == "wavechan_v3_strict":
+        framework = BaseFramework(
+            initial_cash=args.initial_cash,
+            max_positions=V3_MAX_POSITIONS,
+            position_size=V3_POSITION_SIZE,
+            state_file=state_file,
+        )
+    elif strategy_name == "v8":
+        # V8 使用 shared.py 中的配置
+        framework = BaseFramework(
+            initial_cash=args.initial_cash,
+            max_positions=params.get("max_positions", 3),
+            position_size=params.get("position_size", 0.20),
+            state_file=state_file,
+        )
+    else:
+        framework = BaseFramework(
+            initial_cash=args.initial_cash,
+            state_file=state_file,
+        )
 
     # --reset
     if args.reset:

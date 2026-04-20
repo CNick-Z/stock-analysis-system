@@ -217,15 +217,27 @@ class Strategy:
 # BaseFramework
 # ============================================================
 
+# A股税费标准（从实盘交易记录反推）
+# https://www.investopedia.com/terms/s/stamptax.asp
+STOCK_BUY_COMMISSION = 0.00011   # 买入佣金 万1.1
+STOCK_SELL_COMMISSION = 0.00011  # 卖出佣金 万1.1
+STOCK_STAMP_TAX = 0.0005        # 印花税（仅卖出）万5
+ETF_COMMISSION = 0.0001          # ETF 买卖佣金 万1（无印花税）
+
+
 class BaseFramework:
     """
     统一回测/模拟盘框架
+
+    A股税费规则（从实盘交易记录反推）：
+      个股买入：佣金 万1.1
+      个股卖出：佣金 万1.1 + 印花税 万5 = 万6.1
+      ETF    买入/卖出：佣金 万1（无印花税）
 
     Args:
         initial_cash: 初始资金
         max_positions: 最大持仓数
         position_size: 每只股票仓位比例
-        commission_pct: 手续费率（默认 0.0003）
         slippage_pct: 滑点（默认 0.0001）
     """
 
@@ -234,7 +246,6 @@ class BaseFramework:
         initial_cash: float = 500_000,
         max_positions: int = 5,
         position_size: float = 0.20,
-        commission_pct: float = 0.0003,
         slippage_pct: float = 0.0001,
         state_file: str = "/tmp/framework_state.json",
         market_regime_filter = None,
@@ -242,7 +253,6 @@ class BaseFramework:
         self.initial_cash = initial_cash
         self.max_positions = max_positions
         self.position_size = position_size
-        self.commission_pct = commission_pct
         self.slippage_pct = slippage_pct
         self.state_file = Path(state_file)
         self.market_regime_filter = market_regime_filter
@@ -256,6 +266,31 @@ class BaseFramework:
         self.n_total: int = 0
         self.candidates: List[dict] = []  # 候选信号列表
         self._strategy: Optional[Strategy] = None
+
+    # ============================================================
+    # 税费计算（A股实盘标准）
+    # ============================================================
+
+    def _is_etf(self, symbol: str, category: str = "") -> bool:
+        """判断是否为ETF（category优先，其次按代码前缀）"""
+        if category in ("ETF", "etf"):
+            return True
+        if category in ("Stock", "stock"):
+            return False
+        # ETF代码前缀：15/51/56/58/59 开头
+        return symbol.startswith(("15", "51", "56", "58", "59"))
+
+    def _buy_cost(self, amount: float, is_etf: bool) -> float:
+        """买入成本（扣除佣金后净成本）"""
+        commission = ETF_COMMISSION if is_etf else STOCK_BUY_COMMISSION
+        return amount * (1 + commission)
+
+    def _sell_proceeds(self, amount: float, is_etf: bool) -> float:
+        """卖出收入（扣除佣金+印花税后净收入）"""
+        if is_etf:
+            return amount * (1 - ETF_COMMISSION)
+        else:
+            return amount * (1 - STOCK_SELL_COMMISSION - STOCK_STAMP_TAX)
 
     # ============================================================
     # 状态持久化
@@ -492,12 +527,13 @@ class BaseFramework:
             if r.get("next_limit_up", False) or r.get("next_limit_down", False):
                 continue  # 次日涨跌停，无法卖出，跳过
 
-            # 计算收益
+            # 计算收益（用持仓时的成本，不扣税费）
             pnl = (exec_price - pos["avg_cost"]) * pos["qty"]
             pnl_pct = (exec_price - pos["avg_cost"]) / pos["avg_cost"] * 100
 
-            # 扣除手续费
-            sell_value = exec_price * pos["qty"] * (1 - self.commission_pct)
+            # 扣除税费（A 股：印花税只在卖出时收取）
+            is_etf = pos.get("is_etf", False)
+            sell_value = self._sell_proceeds(exec_price * pos["qty"], is_etf)
             self.cash += sell_value
 
             # 记录
@@ -666,7 +702,12 @@ class BaseFramework:
                 cand["reason"] = f"资金不足(买入{buy_qty}股<1手)"
                 continue
 
-            cost = buy_qty * exec_price * (1 + self.commission_pct)
+            # 判断ETF（优先用category，否则按代码前缀）
+            category = str(cand.get("category", r.get("category", "")))
+            is_etf = self._is_etf(sym, category)
+
+            # A股税费：买入扣佣金，卖出还要扣印花税
+            cost = self._buy_cost(buy_qty * exec_price, is_etf)
             if cost > self.cash:
                 cand["status"] = "X5 - 资金不足"
                 cand["reason"] = "资金不足"
@@ -681,6 +722,7 @@ class BaseFramework:
                 "latest_price": exec_price,
                 "days_held": 0,
                 "consecutive_bad_days": 0,
+                "is_etf": is_etf,
                 "extra": {},
             }
             for c in today_candidates:

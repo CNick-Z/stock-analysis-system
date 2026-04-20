@@ -225,6 +225,47 @@ def _add_derived_daily_fields(df: pd.DataFrame) -> pd.DataFrame:
 # 资金流指标计算（修正版）
 # ============================================================
 
+# 资金流缓存路径（按年存储）
+MONEY_FLOW_CACHE_ROOT = Path("/data/warehouse/money_flow")
+
+# 需要缓存的资金流字段
+_MONEY_FLOW_COLS = [
+    'XVL', 'LIJIN', 'LLJX', '主生量', '量基线', '量增幅', '周量', '周增幅',
+    'money_flow_positive', 'money_flow_trend', 'money_flow_increasing',
+    'money_flow_weekly', 'money_flow_weekly_increasing',
+    '金', 'PJJ', 'QJJ', 'ZLL', 'LIJIN1', '力度',
+]
+
+
+def _save_money_flow_cache(df: pd.DataFrame):
+    """按年保存资金流指标到 parquet 缓存"""
+    if 'date' not in df.columns or 'symbol' not in df.columns:
+        return
+    years = pd.to_datetime(df['date']).dt.year.unique()
+    for yr in years:
+        cache_path = MONEY_FLOW_CACHE_ROOT / f"year={int(yr)}" / "data.parquet"
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # 筛选该年数据
+        yr_df = df[pd.to_datetime(df['date']).dt.year == yr]
+        cols_to_save = ['date', 'symbol'] + [c for c in _MONEY_FLOW_COLS if c in yr_df.columns]
+        yr_cache = yr_df[cols_to_save].drop_duplicates(['date', 'symbol'])
+
+        # 追加合并（保留历史缓存，只覆盖当年）
+        if cache_path.exists():
+            try:
+                existing = pd.read_parquet(cache_path)
+                # 删除当年旧数据
+                existing_years = pd.to_datetime(existing['date']).dt.year
+                existing = existing[existing_years != int(yr)]
+                yr_cache = pd.concat([existing, yr_cache], ignore_index=True)
+            except Exception:
+                pass
+
+        yr_cache.to_parquet(cache_path, index=False)
+        logger.info(f"[MoneyFlowCache] 已保存: {cache_path.name} ({len(yr_cache):,} 行)")
+
+
 def calculate_money_flow_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
     计算资金流向相关指标（全程向量化版，基于 OHLCV）
@@ -254,6 +295,46 @@ def calculate_money_flow_indicators(df: pd.DataFrame) -> pd.DataFrame:
         logger.warning(f"资金流计算缺少字段: {missing}，跳过")
         return df
 
+    # ── 缓存检查 ──────────────────────────────────────────────────
+    if 'date' not in df.columns or 'symbol' not in df.columns:
+        logger.warning("资金流计算：缺少 date/symbol 列，跳过缓存检查")
+    else:
+        years_in_df = pd.to_datetime(df['date']).dt.year.unique()
+        all_cached = True
+        cached_years = []
+        for yr in years_in_df:
+            cache_path = MONEY_FLOW_CACHE_ROOT / f"year={yr}" / "data.parquet"
+            if not cache_path.exists():
+                all_cached = False
+                break
+            cached_years.append(int(yr))
+
+        if all_cached and cached_years:
+            logger.info(f"资金流缓存命中: {cached_years}，跳过计算")
+            # 读取缓存并 merge 回 df
+            cache_dfs = []
+            for yr in cached_years:
+                cache_path = MONEY_FLOW_CACHE_ROOT / f"year={yr}" / "data.parquet"
+                cache_dfs.append(pd.read_parquet(cache_path))
+            cache_df = pd.concat(cache_dfs, ignore_index=True)
+
+            # 只取 df 中存在的 date+symbol 对应行
+            cache_df = cache_df[cache_df['date'].isin(df['date']) & cache_df['symbol'].isin(df['symbol'])]
+
+            # 删除 df 中的旧资金流列（如果有）
+            existing_mf_cols = [c for c in _MONEY_FLOW_COLS if c in df.columns]
+            if existing_mf_cols:
+                df = df.drop(columns=existing_mf_cols)
+
+            # merge 缓存
+            df = df.merge(cache_df[['date', 'symbol'] + _MONEY_FLOW_COLS],
+                          on=['date', 'symbol'], how='left', suffixes=('', '_cached'))
+            # 清理可能重复的 _cached 列
+            for c in _MONEY_FLOW_COLS:
+                if f'{c}_cached' in df.columns:
+                    df[c] = df.pop(f'{c}_cached')
+            return df
+
     has_shares = 'total_shares' in df.columns
 
     g = df.groupby('symbol')
@@ -261,11 +342,9 @@ def calculate_money_flow_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # ---- 1. 成交额/成交量 = 均价（元）----
     df['金'] = df['amount'] / df['volume'].replace(0, np.nan)
 
-    # ---- 2. PJJ 加权平均价（组内 ewm）----
-    df['PJJ'] = g['close'].transform(
-        lambda s: ((df.loc[s.index, 'high'] + df.loc[s.index, 'low'] + df.loc[s.index, 'close'] * 2) / 4)
-                  .ewm(alpha=0.9, adjust=False).mean()
-    )
+    # ---- 2. PJJ 加权平均价（组内 ewm）优化版：先向量算PJJ_raw，再用groupby.ewm ----
+    pjj_raw = (df['high'] + df['low'] + df['close'] * 2) / 4
+    df['PJJ'] = pjj_raw.groupby(df['symbol']).ewm(alpha=0.9, adjust=False).mean().values
 
     # ---- 3. QJJ 单位价格波动范围的成交量（分母保护）----
     denom = (df['high'] - df['low']) * 2 - abs(df['close'] - df['open'])
@@ -308,11 +387,11 @@ def calculate_money_flow_indicators(df: pd.DataFrame) -> pd.DataFrame:
     liijin_prev2 = g['LIJIN'].shift(2).fillna(0)
     df['主生量'] = df['LIJIN'] * 0.55 + liijin_prev1 * 0.33 + liijin_prev2 * 0.22
 
-    # ---- 9. GJJ 8期EMA主生量（量基线，组内 ewm）----
-    df['GJJ'] = g['主生量'].transform(lambda s: s.ewm(span=8, adjust=False).mean())
+    # ---- 9. GJJ 8期EMA主生量（量基线）优化版：groupby.ewm直接调用 ----
+    df['GJJ'] = df['主生量'].groupby(df['symbol']).ewm(span=8, adjust=False).mean().values
 
-    # ---- 10. LLJX 3期EMA主生量----
-    df['LLJX'] = g['主生量'].transform(lambda s: s.ewm(span=3, adjust=False).mean())
+    # ---- 10. LLJX 3期EMA主生量 ----
+    df['LLJX'] = df['主生量'].groupby(df['symbol']).ewm(span=3, adjust=False).mean().values
 
     # ---- 11. 资金量 = LLJX----
     df['资金量'] = df['LLJX']
@@ -332,8 +411,8 @@ def calculate_money_flow_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # ---- 14. 力度----
     df['力度'] = df['LIJIN'] / 1000
 
-    # ---- 15. 周量 过去5日LLJX总和（组内 rolling）----
-    df['周量'] = g['LLJX'].transform(lambda s: s.rolling(window=5, min_periods=1).sum())
+    # ---- 15. 周量 过去5日LLJX总和（组内 rolling）优化版：groupby.rolling直接调用 ----
+    df['周量'] = df['LLJX'].groupby(df['symbol']).rolling(window=5, min_periods=1).sum().values
 
     # ---- 16. 周增幅----
     prev_week = g['周量'].shift(1)
@@ -349,6 +428,9 @@ def calculate_money_flow_indicators(df: pd.DataFrame) -> pd.DataFrame:
     logger.info(f"资金流指标计算完成: {len(df):,}行, "
                 f"money_flow_positive={df['money_flow_positive'].sum():,}, "
                 f"money_flow_trend={df['money_flow_trend'].sum():,}")
+
+    # ── 保存缓存 ──────────────────────────────────────────────────
+    _save_money_flow_cache(df)
 
     return df
 

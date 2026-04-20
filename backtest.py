@@ -48,8 +48,10 @@ def load_data_for_strategy(name: str, start_date: str, end_date: str) -> pd.Data
     end_year = int(end_date[:4])
     years = list(range(start_year, end_year + 1))
 
-    logger.info(f"加载数据: {years}")
-    df = load_strategy_data(years=years, add_money_flow=True)
+    # V3策略不需要资金流指标（省10秒计算）
+    add_mf = "wavechan_v3" not in name
+    logger.info(f"加载数据: {years} | 资金流: {'开启' if add_mf else '跳过（V3无需）'}")
+    df = load_strategy_data(years=years, add_money_flow=add_mf)
     logger.info(f"原始数据: {len(df):,} 行  [{df['date'].min()} ~ {df['date'].max()}]")
 
     # 日期过滤
