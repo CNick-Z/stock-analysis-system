@@ -757,8 +757,10 @@ class WaveChanStrategy:
                         self._wave_cache = pd.concat([self._wave_cache, reloaded], ignore_index=True)
                         logger.info(f"[WaveMerge] {current_date} 重新加载月份数据，当前缓存共 {len(self._wave_cache)} 行")
 
+            wave_cols_extra = ['all_verified', 'iron_law_1', 'iron_law_2', 'iron_law_3']
             wave_cols = ['date', 'symbol', 'has_signal', 'signal_type', 'signal_status',
                          'total_score', 'wave_trend', 'wave_state', 'stop_loss']
+            wave_cols += [c for c in wave_cols_extra if c in self._wave_cache.columns]
             wave_cols = [c for c in wave_cols if c in self._wave_cache.columns]
             # 只删除信号重叠列（不删 merge key: date, symbol）
             sig_cols_to_replace = [c for c in wave_cols if c not in ('date', 'symbol') and c in df.columns]
@@ -787,74 +789,12 @@ class WaveChanStrategy:
                 logger.info(f"[L2-Only] {current_date} L2无信号，返回空（不触发L1 fallback）")
                 return pd.DataFrame()
 
-        # ── L1 Fallback: L2无数据时从L1实时计算波浪信号 ────────────────────
-
+        # ── L2-only：L2 无数据则直接返回空，不走任何 L1 fallback ──────────
+        # 正确逻辑：L2 没有这个日期 → 用 L1 重建 L2 缓存（离线一次性）
+        #         → 运行时只读 L2，不实时 fallback
         if not l2_has_data:
-            # ── 矢量化的 L1 信号合并（快 100 倍）─────────────────────────
-            if hasattr(self, '_l1_signals') and not self._l1_signals.empty:
-                # 预计算 Parquet → 直接 merge
-                # 先从 df 删除 has_signal（避免 merge 时列名冲突：df.has_signal vs l1.has_signal）
-                if 'has_signal' in df.columns:
-                    df = df.drop(columns=['has_signal'])
-                l1 = self._l1_signals[['symbol', 'has_signal', 'signal_type', 'total_score',
-                                        'wave_trend', 'signal_status', 'wave_state', 'stop_loss',
-                                        '_weekly_dir', '_impulse_state']].copy()
-                l1 = l1.rename(columns={
-                    'signal_type': '_l1_signal_type',
-                    'total_score': '_l1_total_score',
-                    'wave_trend': '_l1_wave_trend',
-                    'signal_status': '_l1_signal_status',
-                    'wave_state': '_l1_wave_state',
-                    'stop_loss': '_l1_stop_loss',
-                    '_weekly_dir': '_l1_weekly_dir',
-                    '_impulse_state': '_l1_impulse_state',
-                })
-                df = df.merge(l1, on='symbol', how='left')
-                # 填充 has_signal=False 的行（L1 有信号则合并后 has_signal=True，否则 NaN）
-                if 'has_signal' not in df.columns:
-                    df['has_signal'] = False
-                else:
-                    df['has_signal'] = df['has_signal'].fillna(False)
-                # 直接用 L1 预计算值覆盖（原 df 通常没有这些列）
-                df['signal_type'] = df['_l1_signal_type']
-                df['total_score'] = df['_l1_total_score'].fillna(0).astype(float)
-                df['wave_trend'] = df['_l1_wave_trend'].fillna('')
-                df['signal_status'] = df['_l1_signal_status'].fillna('')
-                df['wave_state'] = df['_l1_wave_state'].fillna('')
-                df['stop_loss'] = df['_l1_stop_loss'].fillna(0.0).astype(float)
-                df['_weekly_dir'] = df['_l1_weekly_dir']
-                df['_impulse_state'] = df['_l1_impulse_state']
-                # 清理临时列
-                for c in ['_l1_signal_type', '_l1_total_score', '_l1_wave_trend',
-                          '_l1_signal_status', '_l1_wave_state', '_l1_stop_loss',
-                          '_l1_weekly_dir', '_l1_impulse_state']:
-                    if c in df.columns:
-                        df.drop(columns=[c], inplace=True)
-                computed = int(df['has_signal'].eq(True).sum())
-                logger.info(f"[L1Fallback] {current_date} 预计算信号合并完成: {computed}/{len(df)} 只有信号")
-                self._write_l1_signals_to_cache(df, current_date)
-            else:
-                # 无预计算 → 逐行实时计算（慢，只作后备）
-                logger.info(f"[L1Fallback] {current_date} L2无信号，执行实时计算 ({len(df)} 只候选)")
-                l1_signal_cols = [
-                    'has_signal', 'signal_type', 'total_score',
-                    'wave_trend', 'signal_status', 'wave_state', 'stop_loss'
-                ]
-                for col in l1_signal_cols:
-                    if col not in df.columns:
-                        df[col] = pd.NA
-
-                computed = 0
-                for idx, row in df.iterrows():
-                    sym = str(row.get('symbol', ''))
-                    sig = self._compute_l1_signal(sym, current_date)
-                    if sig:
-                        for col, val in sig.items():
-                            df.at[idx, col] = val
-                        computed += 1
-
-                logger.info(f"[L1Fallback] {current_date} 实时计算完成: {computed}/{len(df)} 只有效信号")
-                self._write_l1_signals_to_cache(df, current_date)
+            logger.info(f"[L2-Only] {current_date} L2无信号，返回空（禁止L1 fallback）")
+            return pd.DataFrame()
 
         # ── Step 1: 日线基础过滤 ───────────────────────────────────────
         _false = pd.Series(False, index=df.index)
@@ -953,7 +893,10 @@ class WaveChanStrategy:
         if self.iron_laws_strict and not candidates.empty:
             if 'all_verified' in candidates.columns:
                 n_before = len(candidates)
-                candidates = candidates[candidates['all_verified'] == 1].copy()
+                # NaN=未验证(保留)，0=验证失败(拒绝)，1=验证通过(保留)
+                candidates = candidates[
+                    candidates['all_verified'].isna() | (candidates['all_verified'] == 1)
+                ].copy()
                 n_rejected = n_before - len(candidates)
                 if n_rejected > 0:
                     logger.info(f"[IronLawsFilter] {current_date} 铁律过滤拒绝 {n_rejected}/{n_before} 个候选")

@@ -14,7 +14,7 @@ simulate.py — 统一模拟盘入口
 import argparse
 import logging
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -61,7 +61,10 @@ def load_data_for_date(name: str, target_date: str) -> tuple:
     # 再过滤到目标日期
     df = year_df[year_df["date"] == target_date].copy()
     if df.empty:
-        raise ValueError(f"目标日期 {target_date} 无数据，请检查数据是否已构建")
+        # 数据里没有 target_date，用最后一天（数据延迟的情况）
+        last_date = year_df["date"].max()
+        logger.warning(f"  目标日期 {target_date} 无数据，用最后一天 {last_date} 代替")
+        df = year_df[year_df["date"] == last_date].copy()
 
     if name == "wavechan_v3_strict":
         wave_df = load_wavechan_cache([year])
@@ -345,7 +348,86 @@ def main():
                         help="显示当日大盘状态（BEAR/NEUTRAL/BULL 及仓位上限）")
     parser.add_argument("--no-regime", action="store_true",
                         help="禁用 MarketRegimeFilter（全天候固定仓位）")
+    parser.add_argument("--start", default=None,
+                        help="区间起始日期 YYYY-MM-DD（需配合 --end 使用，数据只加载一次）")
+    parser.add_argument("--end", default=None,
+                        help="区间结束日期 YYYY-MM-DD（需配合 --start 使用）")
     args = parser.parse_args()
+
+    # ── 日期区间模式（--start + --end）────────────────────────────────
+    if args.start and args.end:
+        strategy_name = args.strategy
+        state_file = args.state_file or f"/tmp/simulate_{strategy_name}.json"
+        _s = date.fromisoformat(args.start)
+        _e = date.fromisoformat(args.end)
+        if _s > _e:
+            print(f"错误: --start ({args.start}) 不能晚于 --end ({args.end})")
+            return
+
+        # 加载一次数据（用起始日期确定年份）
+        print(f"加载数据: {args.start} ~ {args.end}")
+        year_df, _ = load_data_for_date(strategy_name, args.start)
+        all_dates = sorted(year_df["date"].unique().tolist())
+        date_list = [d for d in all_dates if d >= args.start and d <= args.end]
+        print(f"交易日: {date_list[0]} ~ {date_list[-1]}，共 {len(date_list)} 天")
+
+        # 初始化框架
+        V3_MAX_POSITIONS = 5
+        V3_POSITION_SIZE = 0.10
+        params = STRATEGY_REGISTRY.get(strategy_name, {}).get("params", {})
+        mrf = None
+        if strategy_name == "wavechan_v3_strict":
+            # V3 启用 MarketRegimeFilter（牛熊市仓位控制）
+            mrf = MarketRegimeFilter(
+                confirm_days=1,
+                neutral_position=0.70,
+                bear_position=0.30,
+            )
+            mrf.prepare(args.start, args.end)
+            framework = BaseFramework(
+                initial_cash=args.initial_cash,
+                max_positions=V3_MAX_POSITIONS,
+                position_size=V3_POSITION_SIZE,
+                state_file=state_file,
+                market_regime_filter=mrf,
+            )
+        else:
+            framework = BaseFramework(
+                initial_cash=args.initial_cash,
+                max_positions=params.get("max_positions", 3),
+                position_size=params.get("position_size", 0.20),
+                state_file=state_file,
+            )
+        framework.load_state()
+        if args.reset:
+            framework.reset()
+        strategy = load_strategy(strategy_name)
+        strategy.prepare(date_list, year_df)
+
+        print(f"\n{'='*50}")
+        print(f"  {strategy_name}  区间: {date_list[0]} ~ {date_list[-1]}")
+        print(f"{'='*50}")
+
+        for i, td in enumerate(date_list):
+            try:
+                framework.run_simulate(strategy=strategy, df=year_df, target_date=td)
+            except Exception as e:
+                logger.error(f"{td} 模拟失败: {e}")
+                continue
+            total = framework.cash + sum(
+                p.get("qty", 0) * p.get("latest_price", p.get("avg_cost", 0))
+                for p in framework.positions.values()
+            )
+            pct = (total / args.initial_cash - 1) * 100
+            n_win = framework.n_winning
+            n_tot = framework.n_total
+            wr = n_win / n_tot * 100 if n_tot > 0 else 0
+            print(f"  [{i+1}/{len(date_list)}] {td} | 持仓:{len(framework.positions):>2} | 交易:{len(framework.trades):>3} | 胜率:{wr:>5.1f}% | 总值:{total:>14,.0f} ({pct:+.2f}%)")
+
+        framework.save_state()
+        print(f"\n完成，状态已保存: {state_file}")
+        print(f"最终: 现金 {framework.cash:,.0f} | 持仓 {len(framework.positions)} 只 | 总交易 {len(framework.trades)} 笔")
+        return
 
     # 默认今天
     target_date = args.date or date.today().strftime("%Y-%m-%d")
@@ -362,20 +444,28 @@ def main():
     display_name = strategy_display.get(strategy_name, f"{strategy_name}模拟盘")
 
     # V3 波浪缠论配置（与 backtest.py 保持一致）
-    V3_MAX_POSITIONS = 10
+    V3_MAX_POSITIONS = 5
     V3_POSITION_SIZE = 0.10
 
     # 初始化框架，根据策略读取对应配置
     strategy_params = STRATEGY_REGISTRY.get(strategy_name, {})
     params = strategy_params.get("params", {})
 
+    mrf = None
     # V3 使用特殊配置（与 backtest.py 对齐）
     if strategy_name == "wavechan_v3_strict":
+        mrf = MarketRegimeFilter(
+            confirm_days=1,
+            neutral_position=0.70,
+            bear_position=0.30,
+        )
+        mrf.prepare(target_date, target_date)
         framework = BaseFramework(
             initial_cash=args.initial_cash,
             max_positions=V3_MAX_POSITIONS,
             position_size=V3_POSITION_SIZE,
             state_file=state_file,
+            market_regime_filter=mrf,
         )
     elif strategy_name == "v8":
         # V8 使用 shared.py 中的配置
@@ -476,13 +566,12 @@ def main():
         logger.info("  MarketRegimeFilter: 已禁用（全天候固定仓位）")
 
     try:
-        # 注意：传入 year_df（全年）用于计算 next_date，不要传单日 df
+        # 注意：传入 year_df（全年）用于计算 next_date 和 prev_df，不要传单日 df
         all_dates = sorted(year_df["date"].unique().tolist())
         framework.run_simulate(
             strategy=strategy,
-            df=df,
+            df=year_df,
             target_date=target_date,
-            dates=all_dates,
         )
     except Exception as e:
         logger.error(f"模拟盘运行失败: {e}")
