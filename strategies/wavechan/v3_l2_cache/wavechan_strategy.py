@@ -135,11 +135,6 @@ class WaveChanStrategy:
         self._corrected_wave_state_cache: Dict[str, Dict[str, str]] = defaultdict(dict)
         self._backtrack_enabled: bool = True   # 可通过参数关闭
 
-        # ── L1 Fallback 缓存（每个交易日只算一次每个 symbol）────────────
-        # _l1_date: 当前缓存对应的交易日
-        # _l1_cache: symbol → L1信号dict
-        self._l1_date: str = ''
-
     def _write_l1_signals_to_cache(self, df: pd.DataFrame, current_date: str):
         """
         将 L1 fallback 计算的信号写回 L2 缓存目录，格式：
@@ -191,7 +186,6 @@ class WaveChanStrategy:
             logger.info(f"[L1Fallback→L2] {current_date} 写入 {len(sig_rows)} 条信号到缓存 {cache_path.name}")
         except Exception as e:
             logger.warning(f"[L1Fallback→L2] {current_date} 写入缓存失败: {e}")
-        self._l1_cache: Dict[str, dict] = {}
 
         # 策略数据接口
         self.name = "WaveChanStrategy"
@@ -244,22 +238,6 @@ class WaveChanStrategy:
         # ── L1 Fallback 预计算信号加载 ───────────────────────────────
         # 从预计算的 Parquet 加载（scripts/build_l1_signals_2026.py 生成）
         # 比逐股票实时计算快 100 倍
-        self._l1_signals: pd.DataFrame = pd.DataFrame()
-        year = int(dates[0][:4]) if dates else None
-        if year:
-            l1_path = Path(f'/data/warehouse/wavechan_l1_signals/year={year}/data.parquet')
-            if l1_path.exists():
-                self._l1_signals = pd.read_parquet(l1_path)
-                self._l1_signals_by_symbol = (
-                    self._l1_signals.groupby('symbol')
-                    .apply(lambda g: g.iloc[0].to_dict())
-                    .to_dict()
-                )
-                logger.info(f"[L1Fallback] 已加载预计算信号: {len(self._l1_signals)} 只股票 → {l1_path}")
-            else:
-                logger.info(f"[L1Fallback] 预计算信号不存在（{l1_path}），将使用实时计算")
-                self._l1_signals_by_symbol = {}
-
         # ── 保存完整历史数据并预计算周线方向（向量化，O(n)）─────────────
         if loader is not None and hasattr(loader, 'empty') and not loader.empty:
             self._full_df = loader.copy()
@@ -580,14 +558,8 @@ class WaveChanStrategy:
                            signal_status, wave_state, stop_loss
             or None if computation fails
         """
-        # ── 优先使用预计算信号（prepare 时从 Parquet 加载）───────────────
-        if hasattr(self, '_l1_signals_by_symbol') and self._l1_signals_by_symbol:
-            if symbol in self._l1_signals_by_symbol:
-                return self._l1_signals_by_symbol[symbol]
-
-        # ── 内存缓存命中检查 ───────────────────────────────────────────
-        # 波浪阶段随市场动态变化，不做日期级别的缓存（memoization 会阻止自动修正）
-        # 注意：identify_wave_stage 每次都用最新数据（year-1 + year），无需手动刷新
+        # L1 预计算信号不再加载（2026-04-23 从 prepare 中移除）
+        # 不依赖外部 L1 数据
 
         try:
             import datetime
@@ -783,8 +755,6 @@ class WaveChanStrategy:
             df['has_signal'].eq(True).any()
         )
         if _force_l2_only:
-            self._l1_signals = pd.DataFrame()
-            self._l1_signals_by_symbol = {}
             if not l2_has_data:
                 logger.info(f"[L2-Only] {current_date} L2无信号，返回空（不触发L1 fallback）")
                 return pd.DataFrame()

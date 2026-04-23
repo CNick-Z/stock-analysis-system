@@ -585,9 +585,12 @@ class BaseFramework:
         if scored.empty:
             return
 
+        # TOP 5 候选
+        top5 = scored.nlargest(5, "score") if len(scored) > 5 else scored
+
         # ---- 第一遍：构建所有候选信号记录 ----
         today_candidates = []
-        for _, row in scored.iterrows():
+        for _, row in top5.iterrows():
             sym = row["symbol"]
             day_row = daily[daily["symbol"] == sym]
             if day_row.empty:
@@ -613,16 +616,22 @@ class BaseFramework:
                 "date": market["date"],
                 "symbol": sym,
                 "score": round(float(row.get("score", 0)), 2),
+                "signal_type": str(row.get("signal_type", "")),
+                "wave_state": str(row.get("wave_state", "")),
+                "wave_trend": str(row.get("wave_trend", "")),
+                "iron_law_1": bool(row.get("iron_law_1", False)),
+                "iron_law_2": bool(row.get("iron_law_2", False)),
+                "iron_law_3": bool(row.get("iron_law_3", False)),
+                "all_verified": bool(row.get("all_verified", False)),
                 "rsi": round(float(r.get("rsi_14", 0) or 0), 1),
                 "cci": round(float(r.get("cci_20", 0) or 0), 1),
-                "macd_state": macd_state,
                 "macd_state": macd_state,
                 "kdj_state": kdj_state,
                 "industry": str(r.get("industry", "")),
                 "name": str(r.get("name", "")),
                 "close": round(float(r.get("close", 0) or 0), 2),
                 "limit_up": bool(r.get("limit_up", False)),
-                "limit_down": bool(r.get("limit_down", False)),
+                "limit_down": bool(row.get("limit_down", False)),
                 "status": "pending",
                 "reason": "",
             }
