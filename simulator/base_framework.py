@@ -74,6 +74,7 @@ class Trade:
     price: float
     qty: int
     pnl: float = 0.0    # 平仓盈亏（卖出时计算）
+    signal_type: str = ""  # 买入时的信号类型
     reason: str = ''     # 出场原因
     pnl_pct: float = 0.0
 
@@ -544,6 +545,7 @@ class BaseFramework:
                 price=exec_price,
                 qty=pos["qty"],
                 pnl=pnl,
+                signal_type=pos.get("signal_type", ""),
                 reason=reason,
                 pnl_pct=pnl_pct,
             )
@@ -572,9 +574,21 @@ class BaseFramework:
                 f"RSI14: {regime_info['rsi14']:.1f}"
             )
 
-        # 可用资金 = 现金 × 账户总仓位上限（受 regime 影响）
-        avail_cash = self.cash * position_limit
-        slots = self.max_positions - len(self.positions)
+        # 剩余可用现金 = 总资产×regime比例 - 持仓市值
+        total_value = self.cash + sum(
+            p.get("qty", 0) * p.get("latest_price", p.get("avg_cost", 0))
+            for p in self.positions.values()
+        )
+        remaining_slots = self.max_positions - len(self.positions)
+        if remaining_slots <= 0:
+            return
+        position_budget = total_value * position_limit
+        used_budget = sum(
+            p.get("qty", 0) * p.get("latest_price", p.get("avg_cost", 0))
+            for p in self.positions.values()
+        )
+        remaining_cash = max(0.0, position_budget - used_budget)
+        per_stock_budget = remaining_cash / remaining_slots
 
         # 策略选股
         candidates = self._strategy.filter_buy(daily, market.get("date"))
@@ -662,11 +676,11 @@ class BaseFramework:
             if pd.isna(exec_price):
                 exec_price = r.get("open", 0) or 0
             exec_price = exec_price * (1 + self.slippage_pct)
-            if slots <= 0:
+            if remaining_slots <= 0:
                 cand["status"] = "X4 - 已满仓"
                 cand["reason"] = f"仓位已满({len(self.positions)}/{self.max_positions})"
                 continue
-            if exec_price <= 0 or avail_cash < exec_price * 100:
+            if exec_price <= 0 or self.cash < exec_price * 100:
                 cand["status"] = "X5 - 资金不足"
                 cand["reason"] = "可用资金不足"
                 continue
@@ -678,7 +692,7 @@ class BaseFramework:
             if cand["status"] != "pending":
                 continue
             sym = cand["symbol"]
-            if buy_count >= slots:
+            if buy_count >= remaining_slots:
                 cand["status"] = "X4 - 已满仓"
                 cand["reason"] = f"仓位已满({len(self.positions)}/{self.max_positions})"
                 continue
@@ -698,9 +712,17 @@ class BaseFramework:
             self.candidates.extend(today_candidates)
             return
 
-        per_stock_cash = min(
-            avail_cash / len(to_buy),
-            self.cash * self.position_size * position_limit
+        per_stock_cash = per_stock_budget  # 每只股票可用金额
+
+        logger.info(
+            f"[仓位预算] 总资产={total_value/1e4:.1f}万 | "
+            f"Regime仓位={position_limit:.0%} | "
+            f"理论预算={position_budget/1e4:.1f}万 | "
+            f"持仓市值={used_budget/1e4:.1f}万 | "
+            f"剩余现金={remaining_cash/1e4:.1f}万 | "
+            f"可用slot={remaining_slots} | "
+            f"每只预算={per_stock_budget/1e4:.1f}万 | "
+            f"实际现金={self.cash/1e4:.1f}万"
         )
 
         for sym, cand, r, exec_price in to_buy:
@@ -732,6 +754,7 @@ class BaseFramework:
                 "days_held": 0,
                 "consecutive_bad_days": 0,
                 "is_etf": is_etf,
+                "signal_type": cand.get("signal_type", ""),
                 "extra": {},
             }
             for c in today_candidates:
@@ -745,6 +768,7 @@ class BaseFramework:
                 action="buy",
                 price=exec_price,
                 qty=buy_qty,
+                signal_type=cand.get("signal_type", ""),
             )
             self.trades.append(trade.__dict__)
             logger.info(

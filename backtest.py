@@ -10,7 +10,9 @@ backtest.py — 统一回测入口
 """
 
 import argparse
+import fcntl
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -406,46 +408,60 @@ def _make_summary(framework: BaseFramework, strat_name: str, start: str, end: st
 
 
 def main():
-    parser = argparse.ArgumentParser(description="统一回测入口")
-    parser.add_argument("--strategy", required=True,
-                        choices=["v8", "wavechan_v3_strict", "all"],
-                        help="选择策略: v8, wavechan_v3_strict（铁律过滤）, all")
-    parser.add_argument("--start", required=True, help="回测开始日期 YYYY-MM-DD")
-    parser.add_argument("--end", required=True, help="回测结束日期 YYYY-MM-DD")
-    parser.add_argument("--output-state", help="可选：保存最终状态到文件")
-    parser.add_argument("--initial-cash", type=float, default=1_000_000,
-                        help="初始资金（默认 1,000,000）")
-    parser.add_argument("--market-filter", action="store_true",
-                        help="启用大盘牛熊过滤器（BEAR转40%%/NEUTRAL转80%%/BULL转100%%）")
-    parser.add_argument("--filter-confirm-days", type=int, default=1,
-                        help="过滤器连续确认天数（默认1）")
-    parser.add_argument("--filter-neutral", type=float, default=0.70,
-                        help="震荡市仓位上限（默认0.70）")
-    parser.add_argument("--filter-bear", type=float, default=0.30,
-                        help="熊市仓位上限（默认0.30）")
-    args = parser.parse_args()
+    # ── 文件锁：防止并发重复启动 ────────────────────────────────
+    lock_path = Path("/tmp/backtest.lock")
+    lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print("【警告】另一个回测进程正在运行，退出。"
+              "如确认无进程在跑，请手动删除: rm /tmp/backtest.lock")
+        os.close(lock_fd)
+        sys.exit(1)
 
-    strategies_to_run = ["v8", "wavechan"] if args.strategy == "all" else [args.strategy]
-    results = []
+    try:
+        parser = argparse.ArgumentParser(description="统一回测入口")
+        parser.add_argument("--strategy", required=True,
+                            choices=["v8", "wavechan_v3_strict", "all"],
+                            help="选择策略: v8, wavechan_v3_strict（铁律过滤）, all")
+        parser.add_argument("--start", required=True, help="回测开始日期 YYYY-MM-DD")
+        parser.add_argument("--end", required=True, help="回测结束日期 YYYY-MM-DD")
+        parser.add_argument("--output-state", help="可选：保存最终状态到文件")
+        parser.add_argument("--initial-cash", type=float, default=1_000_000,
+                            help="初始资金（默认 1,000,000）")
+        parser.add_argument("--market-filter", action="store_true",
+                            help="启用大盘牛熊过滤器（BEAR转40%%/NEUTRAL转80%%/BULL转100%%）")
+        parser.add_argument("--filter-confirm-days", type=int, default=1,
+                            help="过滤器连续确认天数（默认1）")
+        parser.add_argument("--filter-neutral", type=float, default=0.70,
+                            help="震荡市仓位上限（默认0.70）")
+        parser.add_argument("--filter-bear", type=float, default=0.30,
+                            help="熊市仓位上限（默认0.30）")
+        args = parser.parse_args()
 
-    for strat_name in strategies_to_run:
-        logger.info(f"\n{'='*50}\n  开始回测: {strat_name}\n{'='*50}")
-        result = run_backtest_year_by_year(
-            strat_name=strat_name,
-            start_date=args.start,
-            end_date=args.end,
-            initial_cash=args.initial_cash,
-            output_state=args.output_state,
-            market_filter=args.market_filter,
-            filter_confirm_days=args.filter_confirm_days,
-            filter_neutral=args.filter_neutral,
-            filter_bear=args.filter_bear,
-        )
-        if result:
-            results.append(result)
+        strategies_to_run = ["v8", "wavechan"] if args.strategy == "all" else [args.strategy]
+        results = []
 
-    if len(results) > 1:
-        print_comparison(results)
+        for strat_name in strategies_to_run:
+            logger.info(f"\n{'='*50}\n  开始回测: {strat_name}\n{'='*50}")
+            result = run_backtest_year_by_year(
+                strat_name=strat_name,
+                start_date=args.start,
+                end_date=args.end,
+                initial_cash=args.initial_cash,
+                output_state=args.output_state,
+                market_filter=args.market_filter,
+                filter_confirm_days=args.filter_confirm_days,
+                filter_neutral=args.filter_neutral,
+                filter_bear=args.filter_bear,
+            )
+            if result:
+                results.append(result)
+
+        if len(results) > 1:
+            print_comparison(results)
+    finally:
+        os.close(lock_fd)
 
 
 if __name__ == "__main__":

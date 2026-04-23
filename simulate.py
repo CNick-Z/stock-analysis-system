@@ -12,7 +12,9 @@ simulate.py — 统一模拟盘入口
 """
 
 import argparse
+import fcntl
 import logging
+import os
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -324,6 +326,17 @@ def show_candidates(framework: BaseFramework, strategy_name: str, date: str = No
 # ── 主入口 ─────────────────────────────────────────────────
 
 def main():
+    # ── 文件锁：防止并发重复启动 ────────────────────────────────
+    lock_path = Path("/tmp/simulate.lock")
+    lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print("【警告】另一个模拟盘进程正在运行，退出。"
+              "如确认无进程在跑，请手动删除: rm /tmp/simulate.lock")
+        os.close(lock_fd)
+        sys.exit(1)
+
     parser = argparse.ArgumentParser(description="统一模拟盘入口")
     parser.add_argument("--strategy", required=True,
                         choices=["v8", "wavechan_v3_strict"],
@@ -357,7 +370,8 @@ def main():
     # ── 日期区间模式（--start + --end）────────────────────────────────
     if args.start and args.end:
         strategy_name = args.strategy
-        state_file = args.state_file or f"/tmp/simulate_{strategy_name}.json"
+        portfolio_dir = Path("/root/.openclaw/workspace/portfolio")
+        state_file = args.state_file or str(portfolio_dir / f"simulate_{strategy_name}.json")
         _s = date.fromisoformat(args.start)
         _e = date.fromisoformat(args.end)
         if _s > _e:
@@ -434,7 +448,8 @@ def main():
     strategy_name = args.strategy
 
     # 状态文件
-    default_state = f"/tmp/simulate_{strategy_name}.json"
+    portfolio_dir = Path("/root/.openclaw/workspace/portfolio")
+    default_state = str(portfolio_dir / f"simulate_{strategy_name}.json")
     state_file = args.state_file or default_state
 
     # 显示名称映射
@@ -566,24 +581,22 @@ def main():
         logger.info("  MarketRegimeFilter: 已禁用（全天候固定仓位）")
 
     try:
-        # 注意：传入 year_df（全年）用于计算 next_date 和 prev_df，不要传单日 df
         all_dates = sorted(year_df["date"].unique().tolist())
         framework.run_simulate(
             strategy=strategy,
             df=year_df,
             target_date=target_date,
         )
+        # 打印当日状态
+        show_state(framework, strategy_name)
+        logger.info(f"\n状态文件: {state_file}")
     except Exception as e:
         logger.error(f"模拟盘运行失败: {e}")
         import traceback
         traceback.print_exc()
         return
-
-    # 打印当日状态
-    show_state(framework, strategy_name)
-
-    logger.info(f"\n状态文件: {state_file}")
-
+    finally:
+        os.close(lock_fd)
 
 if __name__ == "__main__":
     main()

@@ -863,9 +863,9 @@ class WaveChanStrategy:
         if self.iron_laws_strict and not candidates.empty:
             if 'all_verified' in candidates.columns:
                 n_before = len(candidates)
-                # NaN=未验证(保留)，0=验证失败(拒绝)，1=验证通过(保留)
+                # NaN=未验证(拒绝)，0=验证失败(拒绝)，1=验证通过(保留)
                 candidates = candidates[
-                    candidates['all_verified'].isna() | (candidates['all_verified'] == 1)
+                    candidates['all_verified'] == 1
                 ].copy()
                 n_rejected = n_before - len(candidates)
                 if n_rejected > 0:
