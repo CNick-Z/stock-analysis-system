@@ -493,10 +493,18 @@ class BaseFramework:
             pos["extra"]["kdj_state"] = _infer_kdj_state(r)
             pos["extra"]["industry"] = r.get("industry", "")
             pos["extra"]["name"] = r.get("name", "")
-            try:
-                self._strategy.on_tick(r, pos, market)
-            except TypeError:
-                self._strategy.on_tick(r, pos)  # 兼容2参数策略
+            _strategy_on_tick = getattr(self._strategy, 'on_tick', None)
+            if _strategy_on_tick is not None:
+                try:
+                    _strategy_on_tick(r, pos, market)
+                except TypeError:
+                    try:
+                        _strategy_on_tick(r, pos)  # 兼容2参数策略
+                    except Exception:
+                        pass
+            else:
+                # 策略无 on_tick，框架使用默认实现
+                pos['days_held'] = pos.get('days_held', 0) + 1
 
         # ── 2. 处理出场 ──
         self._process_sells(daily, market)

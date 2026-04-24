@@ -599,9 +599,3 @@ class ScoreV8Strategy:
 
         return False, ""
 
-    # ------------------------------------------------------------------
-    # on_tick: 策略轮 tick（计数器更新）
-    # ------------------------------------------------------------------
-    def on_tick(self, row: pd.Series, pos: dict, market: Optional[dict] = None):
-        """支持2参数和3参数调用"""
-        pass
