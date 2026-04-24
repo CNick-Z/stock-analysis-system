@@ -225,10 +225,11 @@ def run_backtest_year_by_year(
 
     # 初始化框架（只初始化一次）
     # V3 分散持仓配置: max_positions=10, position_size=10%
+    # V8 从 strategy.config 读取参数（统一框架配置）
     framework = BaseFramework(
         initial_cash=initial_cash,
-        max_positions=10,
-        position_size=0.10,
+        max_positions=strategy.config.get('max_positions', 10),
+        position_size=strategy.config.get('position_size', 0.10),
         state_file=f"/tmp/backtest_{strat_name}.json",
         market_regime_filter=market_regime_filter,
     )

@@ -359,8 +359,8 @@ def main():
                         help="初始资金（默认 1,000,000）")
     parser.add_argument("--show-regime", action="store_true",
                         help="显示当日大盘状态（BEAR/NEUTRAL/BULL 及仓位上限）")
-    parser.add_argument("--no-regime", action="store_true",
-                        help="禁用 MarketRegimeFilter（全天候固定仓位）")
+    parser.add_argument("--market-filter", action="store_true",
+                        help="启用 MarketRegimeFilter（牛熊市仓位控制，与 backtest.py --market-filter 一致）")
     parser.add_argument("--start", default=None,
                         help="区间起始日期 YYYY-MM-DD（需配合 --end 使用，数据只加载一次）")
     parser.add_argument("--end", default=None,
@@ -406,11 +406,21 @@ def main():
                 market_regime_filter=mrf,
             )
         else:
+            # V8/其他策略：默认关，--market-filter 开
+            mrf = None
+            if args.market_filter:
+                mrf = MarketRegimeFilter(
+                    confirm_days=1,
+                    neutral_position=0.70,
+                    bear_position=0.30,
+                )
+                mrf.prepare(args.start, args.end)
             framework = BaseFramework(
                 initial_cash=args.initial_cash,
-                max_positions=params.get("max_positions", 3),
-                position_size=params.get("position_size", 0.20),
+                max_positions=params.get("max_positions", 10),
+                position_size=params.get("position_size", 0.10),
                 state_file=state_file,
+                market_regime_filter=mrf,
             )
         framework.load_state()
         if args.reset:
@@ -483,12 +493,21 @@ def main():
             market_regime_filter=mrf,
         )
     elif strategy_name == "v8":
-        # V8 使用 shared.py 中的配置
+        # V8 使用 shared.py 配置，MarketRegimeFilter 按需开启（默认关）
+        mrf = None
+        if args.market_filter:
+            mrf = MarketRegimeFilter(
+                confirm_days=1,
+                neutral_position=0.70,
+                bear_position=0.30,
+            )
+            mrf.prepare(target_date, target_date)
         framework = BaseFramework(
             initial_cash=args.initial_cash,
-            max_positions=params.get("max_positions", 3),
-            position_size=params.get("position_size", 0.20),
+            max_positions=params.get("max_positions", 10),
+            position_size=params.get("position_size", 0.10),
             state_file=state_file,
+            market_regime_filter=mrf,
         )
     else:
         framework = BaseFramework(
@@ -523,9 +542,9 @@ def main():
         strategy = load_strategy(strategy_name)
         year_df, df = load_data_for_date(strategy_name, target_date)
 
-        # MarketRegimeFilter（按需初始化）
+        # MarketRegimeFilter（默认关，需 --market-filter 开启）
         mrf = None
-        if not args.no_regime:
+        if args.market_filter:
             mrf = MarketRegimeFilter()
             mrf.prepare(target_date, target_date)
 

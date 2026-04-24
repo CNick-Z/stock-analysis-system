@@ -24,14 +24,15 @@ STRATEGY_REGISTRY = {
         "class": "ScoreV8Strategy",
         "path": "strategies.score.v8.strategy",
         "params": {
-            # V8 回测最优参数（冻结，2026-04-01 tuner 验证）
-            # 对齐文档: strategies/score/v8/RESULT_V8_18YEAR_BACKTEST.md
+            # V8 回测参数（2026-04-24 调优：2年综合对比）
+            # 结论：10×10% 综合表现最优（2024:-7.9%/+2025:+28.9%）
+            # 注意：未复权数据，绝对值仅供参考
             "stop_loss": 0.04,
             "take_profit": 0.20,
             "rsi_filter_min": 50,
             "rsi_filter_max": 65,
-            "max_positions": 3,
-            "position_size": 0.20,
+            "max_positions": 10,
+            "position_size": 0.10,
         },
     },
     "wavechan_v3_strict": {

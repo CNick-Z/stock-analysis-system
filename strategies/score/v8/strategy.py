@@ -95,6 +95,14 @@ def _score_row_v8(row: pd.Series) -> float:
     if row.get('_ma_cond', False):
         score += 0.1622
 
+    # 底部放量反弹加分（DSA风格新增）
+    if row.get('_bottom_volume', False):
+        score += 0.08
+
+    # 缩量回踩MA5加分（DSA风格新增）
+    if row.get('_shrink_pullback', False):
+        score += 0.10
+
     # 均线角度
     sma10_change = row.get('_sma10_change', 0)
     if not pd.isna(sma10_change) and sma10_change > 0:
@@ -361,9 +369,32 @@ class ScoreV8Strategy:
         df['_rsi_f']      = (df['rsi_14'] >= self.rsi_filter_min) & (df['rsi_14'] <= self.rsi_filter_max)
         df['_price_f']    = (df['close'] >= 3) & (df['close'] <= 15)
 
+
+        # 剔除        # ── 1.6 价格回踩MA5（误差1%以内）──
+        df['_price_near_ma5'] = (abs(df['close'] - df['sma_5']) / df['sma_5'] < 0.01)
+
+        # ── 1.7 近20日振幅（箱体震荡过滤，用transform避免索引错位）──
+        df['_20d_high']     = g['high'].transform(lambda x: x.rolling(20, min_periods=20).max().shift(1))
+        df['_20d_low']      = g['low'].transform(lambda x: x.rolling(20, min_periods=20).min().shift(1))
+        df['_20d_amplitude'] = (df['_20d_high'] - df['_20d_low']) / df['_20d_high']
+
+        # ── 1.8 底部放量反弹（20日高点跌超15% + 放量阳线）──
+        df['_20d_high_drop'] = (df['_20d_high'] - df['close']) / df['_20d_high']
+        df['_bottom_volume'] = (
+            (df['_20d_high_drop'] > 0.15) &
+            (df['vol_ratio'] > 3) &
+            (df['close'] > df['open'])
+        )
+
+        # ── 1.9 缩量回踩（vol_ratio<0.7 且价格回踩MA5）──
+        df['_shrink_pullback'] = (df['vol_ratio'] < 0.7) & df['_price_near_ma5']
+
         # ── 2. 合并买入标记 ─────────────────────────────────────────
+        # 箱体震荡过滤：近20日振幅<5% → 排除（选择权在空头，难赚钱）
+        df['_narrow_box'] = df['_20d_amplitude'] < 0.05
         df['_ic_buy'] = (
             (~df['_exclude']) &
+            (~df['_narrow_box']) &
             (df['close'] >= df['open']) &
             (df['high'] <= df['open'] * 1.06) &
             df['_ma_cond'] &
@@ -381,6 +412,11 @@ class ScoreV8Strategy:
         df.loc[df['williams_r'] < -80, 'ic_bonus'] += 0.05
         df.loc[df['turnover_rate'] < 0.42, 'ic_bonus'] += 0.05
         df.loc[df['vol_ratio'] < 0.71, 'ic_bonus'] += 0.05
+        # ── DSA风格新增加分 ────────────────────────────────────────
+        # ① 底部放量反弹（20日高点跌超15% + vol_ratio>3 + 阳线）
+        df.loc[df['_bottom_volume'], 'ic_bonus'] += 0.08
+        # ② 缩量回踩MA5（vol_ratio<0.7 且价格回踩MA5）
+        df.loc[df['_shrink_pullback'], 'ic_bonus'] += 0.10
 
         # ── 4. _sma10_change（评分用均线变化率）──
         df['_sma10_change'] = (
@@ -394,6 +430,7 @@ class ScoreV8Strategy:
             '_ic_buy', 'ic_bonus', '_sma10_change',
             '_ma_cond', '_macd_cond', '_vol_cond', '_macd_jc',
             'growth',
+            '_shrink_pullback', '_bottom_volume',
         ]
         cache_df = df[cache_cols].copy()
 
@@ -448,7 +485,8 @@ class ScoreV8Strategy:
         # 缓存 merge（缓存已按 symbol 建索引）
         daily = daily[daily['symbol'].isin(cached_syms)].copy()
         cache_cols = ['_ic_buy', 'ic_bonus', '_sma10_change',
-                      '_ma_cond', '_macd_cond', '_vol_cond', '_macd_jc', 'growth']
+                      '_ma_cond', '_macd_cond', '_vol_cond', '_macd_jc', 'growth',
+                      '_short_ma_bull', '_shrink_pullback', '_bottom_volume']
         available = [c for c in cache_cols if c in cached.columns]
         if available:
             # 删除已存在的同名列（避免 join 时 overlap）
@@ -506,7 +544,9 @@ class ScoreV8Strategy:
             (df['cci_20'] < 100).astype(float) * 0.0597 +
             (df['close'] < df['bb_upper']).astype(float) * 0.1191 +
             df['_macd_jc'].astype(float) * 0.0873 +
-            df['growth'].between(0.5, 6.0).astype(float) * 0.06
+            df['growth'].between(0.5, 6.0).astype(float) * 0.06 +
+            df['_shrink_pullback'].astype(float) * 0.10 +
+            df['_bottom_volume'].astype(float) * 0.08
         )
         df['score'] = df['v6_score'] + df['ic_bonus'].fillna(0)
         df = df.sort_values('score', ascending=False)
