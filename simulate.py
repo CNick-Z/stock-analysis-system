@@ -96,6 +96,7 @@ def show_state(framework: BaseFramework, strategy_name: str, format: str = "text
     """打印当前持仓和资金状态
     format: 'text' 纯文本 / 'markdown' QQmarkdown格式
     """
+    _today = date.today()
     final_value = framework.cash + sum(
         pos.get("latest_price", pos["avg_cost"]) * pos["qty"]
         for pos in framework.positions.values()
@@ -142,7 +143,7 @@ def show_state(framework: BaseFramework, strategy_name: str, format: str = "text
                     latest,
                     pnl,
                     pnl_pct,
-                    pos.get("days_held", 0),
+                    max(0, (_today - date.fromisoformat(pos.get("entry_date", _today.isoformat()))).days),
                     f"{pos_pct:.1f}%",
                     macd_s,
                     kdj_s,
@@ -161,6 +162,49 @@ def show_state(framework: BaseFramework, strategy_name: str, format: str = "text
                 )
         else:
             lines.append("*当前无持仓*")
+
+        today_str = _today.isoformat()
+
+        # ── 当日操作记录 ──────────────────────────────────────
+        today_ops = [t for t in framework.trades if t.get("date") == today_str]
+        if today_ops:
+            lines.append("")
+            lines.append(f"**当日操作**  {today_str}（共{len(today_ops)}笔）")
+            lines.append("")
+            lines.append("| 时间 | 代码 | 操作 | 价格 | 数量 | 盈亏 | 原因 |")
+            lines.append("|------|------|------|------|------|------|------|")
+            for t in today_ops:
+                sym = t.get("symbol", "-")
+                action = "买入" if t.get("action") == "buy" else "卖出"
+                price = t.get("price", 0)
+                qty = t.get("qty", 0)
+                pnl = t.get("pnl", 0)
+                reason = t.get("reason", "-")
+                lines.append(
+                    f"| {today_str} | {sym} | {action} | {price:.2f} | {qty:,} | {pnl:+,.0f} | {reason} |"
+                )
+
+        # ── 候选信号（今日） ─────────────────────────────────
+        today_cands = [c for c in framework.candidates if c.get("date") == today_str]
+        if today_cands:
+            today_cands.sort(key=lambda x: x.get("score", 0), reverse=True)
+            top5 = today_cands[:5]
+            lines.append("")
+            lines.append(f"**候选信号**  {today_str}（共{len(today_cands)}只，展示前5）")
+            lines.append("")
+            lines.append("| 排名 | 评分 | 代码 | 名称 | 行业 | 状态 |")
+            lines.append("|------|------|------|------|------|------|")
+            for i, c in enumerate(top5, 1):
+                name = c.get("name") or c.get("symbol", "-")
+                industry = c.get("industry", "-")
+                score_val = c.get("score", 0)
+                st = c.get("status", "-")
+                lines.append(
+                    f"| {i} | {score_val:+.2f} | {c.get('symbol', '-')} | {name} | {industry} | {st} |"
+                )
+        else:
+            lines.append("")
+            lines.append(f"*今日无候选信号*")
 
         print("\n".join(lines))
         return
@@ -186,9 +230,11 @@ def show_state(framework: BaseFramework, strategy_name: str, format: str = "text
             latest = pos.get("latest_price", pos["avg_cost"])
             pnl = (latest - pos["avg_cost"]) * pos["qty"]
             pnl_pct = (latest / pos["avg_cost"] - 1) * 100 if pos["avg_cost"] > 0 else 0
+            _entry = date.fromisoformat(pos.get('entry_date', _today.isoformat()))
+            _days = max(0, (_today - _entry).days)
             print(
                 f"  {sym:<8} {pos['qty']:>8} {pos['avg_cost']:>10.2f} "
-                f"{latest:>10.2f} {pnl:>+12,.0f} {pnl_pct:>+7.2f}% {pos.get('days_held', 0):>8}"
+                f"{latest:>10.2f} {pnl:>+12,.0f} {pnl_pct:>+7.2f}% {_days:>8}"
             )
     else:
         print("\n  当前无持仓")
@@ -607,7 +653,7 @@ def main():
             target_date=target_date,
         )
         # 打印当日状态
-        show_state(framework, strategy_name)
+        show_state(framework, strategy_name, format=args.report_format)
         logger.info(f"\n状态文件: {state_file}")
     except Exception as e:
         logger.error(f"模拟盘运行失败: {e}")
