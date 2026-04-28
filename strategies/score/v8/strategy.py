@@ -565,13 +565,14 @@ class ScoreV8Strategy:
         判断是否应该出场
 
         优先级：止损 > 止盈 > 方案A出场
-          1. 止损: next_open < 入场价 * (1 - stop_loss)
-          2. 止盈: next_open > 入场价 * (1 + take_profit)
+          1. 止损: 今天收盘价 < 入场价 * (1 - stop_loss)
+          2. 止盈: 今天收盘价 > 入场价 * (1 + take_profit)
           3. 方案A: 跌破MA20 + 资金流出，连续3天
         """
-        price = row.get('next_open') or row.get('close')
-        if pd.isna(price):
-            return False, ""
+        # 用今天收盘价判断（不用next_open，因为T日不知道T+1开盘价）
+        price = row.get('close', 0)
+        if pd.isna(price) or price <= 0:
+            price = row.get('open', 0)
 
         entry = pos.get('entry_price', 0)
         if entry <= 0:

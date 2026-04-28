@@ -180,9 +180,9 @@ def test_v8_strategy():
     # V8 默认止损 5%、止盈 15%
     
     # 测试 should_sell - 止损
-    # next_open < 10.0 * 0.95 = 9.5 触发止损
+    # close < 10.0 * 0.95 = 9.5 触发止损
     row = df.iloc[0].copy()
-    row['next_open'] = 9.4  # 低于止损价 9.5
+    row['close'] = 9.4  # 低于止损价 9.5
     row['sma_20'] = 10.0
     row['sma_55'] = 10.5
     pos = {'avg_cost': 10.0, 'entry_sma20_le_sma55': True}
@@ -192,9 +192,9 @@ def test_v8_strategy():
     assert 'STOP_LOSS' in reason, f"期望 STOP_LOSS，实际 reason={reason}"
 
     # 测试 should_sell - 止盈
-    # next_open > 10.0 * 1.15 = 11.5 触发止盈
+    # close > 10.0 * 1.15 = 11.5 触发止盈
     row = df.iloc[0].copy()
-    row['next_open'] = 11.6  # 高于止盈价 11.5
+    row['close'] = 11.6  # 高于止盈价 11.5
     row['sma_20'] = 10.0  # sma_20 < sma_55，不触发 MA死叉
     row['sma_55'] = 10.5
     pos = {'avg_cost': 10.0, 'entry_sma20_le_sma55': True}
@@ -218,9 +218,9 @@ def test_v8_strategy():
     # 注意：V8 策略没有 趋势破坏 条件，此处不测试
 
     # 测试 should_sell - 正常持仓（不应触发任何出场）
+    # V8用收盘价判断止损/止盈，close=10.2在[9.5, 12.0]之间，不触发
     row = df.iloc[0].copy()
-    row['next_open'] = 10.05  # 不触发止损/止盈
-    row['close'] = 10.2  # close > sma_20(10.0)
+    row['close'] = 10.2  # 10.2在[9.5, 12.0]之间，不触发止损/止盈
     row['sma_20'] = 10.0  # sma_20 < sma_55(10.2)，不触发MA死叉
     row['sma_55'] = 10.2
     pos = {'avg_cost': 10.0, 'entry_sma20_le_sma55': True}

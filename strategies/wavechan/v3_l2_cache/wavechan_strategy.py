@@ -1154,8 +1154,8 @@ class WaveChanStrategy:
         判断是否出场（分类出场逻辑）
 
         出场条件（优先级）：
-          1. 止损：next_open < 入场价 * (1 - stop_loss)
-          2. 止盈：next_open > 入场价 * (1 + take_profit)
+          1. 止损：今天收盘价 < 止损位
+          2. 止盈：今天收盘价 > 入场价 * (1 + take_profit)
           3. 时间止损（分类）：W2_BUY=35天 / W4_BUY=25天 / C_BUY=15天
           4. 波浪出场：signal in (W5_SELL, SELL)
           5. W5失败浪出场（W4 BUY专用）：wave_state='w5_formed' + wave_trend='down'
@@ -1175,10 +1175,10 @@ class WaveChanStrategy:
         if entry_price <= 0:
             return False, "INVALID_POSITION"
 
-        # 实际卖出价格
-        next_open = row_dict.get('next_open')
-        if pd.isna(next_open) or next_open <= 0:
-            next_open = row_dict.get('close', entry_price)
+        # 用今天收盘价判断（不用next_open，因为T日不知道T+1开盘价）
+        current_close = row_dict.get('close', entry_price)
+        if current_close <= 0:
+            current_close = row_dict.get('open', entry_price)
 
         # ---------- 1. 止损（优先用信号自带的W2动态止损位，其次用固定百分比） ----------
         dyn_stop = row_dict.get('stop_loss', 0)
@@ -1189,32 +1189,31 @@ class WaveChanStrategy:
             stop_price = entry_price * (1 - self.stop_loss_pct)
             stop_label = f"固定止损@{stop_price:.2f}"
 
-        if next_open < stop_price:
-            return True, f"STOP_LOSS @{next_open:.2f}({stop_label})"
+        if current_close < stop_price:
+            return True, f"STOP_LOSS @{current_close:.2f}({stop_label})"
 
         # ---------- 1b. W1 失败检查（C_BUY 专用） ----------
         # C_BUY 入场后，5天内不创新低则W1确认（继续持有）；趋势破坏则立即失败
         current_date = row_dict.get('date', '')
-        w1_failed, w1_reason = self._check_w1_failure(current_date, next_open, pos)
+        w1_failed, w1_reason = self._check_w1_failure(current_date, current_close, pos)
         if w1_failed:
             return True, f"W1_EXIT({w1_reason})"
 
         # ---------- 2. 止盈（固定20%） ----------
         profit_price = entry_price * (1 + self.take_profit_pct)
-        if next_open >= profit_price:
-            return True, f"TAKE_PROFIT @{next_open:.2f}"
+        if current_close >= profit_price:
+            return True, f"TAKE_PROFIT @{current_close:.2f}"
 
         # ---------- 2b. 移动止盈（追踪高点回撤8%） ----------
         # 当已有持仓高点且超过20%目标时，启动移动止盈
         high_since_entry = pos.get('high_since_entry', 0)
-        current_close = row_dict.get('close', next_open)
         if high_since_entry > 0 and entry_price > 0:
             trailing_stop = high_since_entry * 0.92
             # 只有超过20%目标后才启用移动止盈
             if trailing_stop > profit_price:
-                if next_open <= trailing_stop:
-                    drawdown = (1 - next_open / high_since_entry) * 100
-                    return True, f"TRAILING_STOP({high_since_entry:.2f}→{next_open:.2f},-{drawdown:.1f}%)"
+                if current_close <= trailing_stop:
+                    drawdown = (1 - current_close / high_since_entry) * 100
+                    return True, f"TRAILING_STOP({high_since_entry:.2f}→{current_close:.2f},-{drawdown:.1f}%)"
 
         # ---------- 3. 时间止损（分类出场） ----------
         # V3 卖点信号研究：不同买点类型使用不同时间止损
