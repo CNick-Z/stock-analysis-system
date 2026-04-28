@@ -329,6 +329,7 @@ def run_backtest_year_by_year(
             "trades": total_trades,
             "n_winning": n_winning_total,
             "n_total": n_total_total,
+            "market_snapshots": framework.market_snapshots,  # 收益曲线数据
         }
         import json
         with open(output_state, "w") as f:
