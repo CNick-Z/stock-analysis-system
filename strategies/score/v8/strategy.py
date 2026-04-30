@@ -288,7 +288,8 @@ class ScoreV8Strategy:
     def __init__(self, config: Optional[dict] = None):
         self.config = config or {}
         self.stop_loss = self.config.get('stop_loss', 0.05)
-        self.take_profit = self.config.get('take_profit', 0.15)
+        self.take_profit = self.config.get('take_profit', 0.30)
+        self.tp_rsi_threshold = self.config.get('tp_rsi_threshold', 65)
         self.max_positions = self.config.get('max_positions', 5)
         self.position_size = self.config.get('position_size', 0.20)
         self.rsi_filter_min = self.config.get('rsi_filter_min', 50)
@@ -582,9 +583,11 @@ class ScoreV8Strategy:
         if price < entry * (1 - self.stop_loss):
             return True, f"STOP_LOSS @ {price:.2f}"
 
-        # 止盈
+        # 止盈：价格达标 且 RSI ≥ 阈值（避免过早止盈）
         if price > entry * (1 + self.take_profit):
-            return True, f"TAKE_PROFIT @ {price:.2f}"
+            rsi = row.get('rsi_14', 50)
+            if pd.isna(rsi) or rsi >= self.tp_rsi_threshold:
+                return True, f"TAKE_PROFIT @ {price:.2f}(TP{self.take_profit*100:.0f}%,RSI{rsi:.0f})"
 
         # 方案A：跌破MA20 + 资金流出，连续3天
         ma20 = row.get('sma_20')

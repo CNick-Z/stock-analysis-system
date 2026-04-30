@@ -74,7 +74,6 @@ class Trade:
     price: float
     qty: int
     pnl: float = 0.0    # 平仓盈亏（卖出时计算）
-    signal_type: str = ""  # 买入时的信号类型
     reason: str = ''     # 出场原因
     pnl_pct: float = 0.0
 
@@ -493,18 +492,10 @@ class BaseFramework:
             pos["extra"]["kdj_state"] = _infer_kdj_state(r)
             pos["extra"]["industry"] = r.get("industry", "")
             pos["extra"]["name"] = r.get("name", "")
-            _strategy_on_tick = getattr(self._strategy, 'on_tick', None)
-            if _strategy_on_tick is not None:
-                try:
-                    _strategy_on_tick(r, pos, market)
-                except TypeError:
-                    try:
-                        _strategy_on_tick(r, pos)  # 兼容2参数策略
-                    except Exception:
-                        pass
-            else:
-                # 策略无 on_tick，框架使用默认实现
-                pos['days_held'] = pos.get('days_held', 0) + 1
+            try:
+                self._strategy.on_tick(r, pos, market)
+            except TypeError:
+                self._strategy.on_tick(r, pos)  # 兼容2参数策略
 
         # ── 2. 处理出场 ──
         self._process_sells(daily, market)
@@ -525,8 +516,8 @@ class BaseFramework:
             if not should_sell:
                 continue
 
-            # 卖出价：当日收盘（更真实反映信号触发时的市场价格）
-            exec_price = r.get("close")
+            # 卖出价：回测用次日开盘，模拟盘（单日）用当日收盘
+            exec_price = r.get("next_open")
             if pd.isna(exec_price):
                 exec_price = r.get("close", pos["avg_cost"])
 
@@ -553,7 +544,6 @@ class BaseFramework:
                 price=exec_price,
                 qty=pos["qty"],
                 pnl=pnl,
-                signal_type=pos.get("signal_type", ""),
                 reason=reason,
                 pnl_pct=pnl_pct,
             )
@@ -582,21 +572,9 @@ class BaseFramework:
                 f"RSI14: {regime_info['rsi14']:.1f}"
             )
 
-        # 剩余可用现金 = 总资产×regime比例 - 持仓市值
-        total_value = self.cash + sum(
-            p.get("qty", 0) * p.get("latest_price", p.get("avg_cost", 0))
-            for p in self.positions.values()
-        )
-        remaining_slots = self.max_positions - len(self.positions)
-        if remaining_slots <= 0:
-            return
-        position_budget = total_value * position_limit
-        used_budget = sum(
-            p.get("qty", 0) * p.get("latest_price", p.get("avg_cost", 0))
-            for p in self.positions.values()
-        )
-        remaining_cash = max(0.0, position_budget - used_budget)
-        per_stock_budget = remaining_cash / remaining_slots
+        # 可用资金 = 现金 × 账户总仓位上限（受 regime 影响）
+        avail_cash = self.cash * position_limit
+        slots = self.max_positions - len(self.positions)
 
         # 策略选股
         candidates = self._strategy.filter_buy(daily, market.get("date"))
@@ -607,18 +585,9 @@ class BaseFramework:
         if scored.empty:
             return
 
-        # TOP 5 候选（今日新信号）
-        top5 = scored.nlargest(5, "score") if len(scored) > 5 else scored
-
         # ---- 第一遍：构建所有候选信号记录 ----
         today_candidates = []
-        # 同时拉取之前未执行的 pending 候选，在本次交易日给予执行机会
-        pending_old = [c for c in self.candidates if c.get("status") == "pending"]
-        for cand in pending_old:
-            cand["is_prev_pending"] = True
-            cand["status"] = "pending"  # 重置状态，每天重新评估
-            today_candidates.append(cand)
-        for _, row in top5.iterrows():
+        for _, row in scored.iterrows():
             sym = row["symbol"]
             day_row = daily[daily["symbol"] == sym]
             if day_row.empty:
@@ -644,38 +613,28 @@ class BaseFramework:
                 "date": market["date"],
                 "symbol": sym,
                 "score": round(float(row.get("score", 0)), 2),
-                "signal_type": str(row.get("signal_type", "")),
-                "wave_state": str(row.get("wave_state", "")),
-                "wave_trend": str(row.get("wave_trend", "")),
-                "iron_law_1": bool(row.get("iron_law_1", False)),
-                "iron_law_2": bool(row.get("iron_law_2", False)),
-                "iron_law_3": bool(row.get("iron_law_3", False)),
-                "all_verified": bool(row.get("all_verified", False)),
                 "rsi": round(float(r.get("rsi_14", 0) or 0), 1),
                 "cci": round(float(r.get("cci_20", 0) or 0), 1),
+                "macd_state": macd_state,
                 "macd_state": macd_state,
                 "kdj_state": kdj_state,
                 "industry": str(r.get("industry", "")),
                 "name": str(r.get("name", "")),
                 "close": round(float(r.get("close", 0) or 0), 2),
                 "limit_up": bool(r.get("limit_up", False)),
-                "limit_down": bool(row.get("limit_down", False)),
+                "limit_down": bool(r.get("limit_down", False)),
                 "status": "pending",
                 "reason": "",
             }
             today_candidates.append(cand)
 
-        # ---- 第二遍：执行昨日pending信号 ----
-        # 信号只保留 signal + date，执行时才处理所有状态
-        to_buy = []
-        buy_count = 0
+        # ---- 第二遍：标记未买入原因 ----
         for cand in today_candidates:
-            if cand.get("status") != "pending":
-                continue
-            if not cand.get("is_prev_pending"):
-                # 今天新候选：只记录，不执行
-                continue
             sym = cand["symbol"]
+            if sym in self.positions:
+                cand["status"] = "X0 - 已持仓"
+                cand["reason"] = "已持有该股票"
+                continue
             day_row = daily[daily["symbol"] == sym]
             if day_row.empty:
                 cand["status"] = "X1 - 数据异常"
@@ -690,42 +649,49 @@ class BaseFramework:
                 cand["status"] = "X3 - 跌停"
                 cand["reason"] = "跌停风险"
                 continue
-            if buy_count >= remaining_slots:
+            exec_price = r.get("next_open")
+            if pd.isna(exec_price):
+                exec_price = r.get("open", 0) or 0
+            exec_price = exec_price * (1 + self.slippage_pct)
+            if slots <= 0:
                 cand["status"] = "X4 - 已满仓"
                 cand["reason"] = f"仓位已满({len(self.positions)}/{self.max_positions})"
                 continue
-            exec_price = r.get("open")
-            if pd.isna(exec_price) or exec_price <= 0:
-                exec_price = r.get("close", 0) or 0
-            exec_price = exec_price * (1 + self.slippage_pct)
-            if self.cash < exec_price * 100:
+            if exec_price <= 0 or avail_cash < exec_price * 100:
                 cand["status"] = "X5 - 资金不足"
                 cand["reason"] = "可用资金不足"
                 continue
-            if sym in self.positions:
-                cand["status"] = "X0 - 已持仓"
-                cand["reason"] = "已持有该股票"
+
+        # ---- 第三遍：执行买入 ----
+        to_buy = []
+        buy_count = 0
+        for cand in today_candidates:
+            if cand["status"] != "pending":
                 continue
+            sym = cand["symbol"]
+            if buy_count >= slots:
+                cand["status"] = "X4 - 已满仓"
+                cand["reason"] = f"仓位已满({len(self.positions)}/{self.max_positions})"
+                continue
+            day_row = daily[daily["symbol"] == sym]
+            if day_row.empty:
+                continue
+            r = day_row.iloc[0]
+            exec_price = r.get("next_open")
+            if pd.isna(exec_price):
+                exec_price = r.get("open", 0) or 0
+            exec_price = exec_price * (1 + self.slippage_pct)
             to_buy.append((sym, cand, r, exec_price))
             buy_count += 1
 
         if not to_buy:
-            # 保留 pending 旧候选 + 新候选（今日生成但未执行）
-            kept_pending = [c for c in self.candidates if c.get("status") == "pending"]
-            self.candidates = kept_pending + today_candidates
+            self.candidates = [c for c in self.candidates if c["date"] != market["date"]]
+            self.candidates.extend(today_candidates)
             return
 
-        per_stock_cash = per_stock_budget  # 每只股票可用金额
-
-        logger.info(
-            f"[仓位预算] 总资产={total_value/1e4:.1f}万 | "
-            f"Regime仓位={position_limit:.0%} | "
-            f"理论预算={position_budget/1e4:.1f}万 | "
-            f"持仓市值={used_budget/1e4:.1f}万 | "
-            f"剩余现金={remaining_cash/1e4:.1f}万 | "
-            f"可用slot={remaining_slots} | "
-            f"每只预算={per_stock_budget/1e4:.1f}万 | "
-            f"实际现金={self.cash/1e4:.1f}万"
+        per_stock_cash = min(
+            avail_cash / len(to_buy),
+            self.cash * self.position_size * position_limit
         )
 
         for sym, cand, r, exec_price in to_buy:
@@ -757,7 +723,6 @@ class BaseFramework:
                 "days_held": 0,
                 "consecutive_bad_days": 0,
                 "is_etf": is_etf,
-                "signal_type": cand.get("signal_type", ""),
                 "extra": {},
             }
             for c in today_candidates:
@@ -771,7 +736,6 @@ class BaseFramework:
                 action="buy",
                 price=exec_price,
                 qty=buy_qty,
-                signal_type=cand.get("signal_type", ""),
             )
             self.trades.append(trade.__dict__)
             logger.info(
@@ -780,9 +744,8 @@ class BaseFramework:
             )
 
         # ---- 合并候选 ----
-        # 保留所有 pending 的旧候选（还没执行过）；非 pending 的旧候选（已买入/已满仓）清理掉
-        kept_pending = [c for c in self.candidates if c.get("status") == "pending"]
-        self.candidates = kept_pending + today_candidates
+        self.candidates = [c for c in self.candidates if c["date"] != market["date"]]
+        self.candidates.extend(today_candidates)
 
     def _calc_total_value(self, df: pd.DataFrame, date: str) -> float:
         """计算当日总资产"""

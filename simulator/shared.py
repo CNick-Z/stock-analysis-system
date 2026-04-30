@@ -24,11 +24,14 @@ STRATEGY_REGISTRY = {
         "class": "ScoreV8Strategy",
         "path": "strategies.score.v8.strategy",
         "params": {
-            # V8 回测参数（2026-04-24 调优：2年综合对比）
-            # 结论：10×10% 综合表现最优（2024:-7.9%/+2025:+28.9%）
-            # 注意：未复权数据，绝对值仅供参考
+            # V8 回测参数（2026-04-30 调优：RSI止盈 + ATR止损）
+            # RSI止盈（Oracle验证）：TP=20% + RSI≥65，最优样本外配置
+            # ATR止损（Forge验证）：ATR×2.0 样本外 +13.18%，夏普 0.73，显著优于固定止损
             "stop_loss": 0.04,
             "take_profit": 0.20,
+            "tp_rsi_threshold": 65,
+            "atr_multiplier": 2.0,
+            "atr_period": 14,
             "rsi_filter_min": 50,
             "rsi_filter_max": 65,
             "max_positions": 10,
