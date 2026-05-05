@@ -758,7 +758,8 @@ class BaseFramework:
                 "consecutive_bad_days": 0,
                 "is_etf": is_etf,
                 "signal_type": cand.get("signal_type", ""),
-                "extra": {},
+                "entry_atr": r.get("atr_14", 0) or 0,  # 记录入场日ATR（用于ATR止损）
+                "extra": {"stop_pending": False},
             }
             for c in today_candidates:
                 if c["symbol"] == sym:

@@ -1189,8 +1189,19 @@ class WaveChanStrategy:
             stop_price = entry_price * (1 - self.stop_loss_pct)
             stop_label = f"固定止损@{stop_price:.2f}"
 
+        # ---------- 止损pending确认机制 ----------
+        # T日收盘价跌破止损位 → 标记pending不立即出场
+        # T+1日开盘价继续低于止损位 → 确认出场
+        # T+1日开盘价回升高于止损位 → 撤销pending继续持有
         if current_close < stop_price:
-            return True, f"STOP_LOSS @{current_close:.2f}({stop_label})"
+            if pos['extra'].get('stop_pending'):
+                # T+1：昨日已pending，今日确认止损
+                return True, f"STOP_LOSS_CONFIRMED @{current_close:.2f}({stop_label})"
+            else:
+                # T：首次触发，标记pending
+                pos['extra']['stop_pending'] = True
+                pos['extra']['stop_pending_date'] = current_date
+                return False, f"STOP_PENDING @{current_close:.2f}<{stop_price:.2f}({stop_label})"
 
         # ---------- 1b. W1 失败检查（C_BUY 专用） ----------
         # C_BUY 入场后，5天内不创新低则W1确认（继续持有）；趋势破坏则立即失败
