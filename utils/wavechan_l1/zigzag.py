@@ -300,8 +300,7 @@ def process_year_extrema(
 
 def _get_daily_data_dir(year: int):
     """获取日线数据目录（支持向上查找）"""
-    from pathlib import Path
-    DAILY_DATA_ROOT = Path("/root/.openclaw/workspace/data/warehouse")
+    from utils.paths import DAILY_DATA_ROOT
     p = DAILY_DATA_ROOT / f"daily_data_year={year}"
     if p.exists():
         return p

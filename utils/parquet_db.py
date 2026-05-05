@@ -13,7 +13,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Parquet 数据仓库路径
-WAREHOUSE_PATH = Path("/root/.openclaw/workspace/data/warehouse")
+from utils.paths import DAILY_DATA_ROOT
 
 
 class ParquetDatabaseIntegrator:
@@ -31,7 +31,7 @@ class ParquetDatabaseIntegrator:
             db_path: 保留参数（兼容性），实际使用 WAREHOUSE_PATH，不再用于数据库连接
         """
         self.db_path = db_path  # 仅保留用于兼容性，不实际使用
-        self.warehouse_path = WAREHOUSE_PATH
+        self.warehouse_path = DAILY_DATA_ROOT
         self._ensure_warehouse_exists()
     
     def _ensure_warehouse_exists(self):

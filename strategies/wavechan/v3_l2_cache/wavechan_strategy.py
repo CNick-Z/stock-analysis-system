@@ -1181,6 +1181,7 @@ class WaveChanStrategy:
             current_close = row_dict.get('open', entry_price)
 
         # ---------- 1. 止损（优先用信号自带的W2动态止损位，其次用固定百分比） ----------
+        current_date = row_dict.get('date', '')
         dyn_stop = row_dict.get('stop_loss', 0)
         if dyn_stop and dyn_stop > 0:
             stop_price = dyn_stop
@@ -1205,7 +1206,6 @@ class WaveChanStrategy:
 
         # ---------- 1b. W1 失败检查（C_BUY 专用） ----------
         # C_BUY 入场后，5天内不创新低则W1确认（继续持有）；趋势破坏则立即失败
-        current_date = row_dict.get('date', '')
         w1_failed, w1_reason = self._check_w1_failure(current_date, current_close, pos)
         if w1_failed:
             return True, f"W1_EXIT({w1_reason})"

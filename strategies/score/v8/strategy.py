@@ -288,12 +288,14 @@ class ScoreV8Strategy:
     def __init__(self, config: Optional[dict] = None):
         self.config = config or {}
         self.stop_loss = self.config.get('stop_loss', 0.05)
-        self.take_profit = self.config.get('take_profit', 0.30)
+        self.take_profit = self.config.get('take_profit', 0.25)
         self.tp_rsi_threshold = self.config.get('tp_rsi_threshold', 65)
         self.max_positions = self.config.get('max_positions', 5)
         self.position_size = self.config.get('position_size', 0.20)
         self.rsi_filter_min = self.config.get('rsi_filter_min', 50)
         self.rsi_filter_max = self.config.get('rsi_filter_max', 60)
+        self.atr_multiplier = self.config.get('atr_multiplier', 0)  # 0=禁用ATR止损，>0=ATR倍数
+        self.atr_period = self.config.get('atr_period', 14)
 
         self.name = "V8ScoreStrategy"
         self.REQUIRED_COLUMNS: list = []
@@ -332,6 +334,8 @@ class ScoreV8Strategy:
             df['turnover_rate'] = df['turnover_rate_y']
         elif 'turnover_rate_x' in df.columns:
             df['turnover_rate'] = df['turnover_rate_x']
+        else:
+            df['turnover_rate'] = 0.0
         # 用 total_shares 正确计算换手率
         if df['turnover_rate'].sum() == 0 and 'total_shares' in df.columns:
             df['turnover_rate'] = (
@@ -342,6 +346,39 @@ class ScoreV8Strategy:
             # 如果没有 total_shares，换手率设为 0（不做排除）
             df['turnover_rate'] = 0.0
             logger.info("  turnover_rate 设为 0（无 total_shares 数据）")
+
+        # ── 0.5. ATR_14 计算（写入 df 和 full_df，供 base_framework 读取 entry_atr）──
+        if self.atr_multiplier > 0:
+            # 在排好序的 df 上计算 ATR（保证每只股票的数据在 groupby 后连续）
+            # 注意：load_strategy_data 可能产生重复行，需要先统一去重
+            df_dedup = df.drop_duplicates(subset=['symbol', 'date']).copy()
+            df_s = df_dedup.sort_values(['symbol', 'date']).reset_index(drop=True)
+            g_s = df_s.groupby('symbol', sort=False)
+            prev_close = g_s['close'].shift(1)
+            tr1 = df_s['high'] - df_s['low']
+            tr2 = (df_s['high'] - prev_close).abs()
+            tr3 = (df_s['low'] - prev_close).abs()
+            df_s['_tr'] = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1).values
+            df_s['atr_14'] = g_s['_tr'].transform(
+                lambda x: x.rolling(self.atr_period, min_periods=self.atr_period).mean()
+            )
+            # 用 merge 把 atr_14 加回 df_dedup（left join 保证行数不变）
+            atr_df_s = df_s[['symbol', 'date', 'atr_14']].copy()
+            df_with_atr = df_dedup.merge(atr_df_s, on=['symbol', 'date'], how='left', suffixes=('', '_y'))
+            for c in df_with_atr.columns:
+                if c.endswith('_y'):
+                    df_with_atr.drop(columns=[c], inplace=True)
+            # 再按 symbol+date 合并回原始 df（处理 df 可能有的重复行）
+            # 用 map 而非 reindex，避免索引错位
+            atr_map = df_with_atr.set_index(['symbol', 'date'])['atr_14']
+            idx = pd.MultiIndex.from_arrays([df['symbol'], df['date']])
+            df['atr_14'] = idx.to_series().map(atr_map).values
+            # 同时写入 full_df
+            full_df['atr_14'] = df['atr_14'].values
+            logger.info(f"  ATR_14 已计算（倍数={self.atr_multiplier}）")
+        else:
+            df['atr_14'] = 0.0
+            full_df['atr_14'] = 0.0
 
         # ── 1. 原始条件列（中间结果，不缓存，只给后续步骤用）──
         df['growth'] = (df['close'] - df['open']) / df['open'] * 100
@@ -369,6 +406,10 @@ class ScoreV8Strategy:
         df['_trend_cond'] = (df['sma_20'] < df['sma_55']) & (df['sma_55'] > df['sma_240'])
         df['_rsi_f']      = (df['rsi_14'] >= self.rsi_filter_min) & (df['rsi_14'] <= self.rsi_filter_max)
         df['_price_f']    = (df['close'] >= 3) & (df['close'] <= 15)
+
+        # ── 新增入场过滤（WR强势 + 价格突破MA20 5%）──
+        df['_wr_strong'] = True  # DISABLED   # WR > -20：避开超卖入场
+        df['_ma20_break'] = True  # DISABLED  # 价格突破MA20 5%以上
 
 
         # 剔除        # ── 1.6 价格回踩MA5（误差1%以内）──
@@ -432,6 +473,7 @@ class ScoreV8Strategy:
             '_ma_cond', '_macd_cond', '_vol_cond', '_macd_jc',
             'growth',
             '_shrink_pullback', '_bottom_volume',
+            'atr_14',
         ]
         cache_df = df[cache_cols].copy()
 
@@ -579,9 +621,24 @@ class ScoreV8Strategy:
         if entry <= 0:
             return False, ""
 
-        # 止损
-        if price < entry * (1 - self.stop_loss):
-            return True, f"STOP_LOSS @ {price:.2f}"
+        # ── 止损（ATR动态 / 固定5%二选一）────────────────────────────
+        if self.atr_multiplier > 0:
+            # ATR动态止损：收盘价 < 入场价 - N×ATR（同时有3%硬下限）
+            # entry_atr 由 base_framework 在买入时记录（当日收盘后预计算的 ATR_14）
+            atr = pos.get('entry_atr', 0)
+            hard_stop_price = entry * 0.97
+            if not pd.isna(atr) and atr > 0:
+                atr_stop_price = entry - self.atr_multiplier * atr
+                effective_stop = max(atr_stop_price, hard_stop_price)
+            else:
+                # ATR数据无效时（年初/warm-up期），使用硬止损
+                effective_stop = hard_stop_price
+            if price < effective_stop:
+                return True, f"STOP_LOSS @ {price:.2f}(ATR{self.atr_multiplier}x,HL3%)"
+        else:
+            # 固定止损
+            if price < entry * (1 - self.stop_loss):
+                return True, f"STOP_LOSS @ {price:.2f}"
 
         # 止盈：价格达标 且 RSI ≥ 阈值（避免过早止盈）
         if price > entry * (1 + self.take_profit):

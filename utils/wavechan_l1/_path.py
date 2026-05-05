@@ -8,10 +8,15 @@ from typing import List
 # ============================================================
 # 根目录
 # ============================================================
-BASE_PATH = Path("/data/warehouse/wavechan_l1")
+from utils.paths import WAVECHAN_ROOT, DAILY_DATA_ROOT
+
+# ============================================================
+# 根目录
+# ============================================================
+BASE_PATH = WAVECHAN_ROOT / "wavechan_l1"
 
 # 原始日线数据根目录
-DAILY_DATA_ROOT = Path("/root/.openclaw/workspace/data/warehouse")
+DAILY_DATA_ROOT = DAILY_DATA_ROOT
 
 # ============================================================
 # 存储路径

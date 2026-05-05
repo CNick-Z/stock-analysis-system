@@ -28,7 +28,9 @@ from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path('/root/.openclaw/workspace/data/warehouse')
+from utils.paths import DAILY_DATA_ROOT, MONEY_FLOW_ROOT, WAVECHAN_L2_ROOT
+
+DATA_DIR = DAILY_DATA_ROOT  # 兼容旧代码
 
 # ============================================================
 # 基础数据加载
@@ -226,7 +228,7 @@ def _add_derived_daily_fields(df: pd.DataFrame) -> pd.DataFrame:
 # ============================================================
 
 # 资金流缓存路径（按年存储）
-MONEY_FLOW_CACHE_ROOT = Path("/data/warehouse/money_flow")
+MONEY_FLOW_CACHE_ROOT = MONEY_FLOW_ROOT
 
 # 需要缓存的资金流字段
 _MONEY_FLOW_COLS = [
@@ -438,8 +440,7 @@ def calculate_money_flow_indicators(df: pd.DataFrame) -> pd.DataFrame:
 # ============================================================
 # 波浪缠论信号加载（V3 专用）
 # ============================================================
-
-WAVECHAN_L2_ROOT = Path("/data/warehouse/wavechan/wavechan_cache")
+# WAVECHAN_L2_ROOT is already imported from utils.paths at top of file
 
 
 def load_wavechan_signals(start_date: str, end_date: str) -> pd.DataFrame:

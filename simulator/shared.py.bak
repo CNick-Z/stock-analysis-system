@@ -1,0 +1,143 @@
+# simulator/shared.py
+# =============================================================
+"""
+backtest.py / simulate.py 公共模块
+=============================================================
+策略注册表、数据加载公共函数，两个入口共用。
+
+用法:
+    from simulator.shared import load_strategy, load_data_for_strategy
+"""
+# =============================================================
+
+import logging
+from pathlib import Path
+from typing import List
+
+import pandas as pd
+
+logger = logging.getLogger(__name__)
+
+# ── 策略注册表 ─────────────────────────────────────────────
+STRATEGY_REGISTRY = {
+    "v8": {
+        "class": "ScoreV8Strategy",
+        "path": "strategies.score.v8.strategy",
+        "params": {
+            # V8 回测参数（2026-04-24 调优：2年综合对比）
+            # 结论：10×10% 综合表现最优（2024:-7.9%/+2025:+28.9%）
+            # 注意：未复权数据，绝对值仅供参考
+            "stop_loss": 0.04,
+            "take_profit": 0.30,
+            "tp_rsi_threshold": 65,
+            "rsi_filter_min": 50,
+            "rsi_filter_max": 65,
+            "max_positions": 10,
+            "position_size": 0.10,
+        },
+    },
+    "wavechan_v3_strict": {
+        "class": "WaveChanStrategy",
+        "path": "strategies.wavechan.v3_l2_cache.wavechan_strategy",
+        "params": {
+            "min_market_cap": 10,
+            "min_pe": 0,
+            "min_listing_days": 365,
+            "iron_laws_strict": True,
+        },
+    },
+}
+
+# ── 波浪 L2 cache 路径 ─────────────────────────────────
+WAVECHAN_L2_CACHE = Path("/data/warehouse/wavechan/wavechan_cache")
+
+
+def load_strategy(name: str):
+    """动态加载策略实例，自动适配两种初始化风格：
+    - config=dict：ScoreV8Strategy 等（接受统一配置字典）
+    - **kwargs：WaveChanStrategy 等（接受独立参数）
+    """
+    if name not in STRATEGY_REGISTRY:
+        raise ValueError(f"未知策略: {name}. 可用: {list(STRATEGY_REGISTRY.keys())}")
+    cfg = STRATEGY_REGISTRY[name]
+    mod = __import__(cfg["path"], fromlist=[cfg["class"]])
+    params = cfg.get("params", {})
+    cls = getattr(mod, cfg["class"])
+    # 检查策略 __init__ 第一个参数名，自动适配调用风格
+    import inspect
+    try:
+        sig = inspect.signature(cls)
+        first_param = list(sig.parameters.keys())[0]
+        if first_param == "config":
+            # 接受 config dict 的策略（如 V8）
+            return cls(config=params)
+        else:
+            # 接受独立 kwargs 的策略（如 WaveChan）
+            return cls(**params)
+    except (ValueError, IndexError):
+        # fallback：优先尝试 config 风格
+        try:
+            return cls(config=params)
+        except TypeError:
+            return cls(**params)
+
+
+def add_next_open(df: pd.DataFrame) -> pd.DataFrame:
+    """添加 next_open 列（次日开盘价）"""
+    df = df.copy()
+    df["next_open"] = df.groupby("symbol")["open"].shift(-1)
+    return df
+
+
+def load_wavechan_cache(years: List[int]) -> pd.DataFrame:
+    """
+    从 L1/L2 cache 加载波浪信号数据。
+
+    L1（冷数据）：l1_cold_year=YYYY/data.parquet（年度粒度）
+    L2（热数据）：l2_hot_year=YYYY_month=MM/data.parquet（月度粒度）
+
+    返回 DataFrame 包含：
+        date, symbol, has_signal, total_score, signal_type,
+        signal_status, wave_trend, wave_state, stop_loss 等字段。
+    """
+    parts = []
+    for year in years:
+        # L1 冷数据（优先）
+        l1_path = WAVECHAN_L2_CACHE / f"l1_cold_year={year}" / "data.parquet"
+        if l1_path.exists():
+            df = pd.read_parquet(l1_path)
+            parts.append(df)
+            logger.info(f"  L1 cache loaded: {year}  {len(df):,} 行")
+            continue
+
+        # L2 热数据
+        l2_dirs = list(WAVECHAN_L2_CACHE.glob(f"l2_hot_year={year}_month=*"))
+        if l2_dirs:
+            dfs = [
+                pd.read_parquet(d / "data.parquet")
+                for d in l2_dirs
+                if (d / "data.parquet").exists()
+            ]
+            if dfs:
+                parts.append(pd.concat(dfs, ignore_index=True))
+                logger.info(f"  L2 cache loaded: {year}  {sum(len(d) for d in dfs):,} 行")
+                continue
+
+        logger.warning(f"  波浪缓存不存在: {year}")
+
+    if not parts:
+        return pd.DataFrame()
+
+    cache_df = pd.concat(parts, ignore_index=True)
+    cols = [
+        "date", "symbol", "has_signal", "total_score",
+        "signal_type", "signal_status", "wave_trend",
+        "wave_state", "stop_loss",
+        # 铁律验证字段（wave_recognizer）
+        "iron_law_1", "iron_law_2", "iron_law_3",
+        "all_verified", "divergence_confirmed",
+        "confidence", "weekly_wave",
+    ]
+    existing = [c for c in cols if c in cache_df.columns]
+    cache_df = cache_df[existing].drop_duplicates(["date", "symbol"])
+    return cache_df

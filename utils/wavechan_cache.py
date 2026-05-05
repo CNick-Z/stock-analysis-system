@@ -33,8 +33,9 @@ logger = logging.getLogger(__name__)
 # ============================================================
 # 常量
 # ============================================================
-
-WAREHOUSE_PATH = Path("/data/warehouse/wavechan")
+# 路径配置（统一从 paths.py 导入）
+# ============================================================
+from utils.paths import WAVECHAN_ROOT, WAVECHAN_L2_ROOT, WAVECHAN_L3_DB
 
 # L1: 历史归档（2021-2024）
 L1_COLD_YEARS = [2021, 2022, 2023, 2024]
@@ -43,11 +44,11 @@ L1_COLD_YEARS = [2021, 2022, 2023, 2024]
 L2_HOT_YEAR_START = 2025
 
 # L3: 参数缓存（SQLite）
-L3_DB_PATH = WAREHOUSE_PATH / "wavechan_l3_cache.db"
+L3_DB_PATH = WAVECHAN_L3_DB  # from utils.paths
 L3_MAX_ENTRIES = 100  # LRU 保留最近 100 组参数
 
-# 预计算缓存基础路径
-CACHE_BASE = WAREHOUSE_PATH / "wavechan_cache"
+# L2 cache base path (alias for WAVECHAN_L2_ROOT)
+CACHE_BASE = WAVECHAN_L2_ROOT
 
 # 默认参数版本
 DEFAULT_ALGO_VERSION = "v3.0"

@@ -181,13 +181,15 @@ class MarketRegimeFilter:
         df = pd.read_parquet(self.index_path)
         df["date"] = pd.to_datetime(df["date"]).dt.normalize()
 
-        # 取前后足够宽的窗口用于指标计算（向前多取 confirm_days + 30 天）
-        warmup_days = self.confirm_days + 30
-        start_dt = pd.to_datetime(start_date) - pd.Timedelta(days=warmup_days)
+        # 取足够多的历史数据用于指标计算（MA20=20天+RSI14=14天+MACD=26天+buffer）
+        warmup_rows = 120  # 约6个月交易日
         end_dt = pd.to_datetime(end_date)
-
-        df = df[(df["date"] >= start_dt) & (df["date"] <= end_dt)].copy()
+        start_dt = pd.to_datetime(start_date)
+        df = df[df["date"] <= end_dt].copy()
         df = df.sort_values("date").reset_index(drop=True)
+        # 只保留最后warmup_rows条数据，确保有足够历史计算指标
+        if len(df) > warmup_rows:
+            df = df.tail(warmup_rows)
 
         if df.empty:
             raise ValueError(f"CSI300 数据为空: {start_dt} ~ {end_dt}")

@@ -120,7 +120,7 @@ def compute_incremental_signals(
     end_date: str,
     selector: WaveChanSelector,
     db: ParquetDatabaseIntegrator,
-    n_workers: int = 4,
+    n_workers: int = 1,
 ) -> pd.DataFrame:
     """
     计算指定日期范围的增量信号（多进程加速）
@@ -230,26 +230,63 @@ def compute_incremental_signals(
     output_cols = [c for c in L2_COLUMNS if c in combined.columns]
     combined = combined[output_cols].copy()
 
+    # ── 从技术指标库读取 RSI（覆盖 WaveChanSelector 计算的 RSI）─────────────
+    if 'rsi' not in combined.columns or combined['rsi'].isna().any():
+        try:
+            # 确定年份范围
+            dates = pd.to_datetime(combined['date']).dt.year.unique()
+            tech_frames = []
+            for yr in dates:
+                tp = Path(f'/root/.openclaw/workspace/data/warehouse/technical_indicators_year={yr}/data.parquet')
+                if tp.exists():
+                    tdf = pd.read_parquet(tp, columns=['date','symbol','rsi_14'])
+                    tdf = tdf.rename(columns={'rsi_14': 'rsi'})
+                    tech_frames.append(tdf)
+            if tech_frames:
+                tech_all = pd.concat(tech_frames, ignore_index=True)
+                tech_all['date'] = pd.to_datetime(tech_all['date']).dt.strftime('%Y-%m-%d')
+                # 合并到 combined（技术指标库优先级）
+                merged = combined.merge(tech_all[['date','symbol','rsi']], on=['date','symbol'], how='left', suffixes=('','_tech'))
+                combined['rsi'] = merged['rsi_tech'].combine_first(combined['rsi'])
+                n_fixed = combined['rsi'].notna().sum()
+                logger.info(f"[RSI] 从技术指标库补入 {n_fixed} 个值")
+        except Exception as e:
+            logger.warning(f"[RSI] 技术指标库读取失败: {e}")
+
     return combined
 
 
 def get_latest_l2_date(cm: WaveChanCacheManager) -> str | None:
     """
-    获取 L2 缓存中最新已有数据的日期
+    获取 L2 缓存中最新已有信号行的日期。
+    
+    关键：不能用 date 列最大值判断（铁律批量写入会覆盖整个月分区，
+    iron_laws 列延伸到月末但 signal 列在特定日期后不再更新）。
+    必须用 has_signal==True 的最大日期来判断实际信号覆盖范围。
     """
-    status = cm.status()
-    l2_parts = status.get("l2_partitions", {})
-
+    l1l2 = cm.l1l2
     latest_date = None
-    for part_name, info in l2_parts.items():
-        date_max = info.get("date_max")
-        if date_max is not None:
-            # 统一转为字符串 YYYY-MM-DD
-            date_str = pd.to_datetime(date_max).strftime("%Y-%m-%d")
-            if latest_date is None or date_str > latest_date:
-                latest_date = date_str
-
+    for p in sorted(l1l2.base_path.glob("l2_hot_year=*")):
+        pf = p / "data.parquet"
+        if not pf.exists():
+            continue
+        try:
+            # 同时读 date 和 has_signal，用后者过滤
+            df = pd.read_parquet(pf, columns=["date", "has_signal"])
+            if df.empty:
+                continue
+            # 只看有信号的行
+            sig_df = df[df["has_signal"] == True]
+            if sig_df.empty:
+                continue
+            dmax = sig_df["date"].max()
+            if latest_date is None or dmax > latest_date:
+                latest_date = dmax
+        except Exception:
+            continue
     return latest_date
+
+
 
 
 def report_signals(df: pd.DataFrame, trade_date: str) -> dict:
@@ -417,17 +454,24 @@ def run_daily_incremental(
     # 已有 L2 数据：增量计算
     if latest_l2_date:
         if target_date <= latest_l2_date:
-            logger.info(f"目标日期 {target_date} ≤ L2最新 {latest_l2_date}，无需计算")
-            # 加载 L2 当日数据直接报告
-            signals = cm.load(latest_l2_date, latest_l2_date)
-            if not signals.empty:
-                report_signals(signals, latest_l2_date)
-            return
+            # --date 明确指定时：target_date==latest_l2_date 时发报告，target_date<latest_l2_date 时强制重算
+            if target_date == latest_l2_date:
+                logger.info(f"目标日期 {target_date} == L2最新，跳过重算，仅报告")
+                signals = cm.load(latest_l2_date, latest_l2_date)
+                if not signals.empty:
+                    report_signals(signals, latest_l2_date)
+                return
+            else:
+                # target_date < latest_l2_date：强制重算（用于修复历史缺失数据）
+                logger.info(f"目标日期 {target_date} < L2最新 {latest_l2_date}，强制重算")
+                start_date = target_date
+                logger.info(f"重算模式: {start_date} ~ {target_date}")
 
-        start_date = (
-            pd.to_datetime(latest_l2_date) + timedelta(days=1)
-        ).strftime("%Y-%m-%d")
-        logger.info(f"增量模式: {start_date} ~ {target_date}")
+        else:
+            start_date = (
+                pd.to_datetime(latest_l2_date) + timedelta(days=1)
+            ).strftime("%Y-%m-%d")
+            logger.info(f"增量模式: {start_date} ~ {target_date}")
 
     else:
         # 无 L2 数据：从头计算（从仓库数据最早日期开始）
